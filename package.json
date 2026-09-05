@@ -1,0 +1,27 @@
+{
+  "name": "tack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tack": "./bin/tack.ts"
+  },
+  "scripts": {
+    "tack": "bun run ./bin/tack.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "citty": "^0.2.2",
+    "ink": "^7.1.1",
+    "picocolors": "^1.1.1",
+    "react": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "typescript": "^7.0.2"
+  }
+}
