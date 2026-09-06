@@ -164,8 +164,9 @@ ensure the pinned versions are present. If a pinned version isn't already instal
 @anthropic-ai/claude-code@<v>` / `@openai/codex@<v>`), never a piped shell
 installer, and never over a global/system install. An explicit `bin` override is
 verified only (Tack never installs over a user-managed path); an unpinned runtime is
-reported present if on PATH, otherwise left to the user. `tack doctor` reports
-resolution and pin status without changing anything.
+reported present if on PATH, otherwise left to the user. `tack runtime doctor`
+reports resolution and pin status without changing anything, and `tack runtime list`
+gives a status overview.
 
 ---
 
@@ -255,7 +256,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
 
 ## 9. Execution flow
 
-1. **`tack supervise "<problem>"`** creates a session and launches the supervisor
+1. **`tack go "<problem>"`** creates a session and launches the supervisor
    runtime read-only, with project roots granted as read dirs and the supervisor MCP
    server mounted.
 2. The supervisor investigates, calls `set_shared_context`, then `spawn_agent` per
@@ -267,7 +268,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
 4. The supervisor `wait_for_agents`, `read_agent_output`, adjudicates amendments,
    optionally spawns follow-ups, and finishes with a summary. Agents open their own
    PRs on `tack/pr/<sessionId>/<slug>` branches.
-5. `tack prs <session>` / the dashboard discover PRs via `gh`.
+5. The `tack stable` dashboard discovers PRs via `gh`.
 
 `tack agent <project> "<task>"` runs a single agent inline (no supervisor) — the
 quickest way to validate the runtime pipeline.
@@ -301,8 +302,9 @@ name**; loading fails loudly if a role names an undefined model.
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`.
-- **Lifecycle** — `stop` (SIGTERM the session + agents), `archive`/`unarchive`,
-  `delete` (kill pids, purge worktrees + artifacts, cascade DB rows).
+- **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
+  agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
+  cascade DB rows).
 
 ---
 

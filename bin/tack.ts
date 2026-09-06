@@ -1,30 +1,24 @@
 #!/usr/bin/env bun
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { CONFIG_PATH } from "../src/paths";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
 import { loadConfig, modelForRole, resolveModel } from "../src/config/load";
-import { pinRuntimeInConfig } from "../src/config/edit";
-import {
-  createSession,
-  getSession,
-  listAgents,
-  listSessionPrs,
-  listSessions,
-  sessionTotalCost,
-} from "../src/db";
+import { addProjectsToConfig, pinRuntimeInConfig } from "../src/config/edit";
+import { createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion } from "../src/agent/detached";
 import { supervise } from "../src/supervisor/supervise";
-import { discoverSessionPrs } from "../src/projects/prs";
+import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
   deleteSession,
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
+import type { Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
@@ -141,13 +135,117 @@ const runtimePin = defineCommand({
   },
 });
 
+const runtimeList = defineCommand({
+  meta: { name: "list", description: "List all runtimes and their status" },
+  async run() {
+    const config = await loadConfig();
+    for (const kind of RUNTIME_KINDS) {
+      const pin = config.runtimes[kind]?.version;
+      const pinLabel = pin ? pc.dim(`pin ${pin}`) : pc.dim("unpinned");
+      try {
+        const r = resolveRuntime(config, kind);
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("ready")}     ${pinLabel}  ${pc.bold(r.bin)} ${pc.dim(r.version)}`);
+      } catch (err) {
+        const status = pin ? pc.red("unavailable") : pc.yellow("not found");
+        console.log(`${pc.cyan(kind.padEnd(7))} ${status}  ${pinLabel}  ${pc.dim((err as Error).message)}`);
+      }
+    }
+  },
+});
+
+const doctor = defineCommand({
+  meta: { name: "doctor", description: "Resolve runtime binaries and verify version pins" },
+  async run() {
+    const config = await loadConfig();
+    for (const kind of RUNTIME_KINDS) {
+      const pin = config.runtimes[kind]?.version;
+      try {
+        const r = resolveRuntime(config, kind);
+        const ok = pin ? pc.green(`pinned ${pin} ✓`) : pc.dim("unpinned");
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.bold(r.bin)}  ${pc.dim(r.version)}  ${ok}`);
+      } catch (err) {
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.red((err as Error).message)}`);
+      }
+    }
+  },
+});
+
 const runtime = defineCommand({
-  meta: { name: "runtime", description: "Manage runtime CLIs (install, pin)" },
-  subCommands: { install: runtimeInstall, pin: runtimePin },
+  meta: { name: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin)" },
+  subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin },
+});
+
+/** Immediate subdirectories of `dir` that are git repositories. */
+function gitReposIn(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(dir, e.name, ".git")))
+    .map((e) => join(dir, e.name))
+    .sort();
+}
+
+const projectsAdd = defineCommand({
+  meta: { name: "add", description: "Add a project by path, auto-describing it with a summary model" },
+  args: {
+    path: { type: "positional", required: false, description: "Path to the repo to add" },
+    all: { type: "boolean", description: "Add every git repo in the current directory" },
+  },
+  async run({ args }) {
+    if (!existsSync(CONFIG_PATH)) {
+      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+      return process.exit(1);
+    }
+    const config = await loadConfig();
+
+    // Resolve the candidate repo paths: every git repo under the current directory
+    // with `--all`, otherwise the single path the user named.
+    let candidates: string[];
+    if (args.all) {
+      candidates = gitReposIn(process.cwd());
+      if (candidates.length === 0) return console.log(pc.dim(`No git repos found in ${process.cwd()}.`));
+    } else if (args.path) {
+      candidates = [resolve(expandHome(String(args.path)))];
+    } else {
+      console.error(pc.red("Specify a path to add, or --all to add every git repo here."));
+      return process.exit(1);
+    }
+
+    // Skip anything already configured (by name or path) before spending on summaries.
+    const knownNames = new Set(config.projects.map((p) => p.name));
+    const knownPaths = new Set(config.projects.map((p) => p.path));
+    const entries: Project[] = [];
+    for (const path of candidates) {
+      const name = basename(path);
+      if (knownNames.has(name) || knownPaths.has(path)) {
+        console.log(pc.dim(`skipped ${name}: already configured`));
+        continue;
+      }
+      if (!existsSync(path)) {
+        console.log(pc.dim(`skipped ${name}: ${path} does not exist`));
+        continue;
+      }
+      process.stdout.write(pc.dim(`describing ${name}… `));
+      try {
+        const description = await summarizeProject(config, path);
+        console.log(pc.green("done"));
+        console.log(`  ${description}`);
+        entries.push({ name, path: collapseHome(path), description });
+        knownNames.add(name);
+      } catch (err) {
+        console.log(pc.red("failed"));
+        console.log(pc.dim(`  ${(err as Error).message}`));
+      }
+    }
+
+    if (entries.length === 0) return console.log(pc.dim("No projects added."));
+    const added = await addProjectsToConfig(CONFIG_PATH, entries);
+    console.log(`\nAdded ${pc.bold(String(added.length))} project(s) to ${pc.dim(CONFIG_PATH)}:`);
+    for (const p of added) console.log(`  ${pc.bold(p.name)}  ${pc.dim(p.path)}`);
+  },
 });
 
 const projects = defineCommand({
-  meta: { name: "projects", description: "List configured projects" },
+  meta: { name: "projects", description: "List and add configured projects" },
+  subCommands: { add: projectsAdd },
   async run() {
     const config = await loadConfig();
     if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
@@ -174,23 +272,6 @@ const models = defineCommand({
   },
 });
 
-const doctor = defineCommand({
-  meta: { name: "doctor", description: "Resolve runtime binaries and verify version pins" },
-  async run() {
-    const config = await loadConfig();
-    for (const kind of ["claude", "codex"] as RuntimeKind[]) {
-      const pin = config.runtimes[kind]?.version;
-      try {
-        const r = resolveRuntime(config, kind);
-        const ok = pin ? pc.green(`pinned ${pin} ✓`) : pc.dim("unpinned");
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.bold(r.bin)}  ${pc.dim(r.version)}  ${ok}`);
-      } catch (err) {
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.red((err as Error).message)}`);
-      }
-    }
-  },
-});
-
 const sessions = defineCommand({
   meta: { name: "sessions", description: "List sessions and their cost" },
   args: { all: { type: "boolean", description: "Include archived sessions" } },
@@ -202,29 +283,6 @@ const sessions = defineCommand({
     }
   },
 });
-
-const ls = defineCommand({
-  meta: { name: "ls", description: "Show sessions → agents → PRs" },
-  args: { all: { type: "boolean", description: "Include archived sessions" } },
-  async run({ args }) {
-    const rows = listSessions(Boolean(args.all));
-    if (rows.length === 0) return console.log(pc.dim("No sessions yet."));
-    for (const s of rows) {
-      console.log(`${pc.bold(s.id)}  ${pc.dim(s.status)}  ${usd(sessionTotalCost(s.id).total)}  ${s.title ?? ""}`);
-      for (const a of listAgents(s.id))
-        console.log(`  ├─ ${pc.cyan(a.id)} ${a.project_name} ${pc.dim(`${a.runtime}:${a.model}`)} ${statusColor(a.status)} ${usd(a.cost)}`);
-      for (const pr of listSessionPrs(s.id))
-        console.log(`  └─ PR ${pr.number ?? "?"} ${pc.dim(pr.state ?? "")} ${pc.underline(pr.url)}`);
-    }
-  },
-});
-
-function statusColor(status: string): string {
-  if (status === "done") return pc.green(status);
-  if (status === "failed") return pc.red(status);
-  if (status === "running") return pc.yellow(status);
-  return pc.dim(status);
-}
 
 const agent = defineCommand({
   meta: { name: "agent", description: "Spawn a single agent on a project (direct, no supervisor)" },
@@ -259,8 +317,8 @@ const agent = defineCommand({
   },
 });
 
-const superviseCmd = defineCommand({
-  meta: { name: "supervise", description: "Plan and coordinate agents for a problem" },
+const go = defineCommand({
+  meta: { name: "go", description: "Plan and coordinate agents for a problem" },
   args: { problem: { type: "positional", description: "The problem to solve" } },
   async run({ args }) {
     const config = await loadConfig();
@@ -276,7 +334,7 @@ const superviseCmd = defineCommand({
     }
     const session = step.value;
     console.log(`\n${pc.green("supervisor done")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
-    console.log(pc.dim(`Watch work with \`tack stable\`; see PRs with \`tack prs ${session.id}\`.`));
+    console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
   },
 });
 
@@ -284,19 +342,6 @@ const stable = defineCommand({
   meta: { name: "stable", description: "Live dashboard of all sessions, agents, and PRs" },
   async run() {
     await runStable();
-  },
-});
-
-const prs = defineCommand({
-  meta: { name: "prs", description: "Discover and list a session's PRs" },
-  args: { session: { type: "positional", description: "Session id" } },
-  async run({ args }) {
-    const config = await loadConfig();
-    const res = discoverSessionPrs(config, String(args.session));
-    if (res.ghMissing) console.log(pc.yellow("gh CLI not found — install it to discover PRs."));
-    for (const pr of res.prs) console.log(`PR ${pr.number ?? "?"} ${pc.dim(pr.state ?? "")} ${pc.underline(pr.url)}`);
-    for (const s of res.skipped) console.log(pc.dim(`skipped ${s.project}: ${s.reason}`));
-    if (res.prs.length === 0 && !res.ghMissing) console.log(pc.dim("No PRs found for this session."));
   },
 });
 
@@ -347,6 +392,11 @@ const del = defineCommand({
   },
 });
 
+const session = defineCommand({
+  meta: { name: "session", description: "Manage a session (archive, unarchive, stop, delete)" },
+  subCommands: { archive, unarchive, stop, delete: del },
+});
+
 const main = defineCommand({
   meta: { name: "tack", description: "Runtime-neutral supervisor over Claude Code and Codex" },
   subCommands: {
@@ -354,17 +404,11 @@ const main = defineCommand({
     runtime,
     projects,
     models,
-    doctor,
     sessions,
-    ls,
     agent,
-    supervise: superviseCmd,
+    go,
     stable,
-    prs,
-    archive,
-    unarchive,
-    stop,
-    delete: del,
+    session,
   },
 });
 

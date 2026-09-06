@@ -32,3 +32,11 @@ export function expandHome(p: string): string {
   if (p.startsWith("~/")) return join(homedir(), p.slice(2));
   return p;
 }
+
+/** Collapses a leading home directory back to `~`, the form we write into config. */
+export function collapseHome(p: string): string {
+  const home = homedir();
+  if (p === home) return "~";
+  if (p.startsWith(home + "/")) return "~/" + p.slice(home.length + 1);
+  return p;
+}

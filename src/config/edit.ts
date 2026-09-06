@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { ConfigSchema, type RuntimeKind, type RuntimeSettings } from "./schema";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { expandHome } from "../paths";
+import { ConfigSchema, type Project, type RuntimeKind, type RuntimeSettings } from "./schema";
 
 /**
  * Programmatic edits to the user's `config.ts`. The config is a hand-authored TS
@@ -51,14 +52,19 @@ function maskNonCode(src: string): string {
   return out;
 }
 
-/** Index of the `}` that closes the `{` at `open`, or -1 if unbalanced. */
-function matchBrace(masked: string, open: number): number {
+/** Index of the closer that balances the opener at `open`, or -1 if unbalanced. */
+function matchDelimiter(masked: string, open: number, openCh: string, closeCh: string): number {
   let depth = 0;
   for (let i = open; i < masked.length; i++) {
-    if (masked[i] === "{") depth++;
-    else if (masked[i] === "}" && --depth === 0) return i;
+    if (masked[i] === openCh) depth++;
+    else if (masked[i] === closeCh && --depth === 0) return i;
   }
   return -1;
+}
+
+/** Index of the `}` that closes the `{` at `open`, or -1 if unbalanced. */
+function matchBrace(masked: string, open: number): number {
+  return matchDelimiter(masked, open, "{", "}");
 }
 
 /** Serializes one runtime's settings to a single-line object literal. */
@@ -106,4 +112,57 @@ export async function pinRuntimeInConfig(configPath: string, kind: RuntimeKind, 
 
   const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
   writeFileSync(configPath, next, "utf8");
+}
+
+/** Serializes one project to a single-line object literal. */
+function serializeProject(p: Project): string {
+  return `{ name: ${JSON.stringify(p.name)}, path: ${JSON.stringify(p.path)}, description: ${JSON.stringify(p.description)} }`;
+}
+
+/** Serializes the whole `projects:` array at the given base indentation. */
+function serializeProjects(projects: Project[], indent: string): string {
+  if (projects.length === 0) return "projects: []";
+  const inner = indent + "  ";
+  const lines = projects.map((p) => `${inner}${serializeProject(p)},`);
+  return `projects: [\n${lines.join("\n")}\n${indent}]`;
+}
+
+/**
+ * Appends projects to the config file, preserving the rest of the file. Existing
+ * projects are read back from the parsed config and the new entries are merged in,
+ * skipping any whose name or (home-expanded) path already exists; only the
+ * `projects:` array is rewritten in place. Returns the entries actually added.
+ */
+export async function addProjectsToConfig(configPath: string, entries: Project[]): Promise<Project[]> {
+  const src = readFileSync(configPath, "utf8");
+  // Cache-bust the import: Bun caches modules by path, so a plain re-import can
+  // return a stale copy if the config was already loaded (or written) this process.
+  const mod = (await import(`${configPath}?v=${statSync(configPath).mtimeMs}`)) as {
+    default?: unknown;
+    config?: unknown;
+  };
+  const parsed = ConfigSchema.parse(mod.default ?? mod.config);
+
+  const existingNames = new Set(parsed.projects.map((p) => p.name));
+  const existingPaths = new Set(parsed.projects.map((p) => expandHome(p.path)));
+  const added: Project[] = [];
+  for (const e of entries) {
+    if (existingNames.has(e.name) || existingPaths.has(expandHome(e.path))) continue;
+    existingNames.add(e.name);
+    existingPaths.add(expandHome(e.path));
+    added.push(e);
+  }
+  if (added.length === 0) return [];
+
+  const masked = maskNonCode(src);
+  const m = /(^|\n)([^\S\n]*)projects[^\S\n]*:[^\S\n]*\[/.exec(masked);
+  if (!m) throw new Error(`Could not find a \`projects:\` block in ${configPath}.`);
+  const start = m.index + m[1]!.length + m[2]!.length; // start of the `projects` keyword
+  const open = m.index + m[0].length - 1; // index of the opening `[`
+  const close = matchDelimiter(masked, open, "[", "]");
+  if (close < 0) throw new Error(`Unbalanced brackets in the \`projects:\` block in ${configPath}.`);
+
+  const next = src.slice(0, start) + serializeProjects([...parsed.projects, ...added], m[2]!) + src.slice(close + 1);
+  writeFileSync(configPath, next, "utf8");
+  return added;
 }

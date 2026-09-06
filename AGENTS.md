@@ -40,7 +40,7 @@ src/agent/               execute.ts (prepare/run), detached.ts (background runne
 src/supervisor/          supervise.ts (runner), context.ts (system context)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees + PR branch nomenclature
-src/projects/prs.ts      gh-based PR discovery
+src/projects/            prs.ts (gh-based PR discovery), summarize.ts (auto-describe a repo)
 src/session/lifecycle.ts stop / archive / delete
 src/cli/                 stable.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
@@ -87,7 +87,7 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 - No automated suite yet. At minimum keep `bun run typecheck` green and smoke-test
   the CLI + MCP handshakes against a scratch `TACK_HOME`.
 - Live runs cost money and mutate repos — validate with `tack agent <project>
-  "<small task>"` before `tack supervise`.
+  "<small task>"` before `tack go`.
 - **Codex `--json` parsing is version-fragile** (targets an internal build); if you
   bump codex, re-check the field extractors in `src/runtimes/codex.ts`.
 - MCP servers speak their protocol over **stdout** — the `__mcp` / `__supervisor-mcp`

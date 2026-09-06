@@ -23,8 +23,8 @@ shells out to their headless entrypoints and inherits whatever they ship. See
   Tack can install pinned versions for you (see [Configure](#configure)), or you
   can supply them on your `PATH`.
 - **[`gh`](https://cli.github.com)** (optional) — the GitHub CLI, used to discover
-  the PRs agents open (`tack prs`, the dashboard). PR discovery is skipped if it's
-  absent; everything else works without it.
+  the PRs agents open (via the `tack stable` dashboard). PR discovery is skipped if
+  it's absent; everything else works without it.
 - Authenticated `claude` and/or `codex` — Tack uses your existing CLI logins; it
   does not manage runtime credentials.
 
@@ -95,12 +95,20 @@ export default ({
 ```
 
 The `description` field is load-bearing — the supervisor uses it to pick relevant
-repos. Verify your setup at any time:
+repos. Let a summary model write it for you instead of hand-authoring:
 
 ```bash
-tack doctor      # resolve runtime binaries + verify version pins
-tack projects    # list configured projects
-tack models      # list models and role pins
+tack projects add ~/Code/my-app   # describe one repo and add it to the config
+tack projects add --all           # add every git repo in the current directory
+```
+
+Verify your setup at any time:
+
+```bash
+tack runtime list   # list runtimes and their status
+tack runtime doctor # resolve runtime binaries + verify version pins
+tack projects       # list configured projects
+tack models         # list models and role pins
 ```
 
 Manage the runtime CLIs from the command line instead of hand-editing the config:
@@ -119,18 +127,16 @@ tack runtime install --all           # install every configured runtime
 tack agent my-app "Add a health-check endpoint"
 
 # Plan and coordinate agents across projects for a larger problem.
-tack supervise "Migrate all services off the deprecated auth client"
+tack go "Migrate all services off the deprecated auth client"
 
 # Watch live work: Session → Agent → PR tree with cost and liveness.
 tack stable
 
 # Inspect and manage sessions.
-tack sessions          # list sessions and cost
-tack ls                # sessions → agents → PRs
-tack prs <session>     # discover PRs a session opened
-tack stop <session>    # stop a session and its agents
-tack archive <session> # hide from the default view
-tack delete <session>  # kill pids, purge worktrees + artifacts, cascade DB rows
+tack sessions                  # list sessions and cost
+tack session stop <session>    # stop a session and its agents
+tack session archive <session> # hide from the default view
+tack session delete <session>  # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
 Run `tack --help` (or `tack <command> --help`) for the full command list.
@@ -146,5 +152,5 @@ TACK_HOME=$(mktemp -d)/tack bun run ./bin/tack.ts init
 
 There is no automated test suite yet. At minimum keep `bun run typecheck` green and
 smoke-test the CLI against a scratch `TACK_HOME`. Live runs cost money and mutate
-repos, so validate with `tack agent` before `tack supervise`. See
+repos, so validate with `tack agent` before `tack go`. See
 [AGENTS.md](./AGENTS.md) for conventions and common extension points.
