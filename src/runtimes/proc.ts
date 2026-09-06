@@ -15,15 +15,25 @@ export interface SpawnResult {
  */
 export async function* streamJson(
   cmd: string[],
-  opts: { cwd: string; logPath: string; env?: Record<string, string>; signal?: AbortSignal },
+  opts: {
+    cwd: string;
+    logPath: string;
+    env?: Record<string, string>;
+    signal?: AbortSignal;
+    /** Fed to the child's stdin, then closed. Used to pass the prompt to CLIs
+     * (e.g. Claude Code) that read it from stdin when stdin isn't a TTY. */
+    stdin?: string;
+  },
 ): AsyncGenerator<unknown> {
   mkdirSync(dirname(opts.logPath), { recursive: true });
   const logFd = openSync(opts.logPath, "a");
   appendFileSync(logFd, `\n$ ${cmd.join(" ")}\n`);
+  if (opts.stdin !== undefined) appendFileSync(logFd, `< ${opts.stdin}\n`);
 
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
+    stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : undefined,
     stdout: "pipe",
     stderr: "pipe",
     signal: opts.signal,

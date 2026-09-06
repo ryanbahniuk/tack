@@ -29,6 +29,10 @@ export class ClaudeRuntime implements Runtime {
         cwd: opts.cwd,
         logPath: opts.logPath,
         signal: opts.signal,
+        // Pass the prompt on stdin: with `-p` and a non-TTY stdin (always, when
+        // spawned), this Claude CLI reads the prompt from stdin and ignores a
+        // positional prompt arg, erroring intermittently otherwise.
+        stdin: opts.prompt,
       })) {
         const ev = raw as any;
         if (!sawSession && typeof ev?.session_id === "string") {
@@ -102,7 +106,7 @@ export class ClaudeRuntime implements Runtime {
       for (const s of opts.mcpServers) mcpServers[s.name] = { command: s.command, args: s.args };
       cmd.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
     }
-    cmd.push(opts.prompt);
+    // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }
 }
