@@ -243,28 +243,25 @@ const projectsAdd = defineCommand({
   },
 });
 
-async function listProjects(): Promise<void> {
-  const config = await loadConfig();
-  if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
-  for (const p of config.projects) {
-    console.log(`${pc.bold(p.name)}  ${pc.dim(p.path)}`);
-    console.log(`  ${p.description}`);
-  }
-}
-
 const projectsList = defineCommand({
   meta: { name: "list", description: "List configured projects" },
   async run() {
-    await listProjects();
+    const config = await loadConfig();
+    if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
+    for (const p of config.projects) {
+      console.log(`${pc.bold(p.name)}  ${pc.dim(p.path)}`);
+      console.log(`  ${p.description}`);
+    }
   },
 });
 
+// `default: "list"` makes bare `tack projects` run the list subcommand. citty
+// runs a parent's own `run` even after dispatching to a subcommand, so listing
+// here via `run` would double-print on `tack projects list`; a default avoids that.
 const projects = defineCommand({
   meta: { name: "projects", description: "List and add configured projects" },
   subCommands: { list: projectsList, add: projectsAdd },
-  async run() {
-    await listProjects();
-  },
+  default: "list",
 });
 
 const models = defineCommand({
