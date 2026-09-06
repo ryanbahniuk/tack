@@ -42,7 +42,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   server.registerTool(
     "list_projects",
     { description: "List the projects available to work in, with their descriptions.", inputSchema: {} },
-    async () => text(config.projects.map((p) => ({ name: p.name, description: p.description }))),
+    async () =>
+      text(
+        config.projects.map((p) => ({
+          name: p.name,
+          description: p.description,
+          language: p.metadata?.language,
+          frameworks: p.metadata?.frameworks,
+        })),
+      ),
   );
 
   server.registerTool(

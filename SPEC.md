@@ -89,8 +89,10 @@ Session ──has many── Agent ──runs in── Worktree
   resumable. Autonomous inside its worktree.
 - **Runtime** — a thin adapter (`claude` | `codex`) implementing one streaming
   interface. Each model is bound to exactly one runtime in config.
-- **Project** — config-driven `{ name, path, description }`; `description` is
-  load-bearing (the supervisor reasons over it to pick relevant repos).
+- **Project** — config-driven `{ name, path, description, metadata? }`;
+  `description` is load-bearing (the supervisor reasons over it to pick relevant
+  repos). `metadata` carries auto-filled tech-stack facts (`language`,
+  `frameworks`) the supervisor can also route on.
 - **Session** — a supervisor invocation and everything it dispatches. Cost rolls up
   here (supervisor conversation + all its agents).
 - **PR** — discovered via `gh` + branch-name convention, tied back to the session.
@@ -279,7 +281,7 @@ quickest way to validate the runtime pipeline.
 
 ```ts
 export default ({
-  projects: [{ name, path, description }],
+  projects: [{ name, path, description, metadata: { language, frameworks: [] } }],
   models: [
     { name: "opus", runtime: "claude", id: "opus", effort: "high" },
     { name: "gpt-5-codex", runtime: "codex", id: "gpt-5-codex",

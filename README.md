@@ -64,7 +64,10 @@ reason over:
 ```ts
 export default ({
   projects: [
-    { name: "my-app", path: "~/Code/my-app", description: "What this repo is." },
+    {
+      name: "my-app", path: "~/Code/my-app", description: "What this repo is.",
+      metadata: { language: "TypeScript", frameworks: ["React", "Bun"] },
+    },
   ],
 
   // A "model" names a runtime (claude | codex) + the id passed to that CLI.
@@ -95,11 +98,15 @@ export default ({
 ```
 
 The `description` field is load-bearing — the supervisor uses it to pick relevant
-repos. Let a summary model write it for you instead of hand-authoring:
+repos. `metadata` (`language` + top `frameworks`) lets it route on stack too. Let a
+summary model write both for you instead of hand-authoring:
 
 ```bash
-tack projects add ~/Code/my-app   # describe one repo and add it to the config
-tack projects add --all           # add every git repo in the current directory
+tack projects add ~/Code/my-app       # describe one repo and add it to the config
+tack projects add --all               # add every git repo in the current directory
+tack projects refresh my-app          # re-summarize a repo, updating it in place
+tack projects refresh --all           # re-summarize every configured project
+tack projects remove my-app           # drop a project (by name or path)
 ```
 
 Verify your setup at any time:

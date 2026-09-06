@@ -6,7 +6,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
 import { loadConfig, modelForRole, resolveModel } from "../src/config/load";
-import { addProjectsToConfig, pinRuntimeInConfig } from "../src/config/edit";
+import {
+  addProjectsToConfig,
+  pinRuntimeInConfig,
+  removeProjectFromConfig,
+  updateProjectInConfig,
+} from "../src/config/edit";
 import { createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion } from "../src/agent/detached";
@@ -225,10 +230,11 @@ const projectsAdd = defineCommand({
       }
       process.stdout.write(pc.dim(`describing ${name}… `));
       try {
-        const description = await summarizeProject(config, path);
+        const { description, metadata } = await summarizeProject(config, path);
         console.log(pc.green("done"));
         console.log(`  ${description}`);
-        entries.push({ name, path: collapseHome(path), description });
+        console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
+        entries.push({ name, path: collapseHome(path), description, metadata });
         knownNames.add(name);
       } catch (err) {
         console.log(pc.red("failed"));
@@ -251,7 +257,94 @@ const projectsList = defineCommand({
     for (const p of config.projects) {
       console.log(`${pc.bold(p.name)}  ${pc.dim(p.path)}`);
       console.log(`  ${p.description}`);
+      if (p.metadata) console.log(pc.dim(`  ${p.metadata.language} · ${p.metadata.frameworks.join(", ")}`));
     }
+  },
+});
+
+const projectsRefresh = defineCommand({
+  meta: {
+    name: "refresh",
+    description: "Re-summarize configured project(s), updating description and metadata in place",
+  },
+  args: {
+    project: { type: "positional", required: false, description: "Project name or path to refresh" },
+    all: { type: "boolean", description: "Refresh every configured project" },
+  },
+  async run({ args }) {
+    if (!existsSync(CONFIG_PATH)) {
+      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+      return process.exit(1);
+    }
+    const config = await loadConfig();
+    if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
+
+    // Resolve which configured projects to refresh: all of them, or the single one
+    // the user named (matched by name or home-expanded path).
+    let targets: Project[];
+    if (args.all) {
+      targets = config.projects;
+    } else if (args.project) {
+      const key = String(args.project);
+      const expanded = resolve(expandHome(key));
+      const match = config.projects.find((p) => p.name === key || p.path === expanded);
+      if (!match) {
+        console.error(pc.red(`No configured project matches "${key}" (by name or path).`));
+        return process.exit(1);
+      }
+      targets = [match];
+    } else {
+      console.error(pc.red("Specify a project name or path to refresh, or --all."));
+      return process.exit(1);
+    }
+
+    let refreshed = 0;
+    for (const project of targets) {
+      if (!existsSync(project.path)) {
+        console.log(pc.dim(`skipped ${project.name}: ${project.path} does not exist`));
+        continue;
+      }
+      process.stdout.write(pc.dim(`describing ${project.name}… `));
+      try {
+        const { description, metadata } = await summarizeProject(config, project.path);
+        // Preserve name and the config's stored (home-collapsed) path; swap in the
+        // freshly generated description + metadata.
+        const updated: Project = { name: project.name, path: collapseHome(project.path), description, metadata };
+        const previous = await updateProjectInConfig(CONFIG_PATH, updated);
+        if (!previous) {
+          console.log(pc.red("failed"));
+          console.log(pc.dim(`  ${project.name} is no longer in the config`));
+          continue;
+        }
+        console.log(pc.green("done"));
+        console.log(`  ${description}`);
+        console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
+        refreshed++;
+      } catch (err) {
+        console.log(pc.red("failed"));
+        console.log(pc.dim(`  ${(err as Error).message}`));
+      }
+    }
+    console.log(`\nRefreshed ${pc.bold(String(refreshed))} project(s) in ${pc.dim(CONFIG_PATH)}.`);
+  },
+});
+
+const projectsRemove = defineCommand({
+  meta: { name: "remove", description: "Remove a configured project by name or path" },
+  args: {
+    project: { type: "positional", required: true, description: "Project name or path to remove" },
+  },
+  async run({ args }) {
+    if (!existsSync(CONFIG_PATH)) {
+      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+      return process.exit(1);
+    }
+    const removed = await removeProjectFromConfig(CONFIG_PATH, String(args.project));
+    if (!removed) {
+      console.error(pc.red(`No configured project matches "${args.project}" (by name or path).`));
+      return process.exit(1);
+    }
+    console.log(`Removed ${pc.bold(removed.name)}  ${pc.dim(removed.path)} from ${pc.dim(CONFIG_PATH)}.`);
   },
 });
 
@@ -259,8 +352,8 @@ const projectsList = defineCommand({
 // runs a parent's own `run` even after dispatching to a subcommand, so listing
 // here via `run` would double-print on `tack projects list`; a default avoids that.
 const projects = defineCommand({
-  meta: { name: "projects", description: "List and add configured projects" },
-  subCommands: { list: projectsList, add: projectsAdd },
+  meta: { name: "projects", description: "List, add, refresh, and remove configured projects" },
+  subCommands: { list: projectsList, add: projectsAdd, refresh: projectsRefresh, remove: projectsRemove },
   default: "list",
 });
 

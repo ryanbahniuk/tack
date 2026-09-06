@@ -1,6 +1,6 @@
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { expandHome } from "../paths";
-import { ConfigSchema, type Project, type RuntimeKind, type RuntimeSettings } from "./schema";
+import { ConfigSchema, type Project, type ProjectMetadata, type RuntimeKind, type RuntimeSettings } from "./schema";
 
 /**
  * Programmatic edits to the user's `config.ts`. The config is a hand-authored TS
@@ -114,9 +114,21 @@ export async function pinRuntimeInConfig(configPath: string, kind: RuntimeKind, 
   writeFileSync(configPath, next, "utf8");
 }
 
+/** Serializes a project's tech-stack metadata to a single-line object literal. */
+function serializeMetadata(m: ProjectMetadata): string {
+  const frameworks = m.frameworks.map((f) => JSON.stringify(f)).join(", ");
+  return `{ language: ${JSON.stringify(m.language)}, frameworks: [${frameworks}] }`;
+}
+
 /** Serializes one project to a single-line object literal. */
 function serializeProject(p: Project): string {
-  return `{ name: ${JSON.stringify(p.name)}, path: ${JSON.stringify(p.path)}, description: ${JSON.stringify(p.description)} }`;
+  const parts = [
+    `name: ${JSON.stringify(p.name)}`,
+    `path: ${JSON.stringify(p.path)}`,
+    `description: ${JSON.stringify(p.description)}`,
+  ];
+  if (p.metadata) parts.push(`metadata: ${serializeMetadata(p.metadata)}`);
+  return `{ ${parts.join(", ")} }`;
 }
 
 /** Serializes the whole `projects:` array at the given base indentation. */
@@ -128,20 +140,49 @@ function serializeProjects(projects: Project[], indent: string): string {
 }
 
 /**
+ * Reads and validates the config file. The import is cache-busted because Bun
+ * caches modules by path, so a plain re-import can return a stale copy if the
+ * config was already loaded (or written) this process.
+ */
+async function loadParsedConfig(configPath: string): Promise<ReturnType<typeof ConfigSchema.parse>> {
+  const mod = (await import(`${configPath}?v=${statSync(configPath).mtimeMs}`)) as {
+    default?: unknown;
+    config?: unknown;
+  };
+  return ConfigSchema.parse(mod.default ?? mod.config);
+}
+
+/**
+ * Rewrites the `projects:` array in place with `next`, preserving the rest of the
+ * file byte-for-byte (comments, other blocks, indentation). Callers derive `next`
+ * from the parsed config so hand-authored ordering of untouched entries is kept.
+ */
+function writeProjectsBlock(configPath: string, next: Project[]): void {
+  const src = readFileSync(configPath, "utf8");
+  const masked = maskNonCode(src);
+  const m = /(^|\n)([^\S\n]*)projects[^\S\n]*:[^\S\n]*\[/.exec(masked);
+  if (!m) throw new Error(`Could not find a \`projects:\` block in ${configPath}.`);
+  const start = m.index + m[1]!.length + m[2]!.length; // start of the `projects` keyword
+  const open = m.index + m[0].length - 1; // index of the opening `[`
+  const close = matchDelimiter(masked, open, "[", "]");
+  if (close < 0) throw new Error(`Unbalanced brackets in the \`projects:\` block in ${configPath}.`);
+  const out = src.slice(0, start) + serializeProjects(next, m[2]!) + src.slice(close + 1);
+  writeFileSync(configPath, out, "utf8");
+}
+
+/** True if `p` is the project identified by `target` (its name or home-expanded path). */
+function projectMatches(p: Project, target: string): boolean {
+  return p.name === target || expandHome(p.path) === expandHome(target);
+}
+
+/**
  * Appends projects to the config file, preserving the rest of the file. Existing
  * projects are read back from the parsed config and the new entries are merged in,
  * skipping any whose name or (home-expanded) path already exists; only the
  * `projects:` array is rewritten in place. Returns the entries actually added.
  */
 export async function addProjectsToConfig(configPath: string, entries: Project[]): Promise<Project[]> {
-  const src = readFileSync(configPath, "utf8");
-  // Cache-bust the import: Bun caches modules by path, so a plain re-import can
-  // return a stale copy if the config was already loaded (or written) this process.
-  const mod = (await import(`${configPath}?v=${statSync(configPath).mtimeMs}`)) as {
-    default?: unknown;
-    config?: unknown;
-  };
-  const parsed = ConfigSchema.parse(mod.default ?? mod.config);
+  const parsed = await loadParsedConfig(configPath);
 
   const existingNames = new Set(parsed.projects.map((p) => p.name));
   const existingPaths = new Set(parsed.projects.map((p) => expandHome(p.path)));
@@ -154,15 +195,35 @@ export async function addProjectsToConfig(configPath: string, entries: Project[]
   }
   if (added.length === 0) return [];
 
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)projects[^\S\n]*:[^\S\n]*\[/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`projects:\` block in ${configPath}.`);
-  const start = m.index + m[1]!.length + m[2]!.length; // start of the `projects` keyword
-  const open = m.index + m[0].length - 1; // index of the opening `[`
-  const close = matchDelimiter(masked, open, "[", "]");
-  if (close < 0) throw new Error(`Unbalanced brackets in the \`projects:\` block in ${configPath}.`);
-
-  const next = src.slice(0, start) + serializeProjects([...parsed.projects, ...added], m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, next, "utf8");
+  writeProjectsBlock(configPath, [...parsed.projects, ...added]);
   return added;
+}
+
+/**
+ * Replaces the project matching `updated` (by name or home-expanded path) with
+ * `updated`, in place. Everything else in the file is preserved. Returns the
+ * previous entry, or null if no project matched (nothing is written).
+ */
+export async function updateProjectInConfig(configPath: string, updated: Project): Promise<Project | null> {
+  const parsed = await loadParsedConfig(configPath);
+  const idx = parsed.projects.findIndex((p) => p.name === updated.name || expandHome(p.path) === expandHome(updated.path));
+  if (idx < 0) return null;
+  const previous = parsed.projects[idx]!;
+  const next = parsed.projects.map((p, i) => (i === idx ? updated : p));
+  writeProjectsBlock(configPath, next);
+  return previous;
+}
+
+/**
+ * Removes the project matching `target` (its name or home-expanded path) from the
+ * config file, preserving the rest of the file. Returns the removed entry, or null
+ * if none matched (nothing is written).
+ */
+export async function removeProjectFromConfig(configPath: string, target: string): Promise<Project | null> {
+  const parsed = await loadParsedConfig(configPath);
+  const idx = parsed.projects.findIndex((p) => projectMatches(p, target));
+  if (idx < 0) return null;
+  const removed = parsed.projects[idx]!;
+  writeProjectsBlock(configPath, parsed.projects.filter((_, i) => i !== idx));
+  return removed;
 }

@@ -8,11 +8,26 @@ import { z } from "zod";
 export const RuntimeKind = z.enum(["claude", "codex"]);
 export type RuntimeKind = z.infer<typeof RuntimeKind>;
 
+/**
+ * Structured facts about a repo's tech stack, auto-filled by the summary model
+ * alongside `description`. Kept separate from the prose description so the
+ * supervisor can route on stack (`language`, `frameworks`) as well as purpose.
+ */
+export const ProjectMetadataSchema = z.object({
+  /** The primary programming language the repo is written in, e.g. "TypeScript". */
+  language: z.string().min(1),
+  /** The 5-10 most prominent frameworks/libraries/tools used in the repo. */
+  frameworks: z.array(z.string()).default([]),
+});
+export type ProjectMetadata = z.infer<typeof ProjectMetadataSchema>;
+
 export const ProjectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   /** Load-bearing: the supervisor reasons over this to pick relevant repos. */
   description: z.string().min(1),
+  /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
+  metadata: ProjectMetadataSchema.optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
