@@ -29,8 +29,9 @@ export default ({
 
   // Pin the CLI runtimes. \`bin\` points at a specific executable (defaults to the
   // runtime name on PATH); \`version\` is verified against \`<bin> --version\` before
-  // any run, so an unexpected CLI upgrade fails loudly. When a pinned version isn't
-  // installed, \`tack init\` / \`tack install\` fetch it into ~/.tack/runtimes/.
+  // any run, so an unexpected CLI upgrade fails loudly. Pin from the CLI with
+  // \`tack runtime pin <runtime> <version>\`; when a pinned version isn't installed,
+  // \`tack init\` / \`tack runtime install\` fetch it into ~/.tack/runtimes/.
   // \`tack doctor\` reports resolution without changing anything.
   runtimes: {
     // claude: { version: "2.1.261" },

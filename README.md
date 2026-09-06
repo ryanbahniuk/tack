@@ -83,7 +83,8 @@ export default ({
   roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
 
   // Pin runtime CLI versions for reproducibility (verified before every run).
-  // `tack init` / `tack install` fetch a pinned-but-missing version into ~/.tack/runtimes/.
+  // Pin from the CLI with `tack runtime pin <runtime> <version>`; `tack init` /
+  // `tack runtime install` fetch a pinned-but-missing version into ~/.tack/runtimes/.
   runtimes: {
     // claude: { version: "2.1.261" },
     // codex: { bin: "~/.local/bin/codex", version: "0.147.0" },
@@ -100,6 +101,14 @@ repos. Verify your setup at any time:
 tack doctor      # resolve runtime binaries + verify version pins
 tack projects    # list configured projects
 tack models      # list models and role pins
+```
+
+Manage the runtime CLIs from the command line instead of hand-editing the config:
+
+```bash
+tack runtime pin claude 2.1.261      # write a version pin into ~/.tack/config.ts
+tack runtime install claude          # install one runtime's pinned version
+tack runtime install --all           # install every configured runtime
 ```
 
 ## Usage

@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { CONFIG_PATH } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
 import { loadConfig, modelForRole, resolveModel } from "../src/config/load";
+import { pinRuntimeInConfig } from "../src/config/edit";
 import {
   createSession,
   getSession,
@@ -34,11 +35,19 @@ const usd = (n: number) => pc.green(`$${n.toFixed(4)}`);
 
 const RUNTIME_KINDS: RuntimeKind[] = ["claude", "codex"];
 
-/** Ensures both runtimes are available, installing pinned versions transparently.
- * Prints a status line per runtime; returns false if any ended in failure. */
-function ensureRuntimes(config: TackConfig): boolean {
+/** Validates a runtime name from the CLI, exiting with a clear error if unknown. */
+function asRuntimeKind(name: string): RuntimeKind {
+  if ((RUNTIME_KINDS as string[]).includes(name)) return name as RuntimeKind;
+  console.error(pc.red(`Unknown runtime "${name}". Known: ${RUNTIME_KINDS.join(", ")}.`));
+  process.exit(1);
+}
+
+/** Ensures the given runtimes are available, installing pinned versions
+ * transparently. Prints a status line per runtime; returns false if any ended in
+ * failure. Defaults to all runtimes (used by `tack init`). */
+function ensureRuntimes(config: TackConfig, kinds: RuntimeKind[] = RUNTIME_KINDS): boolean {
   let ok = true;
-  for (const kind of RUNTIME_KINDS) {
+  for (const kind of kinds) {
     const pin = config.runtimes[kind]?.version;
     if (pin && !isPresentAtManagedOrPath(config, kind, pin)) {
       console.log(pc.dim(`Installing ${kind} ${pin}…`));
@@ -91,13 +100,50 @@ const init = defineCommand({
   },
 });
 
-const install = defineCommand({
-  meta: { name: "install", description: "Ensure the pinned runtime versions are installed" },
-  async run() {
+const runtimeInstall = defineCommand({
+  meta: { name: "install", description: "Install a runtime's pinned version (or --all)" },
+  args: {
+    runtime: { type: "positional", required: false, description: "Runtime to install (claude | codex)" },
+    all: { type: "boolean", description: "Install all configured runtimes" },
+  },
+  async run({ args }) {
     const config = await loadConfig();
-    const ok = ensureRuntimes(config);
+    let kinds: RuntimeKind[];
+    if (args.all) {
+      kinds = RUNTIME_KINDS;
+    } else if (args.runtime) {
+      kinds = [asRuntimeKind(String(args.runtime))];
+    } else {
+      console.error(pc.red(`Specify a runtime (${RUNTIME_KINDS.join(" | ")}) or --all.`));
+      return process.exit(1);
+    }
+    const ok = ensureRuntimes(config, kinds);
     if (!ok) process.exit(1);
   },
+});
+
+const runtimePin = defineCommand({
+  meta: { name: "pin", description: "Pin a runtime to a version in the config file" },
+  args: {
+    runtime: { type: "positional", required: true, description: "Runtime to pin (claude | codex)" },
+    version: { type: "positional", required: true, description: "Version to pin" },
+  },
+  async run({ args }) {
+    if (!existsSync(CONFIG_PATH)) {
+      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+      return process.exit(1);
+    }
+    const kind = asRuntimeKind(String(args.runtime));
+    const version = String(args.version);
+    await pinRuntimeInConfig(CONFIG_PATH, kind, version);
+    console.log(`Pinned ${pc.cyan(kind)} to ${pc.bold(version)} in ${pc.dim(CONFIG_PATH)}`);
+    console.log(pc.dim(`Run \`tack runtime install ${kind}\` to fetch it.`));
+  },
+});
+
+const runtime = defineCommand({
+  meta: { name: "runtime", description: "Manage runtime CLIs (install, pin)" },
+  subCommands: { install: runtimeInstall, pin: runtimePin },
 });
 
 const projects = defineCommand({
@@ -305,7 +351,7 @@ const main = defineCommand({
   meta: { name: "tack", description: "Runtime-neutral supervisor over Claude Code and Codex" },
   subCommands: {
     init,
-    install,
+    runtime,
     projects,
     models,
     doctor,
