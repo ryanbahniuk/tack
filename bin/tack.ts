@@ -243,16 +243,27 @@ const projectsAdd = defineCommand({
   },
 });
 
+async function listProjects(): Promise<void> {
+  const config = await loadConfig();
+  if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
+  for (const p of config.projects) {
+    console.log(`${pc.bold(p.name)}  ${pc.dim(p.path)}`);
+    console.log(`  ${p.description}`);
+  }
+}
+
+const projectsList = defineCommand({
+  meta: { name: "list", description: "List configured projects" },
+  async run() {
+    await listProjects();
+  },
+});
+
 const projects = defineCommand({
   meta: { name: "projects", description: "List and add configured projects" },
-  subCommands: { add: projectsAdd },
+  subCommands: { list: projectsList, add: projectsAdd },
   async run() {
-    const config = await loadConfig();
-    if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
-    for (const p of config.projects) {
-      console.log(`${pc.bold(p.name)}  ${pc.dim(p.path)}`);
-      console.log(`  ${p.description}`);
-    }
+    await listProjects();
   },
 });
 
