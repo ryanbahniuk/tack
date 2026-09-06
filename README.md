@@ -83,8 +83,8 @@ export default ({
   roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
 
   // Pin runtime CLI versions for reproducibility (verified before every run).
-  // Pin from the CLI with `tack runtime pin <runtime> <version>`; `tack init` /
-  // `tack runtime install` fetch a pinned-but-missing version into ~/.tack/runtimes/.
+  // Pin from the CLI with `tack runtimes pin <runtime> <version>`; `tack init` /
+  // `tack runtimes install` fetch a pinned-but-missing version into ~/.tack/runtimes/.
   runtimes: {
     // claude: { version: "2.1.261" },
     // codex: { bin: "~/.local/bin/codex", version: "0.147.0" },
@@ -105,8 +105,8 @@ tack projects add --all           # add every git repo in the current directory
 Verify your setup at any time:
 
 ```bash
-tack runtime list   # list runtimes and their status
-tack runtime doctor # resolve runtime binaries + verify version pins
+tack runtimes list   # list runtimes and their status
+tack runtimes doctor # resolve runtime binaries + verify version pins
 tack projects       # list configured projects
 tack models         # list models and role pins
 ```
@@ -114,9 +114,9 @@ tack models         # list models and role pins
 Manage the runtime CLIs from the command line instead of hand-editing the config:
 
 ```bash
-tack runtime pin claude 2.1.261      # write a version pin into ~/.tack/config.ts
-tack runtime install claude          # install one runtime's pinned version
-tack runtime install --all           # install every configured runtime
+tack runtimes pin claude 2.1.261      # write a version pin into ~/.tack/config.ts
+tack runtimes install claude          # install one runtime's pinned version
+tack runtimes install --all           # install every configured runtime
 ```
 
 ## Usage
@@ -133,10 +133,10 @@ tack go "Migrate all services off the deprecated auth client"
 tack stable
 
 # Inspect and manage sessions.
-tack sessions                  # list sessions and cost
-tack session stop <session>    # stop a session and its agents
-tack session archive <session> # hide from the default view
-tack session delete <session>  # kill pids, purge worktrees + artifacts, cascade DB rows
+tack sessions                   # list sessions and cost
+tack sessions stop <session>    # stop a session and its agents
+tack sessions archive <session> # hide from the default view
+tack sessions delete <session>  # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
 Run `tack --help` (or `tack <command> --help`) for the full command list.

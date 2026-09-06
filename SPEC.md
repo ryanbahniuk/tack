@@ -164,8 +164,8 @@ ensure the pinned versions are present. If a pinned version isn't already instal
 @anthropic-ai/claude-code@<v>` / `@openai/codex@<v>`), never a piped shell
 installer, and never over a global/system install. An explicit `bin` override is
 verified only (Tack never installs over a user-managed path); an unpinned runtime is
-reported present if on PATH, otherwise left to the user. `tack runtime doctor`
-reports resolution and pin status without changing anything, and `tack runtime list`
+reported present if on PATH, otherwise left to the user. `tack runtimes doctor`
+reports resolution and pin status without changing anything, and `tack runtimes list`
 gives a status overview.
 
 ---
@@ -302,7 +302,7 @@ name**; loading fails loudly if a role names an undefined model.
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`.
-- **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
+- **Lifecycle** — nested under `tack sessions`: `stop` (SIGTERM the session +
   agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
   cascade DB rows).
 

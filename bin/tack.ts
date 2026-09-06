@@ -131,7 +131,7 @@ const runtimePin = defineCommand({
     const version = String(args.version);
     await pinRuntimeInConfig(CONFIG_PATH, kind, version);
     console.log(`Pinned ${pc.cyan(kind)} to ${pc.bold(version)} in ${pc.dim(CONFIG_PATH)}`);
-    console.log(pc.dim(`Run \`tack runtime install ${kind}\` to fetch it.`));
+    console.log(pc.dim(`Run \`tack runtimes install ${kind}\` to fetch it.`));
   },
 });
 
@@ -170,8 +170,8 @@ const doctor = defineCommand({
   },
 });
 
-const runtime = defineCommand({
-  meta: { name: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin)" },
+const runtimes = defineCommand({
+  meta: { name: "runtimes", description: "Manage runtime CLIs (list, doctor, install, pin)" },
   subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin },
 });
 
@@ -272,9 +272,57 @@ const models = defineCommand({
   },
 });
 
+const requireSession = (id: string) => {
+  if (!getSession(id)) {
+    console.error(pc.red(`Unknown session "${id}".`));
+    process.exit(1);
+  }
+};
+
+const archive = defineCommand({
+  meta: { name: "archive", description: "Archive a session (hide from the default view)" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    requireSession(String(args.session));
+    archiveSession(String(args.session));
+    console.log(pc.dim(`archived ${args.session}`));
+  },
+});
+
+const unarchive = defineCommand({
+  meta: { name: "unarchive", description: "Restore an archived session" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    requireSession(String(args.session));
+    unarchiveSession(String(args.session));
+    console.log(pc.dim(`unarchived ${args.session}`));
+  },
+});
+
+const stop = defineCommand({
+  meta: { name: "stop", description: "Stop a session and its agents" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    requireSession(String(args.session));
+    stopSession(String(args.session));
+    console.log(pc.dim(`stopped ${args.session}`));
+  },
+});
+
+const del = defineCommand({
+  meta: { name: "delete", description: "Delete a session, its worktrees, and its artifacts" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    requireSession(String(args.session));
+    deleteSession(String(args.session));
+    console.log(pc.dim(`deleted ${args.session}`));
+  },
+});
+
 const sessions = defineCommand({
-  meta: { name: "sessions", description: "List sessions and their cost" },
+  meta: { name: "sessions", description: "List sessions and their cost; manage them (archive, unarchive, stop, delete)" },
   args: { all: { type: "boolean", description: "Include archived sessions" } },
+  subCommands: { archive, unarchive, stop, delete: del },
   async run({ args }) {
     const rows = listSessions(Boolean(args.all));
     if (rows.length === 0) return console.log(pc.dim("No sessions yet."));
@@ -345,70 +393,17 @@ const stable = defineCommand({
   },
 });
 
-const requireSession = (id: string) => {
-  if (!getSession(id)) {
-    console.error(pc.red(`Unknown session "${id}".`));
-    process.exit(1);
-  }
-};
-
-const archive = defineCommand({
-  meta: { name: "archive", description: "Archive a session (hide from the default view)" },
-  args: { session: { type: "positional", description: "Session id" } },
-  async run({ args }) {
-    requireSession(String(args.session));
-    archiveSession(String(args.session));
-    console.log(pc.dim(`archived ${args.session}`));
-  },
-});
-
-const unarchive = defineCommand({
-  meta: { name: "unarchive", description: "Restore an archived session" },
-  args: { session: { type: "positional", description: "Session id" } },
-  async run({ args }) {
-    requireSession(String(args.session));
-    unarchiveSession(String(args.session));
-    console.log(pc.dim(`unarchived ${args.session}`));
-  },
-});
-
-const stop = defineCommand({
-  meta: { name: "stop", description: "Stop a session and its agents" },
-  args: { session: { type: "positional", description: "Session id" } },
-  async run({ args }) {
-    requireSession(String(args.session));
-    stopSession(String(args.session));
-    console.log(pc.dim(`stopped ${args.session}`));
-  },
-});
-
-const del = defineCommand({
-  meta: { name: "delete", description: "Delete a session, its worktrees, and its artifacts" },
-  args: { session: { type: "positional", description: "Session id" } },
-  async run({ args }) {
-    requireSession(String(args.session));
-    deleteSession(String(args.session));
-    console.log(pc.dim(`deleted ${args.session}`));
-  },
-});
-
-const session = defineCommand({
-  meta: { name: "session", description: "Manage a session (archive, unarchive, stop, delete)" },
-  subCommands: { archive, unarchive, stop, delete: del },
-});
-
 const main = defineCommand({
   meta: { name: "tack", description: "Runtime-neutral supervisor over Claude Code and Codex" },
   subCommands: {
     init,
-    runtime,
+    runtimes,
     projects,
     models,
     sessions,
     agent,
     go,
     stable,
-    session,
   },
 });
 
