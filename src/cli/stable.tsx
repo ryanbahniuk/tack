@@ -82,7 +82,7 @@ function Dashboard({ config }: { config: TackConfig | null }) {
       <Text bold>
         Tack {showArchived ? "(all)" : "(active)"} — {rows.length} session(s)
       </Text>
-      {rows.length === 0 && <Text dimColor>No sessions. Run `tack supervise "…"`.</Text>}
+      {rows.length === 0 && <Text dimColor>No sessions. Run `tack go "…"`.</Text>}
       {rows.map((v, i) => (
         <Box key={v.session.id} flexDirection="column">
           <Text>
