@@ -2,6 +2,7 @@
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
@@ -97,6 +98,14 @@ const init = defineCommand({
     const config = await loadConfig();
     console.log(pc.bold("\nRuntimes"));
     ensureRuntimes(config);
+
+    // If we're inside a git repo, register it as a project so running `tack init`
+    // in a repo is all it takes to start working on it.
+    const root = gitRootOf(process.cwd());
+    if (root) {
+      console.log(pc.bold("\nProject"));
+      await addProjects(config, [root]);
+    }
   },
 });
 
@@ -189,6 +198,81 @@ function gitReposIn(dir: string): string[] {
     .sort();
 }
 
+/** The git repository root containing `dir`, or null if `dir` is not in a repo.
+ * Uses `git rev-parse` so it works from a subdirectory and with worktrees. */
+function gitRootOf(dir: string): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Summarizes each candidate repo and adds the not-yet-configured ones to the
+ * config, skipping anything already present (by name or path). Prints per-repo
+ * progress with a spinner and a final summary; returns the projects added. */
+async function addProjects(config: TackConfig, candidates: string[]): Promise<Project[]> {
+  const knownNames = new Set(config.projects.map((p) => p.name));
+  const knownPaths = new Set(config.projects.map((p) => p.path));
+  const entries: Project[] = [];
+  for (const path of candidates) {
+    const name = basename(path);
+    if (knownNames.has(name) || knownPaths.has(path) || knownPaths.has(collapseHome(path))) {
+      console.log(pc.dim(`skipped ${name}: already configured`));
+      continue;
+    }
+    if (!existsSync(path)) {
+      console.log(pc.dim(`skipped ${name}: ${path} does not exist`));
+      continue;
+    }
+    const spin = startSpinner(`Scoping ${name}`);
+    try {
+      const { description, metadata } = await summarizeProject(config, path);
+      spin.succeed("done");
+      console.log(`  ${description}`);
+      console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
+      entries.push({ name, path: collapseHome(path), description, metadata });
+      knownNames.add(name);
+    } catch (err) {
+      spin.fail("failed");
+      console.log(pc.dim(`  ${(err as Error).message}`));
+    }
+  }
+
+  if (entries.length === 0) {
+    console.log(pc.dim("No projects added."));
+    return [];
+  }
+  const added = await addProjectsToConfig(CONFIG_PATH, entries);
+  console.log(`\nAdded ${pc.bold(String(added.length))} project(s) to ${pc.dim(CONFIG_PATH)}:`);
+  for (const p of added) console.log(`  ${pc.bold(p.name)}  ${pc.dim(p.path)}`);
+  return added;
+}
+
+/** If the current directory is inside a git repo that isn't configured yet,
+ * summarize and register it, then return a config reflecting the addition — so
+ * `tack go`/`tack agent` work in a fresh repo without a separate `projects add`.
+ * Already-configured repos (and non-repo directories) return the config as-is
+ * with no output. */
+async function ensureCwdProject(config: TackConfig): Promise<TackConfig> {
+  const root = gitRootOf(process.cwd());
+  if (!root) return config;
+  const configured = config.projects.some(
+    (p) => p.name === basename(root) || p.path === root || p.path === collapseHome(root),
+  );
+  if (configured) return config;
+  console.log(pc.bold("Project"));
+  const added = await addProjects(config, [root]);
+  if (added.length === 0) return config;
+  // Reload so the caller sees the freshly written project.
+  return await loadConfig();
+}
+
 const projectsAdd = defineCommand({
   meta: { name: "add", description: "Add a project by path, auto-describing it with a summary model" },
   args: {
@@ -215,38 +299,7 @@ const projectsAdd = defineCommand({
       return process.exit(1);
     }
 
-    // Skip anything already configured (by name or path) before spending on summaries.
-    const knownNames = new Set(config.projects.map((p) => p.name));
-    const knownPaths = new Set(config.projects.map((p) => p.path));
-    const entries: Project[] = [];
-    for (const path of candidates) {
-      const name = basename(path);
-      if (knownNames.has(name) || knownPaths.has(path)) {
-        console.log(pc.dim(`skipped ${name}: already configured`));
-        continue;
-      }
-      if (!existsSync(path)) {
-        console.log(pc.dim(`skipped ${name}: ${path} does not exist`));
-        continue;
-      }
-      const spin = startSpinner(`Scoping ${name}`);
-      try {
-        const { description, metadata } = await summarizeProject(config, path);
-        spin.succeed("done");
-        console.log(`  ${description}`);
-        console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
-        entries.push({ name, path: collapseHome(path), description, metadata });
-        knownNames.add(name);
-      } catch (err) {
-        spin.fail("failed");
-        console.log(pc.dim(`  ${(err as Error).message}`));
-      }
-    }
-
-    if (entries.length === 0) return console.log(pc.dim("No projects added."));
-    const added = await addProjectsToConfig(CONFIG_PATH, entries);
-    console.log(`\nAdded ${pc.bold(String(added.length))} project(s) to ${pc.dim(CONFIG_PATH)}:`);
-    for (const p of added) console.log(`  ${pc.bold(p.name)}  ${pc.dim(p.path)}`);
+    await addProjects(config, candidates);
   },
 });
 
@@ -442,7 +495,7 @@ const agent = defineCommand({
     model: { type: "string", description: "Model name (defaults to roles.agent)" },
   },
   async run({ args }) {
-    const config = await loadConfig();
+    const config = await ensureCwdProject(await loadConfig());
     const project = config.projects.find((p) => p.name === args.project);
     if (!project) {
       console.error(pc.red(`Unknown project "${args.project}". Run \`tack projects\`.`));
@@ -471,7 +524,7 @@ const go = defineCommand({
   meta: { name: "go", description: "Plan and coordinate agents for a problem" },
   args: { problem: { type: "positional", description: "The problem to solve" } },
   async run({ args }) {
-    const config = await loadConfig();
+    const config = await ensureCwdProject(await loadConfig());
     const run = supervise(String(args.problem), config);
     let step = await run.next();
     while (!step.done) {
