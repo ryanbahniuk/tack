@@ -89,10 +89,14 @@ export class ClaudeRuntime implements Runtime {
   private buildCmd(opts: RunOptions): string[] {
     const m = opts.model;
     const cmd = [opts.bin, "-p", "--output-format", "stream-json", "--verbose", "--model", m.id];
-    // Read-only supervisor vs autonomous worktree agent.
+    // Read-only supervisor vs autonomous worktree agent. Read-only runs also
+    // forbid the native subagent tool (named "Task" or "Agent" across CLI
+    // versions): investigation delegates through Tack's own coordination MCP, so
+    // a nested Claude subagent only adds a full extra agent loop of latency —
+    // e.g. `tack projects refresh` spawning an Explore agent to read a README.
     if (opts.readOnly) {
       cmd.push("--permission-mode", "plan", "--permission-prompts", "none");
-      cmd.push("--disallowedTools", "Edit,Write,NotebookEdit");
+      cmd.push("--disallowedTools", "Edit,Write,NotebookEdit,Task,Agent");
     } else {
       cmd.push(...PERMISSION_ARGS);
     }
@@ -101,11 +105,14 @@ export class ClaudeRuntime implements Runtime {
     else if (opts.sessionRef) cmd.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
     if (opts.contextFile) cmd.push("--append-system-prompt-file", opts.contextFile);
-    if (opts.mcpServers?.length) {
-      const mcpServers: Record<string, { command: string; args: string[] }> = {};
-      for (const s of opts.mcpServers) mcpServers[s.name] = { command: s.command, args: s.args };
-      cmd.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
-    }
+    // Always mount exactly the servers Tack provides (an empty set when none) and
+    // pass --strict-mcp-config so a run never inherits the user's global MCP
+    // config from the filesystem. Otherwise a bare read-only run (e.g. project
+    // summarization) picks up whatever third-party servers — datadog, slack — the
+    // user has configured and wanders into them.
+    const mcpServers: Record<string, { command: string; args: string[] }> = {};
+    for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
+    cmd.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
     // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }
