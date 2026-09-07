@@ -519,10 +519,9 @@ const del = defineCommand({
   },
 });
 
-const sessions = defineCommand({
-  meta: { name: "sessions", description: "List sessions and their cost; manage them (archive, unarchive, stop, delete)" },
+const sessionsList = defineCommand({
+  meta: { name: "list", description: "List sessions and their cost" },
   args: { all: { type: "boolean", description: "Include archived sessions" } },
-  subCommands: { archive, unarchive, stop, delete: del },
   async run({ args }) {
     const rows = listSessions(Boolean(args.all));
     if (rows.length === 0) return console.log(pc.dim("No sessions yet."));
@@ -530,6 +529,13 @@ const sessions = defineCommand({
       console.log(`${pc.bold(s.id)}  ${pc.dim(s.status)}  ${usd(sessionTotalCost(s.id).total)}  ${s.title ? pc.dim(s.title) : ""}`);
     }
   },
+});
+
+// `default: "list"` makes bare `tack sessions` run the list subcommand without double-printing.
+const sessions = defineCommand({
+  meta: { name: "sessions", description: "List sessions and their cost; manage them (archive, unarchive, stop, delete)" },
+  subCommands: { list: sessionsList, archive, unarchive, stop, delete: del },
+  default: "list",
 });
 
 const agent = defineCommand({
