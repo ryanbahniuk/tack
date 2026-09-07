@@ -258,7 +258,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
 
 ## 9. Execution flow
 
-1. **`tack go "<problem>"`** creates a session and launches the supervisor
+1. **`tack session create`** (also bare `tack`) creates a session and launches the supervisor
    runtime read-only, with project roots granted as read dirs and the supervisor MCP
    server mounted.
 2. The supervisor investigates, calls `set_shared_context`, then `spawn_agent` per
@@ -304,7 +304,7 @@ name**; loading fails loudly if a role names an undefined model.
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`.
-- **Lifecycle** — nested under `tack sessions`: `stop` (SIGTERM the session +
+- **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
   cascade DB rows).
 

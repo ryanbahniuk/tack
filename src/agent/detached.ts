@@ -31,7 +31,7 @@ export function spawnAgentRunner(sessionId: string, agentId: string): number {
 
 /**
  * Launches the supervisor as a detached background process (`tack __run-supervisor
- * <sessionId> <mode>`) that outlives the caller, so `tack go --background` can
+ * <sessionId> <mode>`) that outlives the caller, so `tack session create --background` can
  * return the terminal immediately while planning and delegation continue. The
  * session is created (and its prompt stashed) by the launcher beforehand; the
  * supervisor's own runtime output tees to `supervisor.log`, and this process's

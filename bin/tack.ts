@@ -265,7 +265,7 @@ async function addProjects(config: TackConfig, candidates: string[]): Promise<Pr
 
 /** If the current directory is inside a git repo that isn't configured yet,
  * summarize and register it, then return a config reflecting the addition — so
- * `tack go`/`tack agent` work in a fresh repo without a separate `projects add`.
+ * `tack session create`/`tack agent` work in a fresh repo without a separate `projects add`.
  * Already-configured repos (and non-repo directories) return the config as-is
  * with no output. */
 async function ensureCwdProject(config: TackConfig): Promise<TackConfig> {
@@ -539,13 +539,6 @@ const sessionsList = defineCommand({
   },
 });
 
-// `default: "list"` makes bare `tack sessions` run the list subcommand without double-printing.
-const sessions = defineCommand({
-  meta: { name: "sessions", description: "List sessions and their cost; manage them (archive, unarchive, stop, delete)" },
-  subCommands: { list: sessionsList, archive, unarchive, stop, delete: del },
-  default: "list",
-});
-
 const agent = defineCommand({
   meta: { name: "agent", description: "Spawn a single agent on a project (direct, no supervisor)" },
   args: {
@@ -587,8 +580,8 @@ const GO_FOLLOWUP_TEMPLATE = `<!-- Follow up with the supervisor: a course corre
 <!-- Save and close when you're done; leave this empty to abort. -->
 `;
 
-const go = defineCommand({
-  meta: { name: "go", description: "Plan and coordinate agents for a problem" },
+const sessionCreate = defineCommand({
+  meta: { name: "create", description: "Create a session: plan and coordinate agents for a problem" },
   args: {
     message: { type: "string", alias: "m", description: "The problem to solve, given inline instead of via the editor" },
     resume: { type: "string", alias: "r", description: "Follow up on an existing session id instead of starting a new one" },
@@ -611,7 +604,7 @@ const go = defineCommand({
         problem = captureViaEditor(resumeId ? GO_FOLLOWUP_TEMPLATE : GO_EDITOR_TEMPLATE);
       } catch (err) {
         console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
-        console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack go -m \"…\"`."));
+        console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack session create -m \"…\"`."));
         return process.exit(1);
       }
       if (!problem) {
@@ -630,7 +623,7 @@ const go = defineCommand({
     if (resumeId) {
       const existing = getSession(resumeId);
       if (!existing) {
-        console.error(pc.red(`Unknown session "${resumeId}". List them with \`tack sessions\`.`));
+        console.error(pc.red(`Unknown session "${resumeId}". List them with \`tack session list\`.`));
         return process.exit(1);
       }
       if (!existing.resume_ref) {
@@ -667,7 +660,7 @@ const go = defineCommand({
     const session = step.value;
     console.log(`\n${pc.green("supervisor done")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
     console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
-    console.log(pc.dim(`Follow up with \`tack go --resume ${session.id}\`.`));
+    console.log(pc.dim(`Follow up with \`tack session create --resume ${session.id}\`.`));
   },
 });
 
@@ -675,8 +668,21 @@ const go = defineCommand({
 function printBackgroundHandoff(sessionId: string, pid: number): void {
   console.log(`${pc.green("supervisor running in background")}  ${pc.bold(sessionId)}  ${pc.dim(`pid ${pid}`)}`);
   console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
-  console.log(pc.dim(`Follow up with \`tack go --resume ${sessionId}\`, or stop it with \`tack sessions stop ${sessionId}\`.`));
+  console.log(pc.dim(`Follow up with \`tack session create --resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
 }
+
+// `default: "create"` makes bare `tack session` (and bare `tack`, which defaults
+// to this group) run the create flow. `alias: "sessions"` keeps the old plural
+// spelling working for `list`/`stop`/etc.
+const session = defineCommand({
+  meta: {
+    name: "session",
+    alias: "sessions",
+    description: "Create sessions and manage them (list, archive, unarchive, stop, delete)",
+  },
+  subCommands: { create: sessionCreate, list: sessionsList, archive, unarchive, stop, delete: del },
+  default: "create",
+});
 
 const stable = defineCommand({
   meta: { name: "stable", description: "Live dashboard of all sessions, agents, and PRs" },
@@ -692,11 +698,13 @@ const main = defineCommand({
     runtimes,
     projects,
     models,
-    sessions,
+    session,
     agent,
-    go,
     stable,
   },
+  // Bare `tack` (no subcommand) runs `tack session`, which in turn defaults to
+  // `create` — so `tack` alone starts a new session.
+  default: "session",
 });
 
 // Hidden subcommands (bypass citty). The MCP servers speak their protocol over

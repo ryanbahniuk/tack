@@ -141,17 +141,19 @@ tack runtimes install --all           # install every configured runtime
 # validate the runtime pipeline before spending on a full session.
 tack agent my-app "Add a health-check endpoint"
 
-# Plan and coordinate agents across projects for a larger problem.
-tack go "Migrate all services off the deprecated auth client"
+# Plan and coordinate agents across projects for a larger problem. Bare `tack`
+# is shorthand for `tack session create`; with no `-m` it opens your editor.
+tack
+tack session create -m "Migrate all services off the deprecated auth client"
 
 # Watch live work: Session → Agent → PR tree with cost and liveness.
 tack stable
 
 # Inspect and manage sessions.
-tack sessions                   # list sessions and cost
-tack sessions stop <session>    # stop a session and its agents
-tack sessions archive <session> # hide from the default view
-tack sessions delete <session>  # kill pids, purge worktrees + artifacts, cascade DB rows
+tack session list                  # list sessions and cost
+tack session stop <session>        # stop a session and its agents
+tack session archive <session>     # hide from the default view
+tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
 Run `tack --help` (or `tack <command> --help`) for the full command list.
@@ -167,5 +169,5 @@ TACK_HOME=$(mktemp -d)/tack bun run ./bin/tack.ts init
 
 There is no automated test suite yet. At minimum keep `bun run typecheck` green and
 smoke-test the CLI against a scratch `TACK_HOME`. Live runs cost money and mutate
-repos, so validate with `tack agent` before `tack go`. See
+repos, so validate with `tack agent` before `tack session create`. See
 [AGENTS.md](./AGENTS.md) for conventions and common extension points.
