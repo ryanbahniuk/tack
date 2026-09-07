@@ -1,19 +1,23 @@
 /** The config scaffold written by `tack init`. Kept as a template string so the
  * generated file is a clean, user-editable TS module. */
-export const STARTER_CONFIG = `// Tack config. \`roles\` pins each function to a model by name; \`models\` maps a
-// model name to its runtime (claude | codex) and the id passed to that CLI.
-// Codex models must carry \`pricing\` (USD per 1M tokens) to get a cost, since
-// Codex reports tokens only. Claude reports cost directly and ignores pricing.
+export const STARTER_CONFIG = `// Tack config. \`roles\` pins each function to a model by \`key\`; \`models\` maps a
+// model key to its provider/name/version, runtime (claude | codex), and the id
+// passed to that CLI. Codex models must carry \`pricing\` (USD per 1M tokens) to
+// get a cost, since Codex reports tokens only. Claude reports cost directly and
+// ignores pricing.
 export default ({
   projects: [
     // { name: "my-app", path: "~/Code/my-app", description: "What this repo is." },
   ],
 
   models: [
-    { name: "opus", runtime: "claude", id: "opus", effort: "high" },
-    { name: "sonnet", runtime: "claude", id: "sonnet" },
+    { key: "opus", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "opus", effort: "high" },
+    { key: "sonnet", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "sonnet" },
     {
-      name: "gpt-5-codex",
+      key: "gpt-5-codex",
+      provider: "openai",
+      name: "GPT-5 Codex",
+      version: "5",
       runtime: "codex",
       id: "gpt-5-codex",
       effort: "medium",

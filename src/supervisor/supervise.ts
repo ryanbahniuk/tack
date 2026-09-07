@@ -29,7 +29,7 @@ export async function* supervise(
   const model = modelForRole(config, "supervisor");
   const session = createSession({
     title: problem.slice(0, 80),
-    supervisorModel: model.name,
+    supervisorModel: model.key,
     runtime: model.runtime,
   });
   stampSessionHeartbeat(session.id, process.pid);

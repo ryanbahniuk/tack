@@ -37,7 +37,7 @@ export function prepareAgent(input: {
   const agent = createAgent({
     sessionId: input.session.id,
     projectName: input.project.name,
-    model: input.model.name,
+    model: input.model.key,
     runtime: input.model.runtime,
   });
   const promptRef = writeAgentArtifact(input.session.id, agent.id, "prompt", input.prompt);

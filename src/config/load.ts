@@ -20,11 +20,11 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
 
   // Every role must name a defined model, and codex models must carry pricing to
   // yield a cost — catch both at load time, not mid-run.
-  const byName = new Map(parsed.models.map((m) => [m.name, m]));
-  for (const [role, name] of Object.entries(parsed.roles)) {
-    if (!byName.has(name)) {
-      const known = [...byName.keys()].join(", ") || "(none)";
-      throw new Error(`roles.${role} = "${name}" is not a defined model. Known: ${known}`);
+  const byKey = new Map(parsed.models.map((m) => [m.key, m]));
+  for (const [role, key] of Object.entries(parsed.roles)) {
+    if (!byKey.has(key)) {
+      const known = [...byKey.keys()].join(", ") || "(none)";
+      throw new Error(`roles.${role} = "${key}" is not a defined model. Known: ${known}`);
     }
   }
 
@@ -48,12 +48,12 @@ function expandBin(
   return { ...settings, bin: settings.bin ? expandHome(settings.bin) : undefined };
 }
 
-/** Resolves a model by name, throwing a clear error if it isn't defined. */
-export function resolveModel(config: TackConfig, name: string): Model {
-  const model = config.models.find((m) => m.name === name);
+/** Resolves a model by its key, throwing a clear error if it isn't defined. */
+export function resolveModel(config: TackConfig, key: string): Model {
+  const model = config.models.find((m) => m.key === key);
   if (!model) {
-    const known = config.models.map((m) => m.name).join(", ") || "(none)";
-    throw new Error(`Unknown model "${name}". Defined: ${known}`);
+    const known = config.models.map((m) => m.key).join(", ") || "(none)";
+    throw new Error(`Unknown model "${key}". Defined: ${known}`);
   }
   return model;
 }
