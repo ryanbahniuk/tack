@@ -1,0 +1,45 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/** The editor command to launch, honoring $VISUAL then $EDITOR, falling back to
+ * a sensible default per platform. Split on whitespace so values like
+ * `code --wait` carry their flags through. */
+function editorCommand(): string[] {
+  const raw = process.env.VISUAL || process.env.EDITOR;
+  if (raw && raw.trim()) return raw.trim().split(/\s+/);
+  return process.platform === "win32" ? ["notepad"] : ["vi"];
+}
+
+/** A whole line that is nothing but an HTML comment, e.g. `<!-- help -->`. We use
+ * these as git-style comment lines: they render invisibly in Markdown (so `#`
+ * stays a heading) and get stripped from the captured body. */
+const COMMENT_LINE = /^\s*<!--.*-->\s*$/;
+
+/**
+ * Opens the user's editor on a temp Markdown file seeded with `template`, waits
+ * for them to save and close, and returns the edited text with any full-line
+ * HTML comments stripped (git-style, but Markdown-safe so `#` headings survive).
+ * Returns the trimmed body, or "" if they saved nothing.
+ *
+ * Throws if no editor could be launched (e.g. a non-interactive shell with no
+ * $EDITOR), so callers can fall back to requiring an inline message.
+ */
+export function captureViaEditor(template = ""): string {
+  const dir = mkdtempSync(join(tmpdir(), "tack-"));
+  const file = join(dir, "PROMPT.md");
+  writeFileSync(file, template, "utf8");
+  try {
+    const [cmd, ...args] = editorCommand();
+    execFileSync(cmd!, [...args, file], { stdio: "inherit" });
+    const raw = readFileSync(file, "utf8");
+    return raw
+      .split("\n")
+      .filter((line) => !COMMENT_LINE.test(line))
+      .join("\n")
+      .trim();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

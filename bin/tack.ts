@@ -28,6 +28,7 @@ import {
 import type { Model, Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { startSpinner } from "../src/cli/spinner";
+import { captureViaEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
 import { ensureRuntimeInstalled, resolveRuntime, MODEL_CATALOG, type EnsureResult } from "../src/runtimes";
@@ -571,12 +572,42 @@ const agent = defineCommand({
   },
 });
 
+const GO_EDITOR_TEMPLATE = `<!-- Describe the problem for Tack to plan and coordinate agents on. -->
+<!-- Markdown is fine: '#' is a heading, not a comment. Comment lines are ignored. -->
+<!-- Save and close when you're done; leave this empty to abort. -->
+`;
+
 const go = defineCommand({
   meta: { name: "go", description: "Plan and coordinate agents for a problem" },
-  args: { problem: { type: "positional", description: "The problem to solve" } },
+  args: {
+    message: { type: "string", alias: "m", description: "The problem to solve, given inline instead of via the editor" },
+  },
   async run({ args }) {
+    // The problem comes from your editor by default; `-m/--message` supplies it
+    // inline for scripting or quick one-liners.
+    let problem: string;
+    if (args.message !== undefined) {
+      problem = String(args.message).trim();
+      if (!problem) {
+        console.error(pc.red("Empty problem. Pass a non-empty --message."));
+        return process.exit(1);
+      }
+    } else {
+      try {
+        problem = captureViaEditor(GO_EDITOR_TEMPLATE);
+      } catch (err) {
+        console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
+        console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack go -m \"…\"`."));
+        return process.exit(1);
+      }
+      if (!problem) {
+        console.error(pc.red("Aborting: no problem entered."));
+        return process.exit(1);
+      }
+    }
+
     const config = await ensureCwdProject(await loadConfig());
-    const run = supervise(String(args.problem), config);
+    const run = supervise(problem, config);
     let step = await run.next();
     while (!step.done) {
       const ev = step.value;
