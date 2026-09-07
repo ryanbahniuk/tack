@@ -25,6 +25,7 @@ import {
 } from "../src/session/lifecycle";
 import type { Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
+import { startSpinner } from "../src/cli/spinner";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
 import { ensureRuntimeInstalled, resolveRuntime, type EnsureResult } from "../src/runtimes";
@@ -228,16 +229,16 @@ const projectsAdd = defineCommand({
         console.log(pc.dim(`skipped ${name}: ${path} does not exist`));
         continue;
       }
-      process.stdout.write(pc.dim(`describing ${name}… `));
+      const spin = startSpinner(`Scoping ${name}`);
       try {
         const { description, metadata } = await summarizeProject(config, path);
-        console.log(pc.green("done"));
+        spin.succeed("done");
         console.log(`  ${description}`);
         console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
         entries.push({ name, path: collapseHome(path), description, metadata });
         knownNames.add(name);
       } catch (err) {
-        console.log(pc.red("failed"));
+        spin.fail("failed");
         console.log(pc.dim(`  ${(err as Error).message}`));
       }
     }
@@ -304,7 +305,7 @@ const projectsRefresh = defineCommand({
         console.log(pc.dim(`skipped ${project.name}: ${project.path} does not exist`));
         continue;
       }
-      process.stdout.write(pc.dim(`describing ${project.name}… `));
+      const spin = startSpinner(`Scoping ${project.name}`);
       try {
         const { description, metadata } = await summarizeProject(config, project.path);
         // Preserve name and the config's stored (home-collapsed) path; swap in the
@@ -312,16 +313,16 @@ const projectsRefresh = defineCommand({
         const updated: Project = { name: project.name, path: collapseHome(project.path), description, metadata };
         const previous = await updateProjectInConfig(CONFIG_PATH, updated);
         if (!previous) {
-          console.log(pc.red("failed"));
+          spin.fail("failed");
           console.log(pc.dim(`  ${project.name} is no longer in the config`));
           continue;
         }
-        console.log(pc.green("done"));
+        spin.succeed("done");
         console.log(`  ${description}`);
         console.log(pc.dim(`  ${metadata.language} · ${metadata.frameworks.join(", ")}`));
         refreshed++;
       } catch (err) {
-        console.log(pc.red("failed"));
+        spin.fail("failed");
         console.log(pc.dim(`  ${(err as Error).message}`));
       }
     }
