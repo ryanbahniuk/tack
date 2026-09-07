@@ -9,6 +9,9 @@ export interface Spinner {
   succeed(status: string): void;
   /** Clears the animation and prints the label followed by a red status. */
   fail(status: string): void;
+  /** Stops the animation and clears the line, printing nothing. Use when real
+   * output is about to take over (e.g. the first streamed token). Idempotent. */
+  stop(): void;
 }
 
 /**
@@ -35,18 +38,27 @@ export function startSpinner(label: string): Spinner {
     process.stdout.write(pc.dim(`${label}… `));
   }
 
-  const finish = (status: string) => {
+  let stopped = false;
+  const clear = () => {
+    if (stopped) return;
+    stopped = true;
     if (timer) clearInterval(timer);
     if (tty) {
       process.stdout.write("\r\x1b[K"); // clear the animated line
       process.stdout.write("\x1b[?25h"); // restore cursor
-      process.stdout.write(pc.dim(`${label}… `));
     }
+  };
+
+  const finish = (status: string) => {
+    if (stopped) return;
+    clear();
+    if (tty) process.stdout.write(pc.dim(`${label}… `));
     console.log(status);
   };
 
   return {
     succeed: (status) => finish(pc.green(status)),
     fail: (status) => finish(pc.red(status)),
+    stop: clear,
   };
 }

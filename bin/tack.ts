@@ -16,8 +16,14 @@ import {
 } from "../src/config/edit";
 import { createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
-import { runAgentToCompletion } from "../src/agent/detached";
-import { supervise } from "../src/supervisor/supervise";
+import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
+import {
+  supervise,
+  resumeSupervise,
+  createSupervisorSession,
+  writeSupervisorPrompt,
+  runSupervisorToCompletion,
+} from "../src/supervisor/supervise";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -28,6 +34,7 @@ import {
 import type { Model, Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { startSpinner } from "../src/cli/spinner";
+import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
@@ -558,15 +565,13 @@ const agent = defineCommand({
     console.log(`${pc.dim("session")} ${pc.bold(session.id)}  ${pc.dim(`${model.runtime}:${model.id}`)}`);
 
     const run = executeAgent({ session, project, model, prompt: String(args.prompt), config });
+    const pending: Pending = { spinner: startSpinner("Thinking") };
     let step = await run.next();
     while (!step.done) {
-      const ev = step.value;
-      if (ev.type === "text") process.stdout.write(ev.text);
-      else if (ev.type === "tool_call") console.log(pc.dim(`\n· ${ev.tool}`));
-      else if (ev.type === "cost") console.log(pc.dim(`\n[cost ${ev.usd.toFixed(4)} ${ev.source}]`));
-      else if (ev.type === "error") console.error(pc.red(`\n! ${ev.message}`));
+      renderStreamEvent(step.value, pending);
       step = await run.next();
     }
+    pending.spinner?.stop();
     const { ok, agent: row } = step.value;
     console.log(`\n${ok ? pc.green("done") : pc.red("failed")}  ${pc.cyan(row.id)}  ${usd(row.cost)}`);
   },
@@ -577,12 +582,21 @@ const GO_EDITOR_TEMPLATE = `<!-- Describe the problem for Tack to plan and coord
 <!-- Save and close when you're done; leave this empty to abort. -->
 `;
 
+const GO_FOLLOWUP_TEMPLATE = `<!-- Follow up with the supervisor: a course correction, a new task, an answer. -->
+<!-- It keeps its plan, spawned agents, and shared context from before. -->
+<!-- Save and close when you're done; leave this empty to abort. -->
+`;
+
 const go = defineCommand({
   meta: { name: "go", description: "Plan and coordinate agents for a problem" },
   args: {
     message: { type: "string", alias: "m", description: "The problem to solve, given inline instead of via the editor" },
+    resume: { type: "string", alias: "r", description: "Follow up on an existing session id instead of starting a new one" },
+    background: { type: "boolean", alias: "b", description: "Run the supervisor detached and return the terminal; watch it with `tack stable`" },
   },
   async run({ args }) {
+    const resumeId = args.resume !== undefined ? String(args.resume) : undefined;
+    const background = Boolean(args.background);
     // The problem comes from your editor by default; `-m/--message` supplies it
     // inline for scripting or quick one-liners.
     let problem: string;
@@ -594,34 +608,75 @@ const go = defineCommand({
       }
     } else {
       try {
-        problem = captureViaEditor(GO_EDITOR_TEMPLATE);
+        problem = captureViaEditor(resumeId ? GO_FOLLOWUP_TEMPLATE : GO_EDITOR_TEMPLATE);
       } catch (err) {
         console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
         console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack go -m \"…\"`."));
         return process.exit(1);
       }
       if (!problem) {
-        console.error(pc.red("Aborting: no problem entered."));
+        console.error(pc.red(`Aborting: no ${resumeId ? "follow-up" : "problem"} entered.`));
         return process.exit(1);
       }
     }
 
     const config = await ensureCwdProject(await loadConfig());
-    const run = supervise(problem, config);
+
+    // Two postures: foreground streams the supervisor's planning to this terminal
+    // under a spinner; `--background` detaches it and hands the terminal back,
+    // with work watched via `tack stable`. Either way we print a header up front
+    // naming the runtime+model that's planning.
+    let run: ReturnType<typeof supervise>;
+    if (resumeId) {
+      const existing = getSession(resumeId);
+      if (!existing) {
+        console.error(pc.red(`Unknown session "${resumeId}". List them with \`tack sessions\`.`));
+        return process.exit(1);
+      }
+      if (!existing.resume_ref) {
+        console.error(pc.red(`Session "${resumeId}" has no resume handle yet — it never got far enough to follow up on.`));
+        return process.exit(1);
+      }
+      console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
+      if (background) {
+        writeSupervisorPrompt(existing.id, problem);
+        const pid = spawnSupervisorRunner(existing.id, "resume");
+        return printBackgroundHandoff(existing.id, pid);
+      }
+      run = resumeSupervise(resumeId, problem, config);
+    } else {
+      const model = modelForRole(config, "supervisor");
+      console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
+      if (background) {
+        const session = createSupervisorSession(problem, config);
+        writeSupervisorPrompt(session.id, problem);
+        const pid = spawnSupervisorRunner(session.id, "fresh");
+        return printBackgroundHandoff(session.id, pid);
+      }
+      run = supervise(problem, config);
+    }
+
+    const pending: Pending = { spinner: startSpinner("Thinking") };
     let step = await run.next();
     while (!step.done) {
-      const ev = step.value;
-      if (ev.type === "text") process.stdout.write(ev.text);
-      else if (ev.type === "tool_call") console.log(pc.dim(`\n· ${ev.tool}`));
-      else if (ev.type === "cost") console.log(pc.dim(`\n[cost ${ev.usd.toFixed(4)} ${ev.source}]`));
-      else if (ev.type === "error") console.error(pc.red(`\n! ${ev.message}`));
+      renderStreamEvent(step.value, pending);
       step = await run.next();
     }
+    pending.spinner?.stop();
+
     const session = step.value;
     console.log(`\n${pc.green("supervisor done")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
     console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+    console.log(pc.dim(`Follow up with \`tack go --resume ${session.id}\`.`));
   },
 });
+
+/** Prints where a detached supervisor went and how to watch/follow it. */
+function printBackgroundHandoff(sessionId: string, pid: number): void {
+  console.log(`${pc.green("supervisor running in background")}  ${pc.bold(sessionId)}  ${pc.dim(`pid ${pid}`)}`);
+  console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+  console.log(pc.dim(`Follow up with \`tack go --resume ${sessionId}\`, or stop it with \`tack sessions stop ${sessionId}\`.`));
+}
 
 const stable = defineCommand({
   meta: { name: "stable", description: "Live dashboard of all sessions, agents, and PRs" },
@@ -657,6 +712,10 @@ if (hidden === "__mcp") {
   const [, , , agentId] = process.argv;
   const config = await loadConfig();
   await runAgentToCompletion(agentId!, config);
+} else if (hidden === "__run-supervisor") {
+  const [, , , sessionId, mode] = process.argv;
+  const config = await loadConfig();
+  await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
 } else {
   await runMain(main);
 }

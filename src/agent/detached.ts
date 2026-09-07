@@ -29,6 +29,28 @@ export function spawnAgentRunner(sessionId: string, agentId: string): number {
   return child.pid;
 }
 
+/**
+ * Launches the supervisor as a detached background process (`tack __run-supervisor
+ * <sessionId> <mode>`) that outlives the caller, so `tack go --background` can
+ * return the terminal immediately while planning and delegation continue. The
+ * session is created (and its prompt stashed) by the launcher beforehand; the
+ * supervisor's own runtime output tees to `supervisor.log`, and this process's
+ * stdio is captured to a sibling `supervisor.runner.log`. Returns the pid.
+ */
+export function spawnSupervisorRunner(sessionId: string, mode: "fresh" | "resume"): number {
+  mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
+  const fd = openSync(join(LOGS_DIR, sessionId, "supervisor.runner.log"), "a");
+  const { command, args } = selfInvocation();
+  const child = spawn(command, [...args, "__run-supervisor", sessionId, mode], {
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    env: process.env,
+  });
+  child.unref();
+  if (child.pid === undefined) throw new Error(`Failed to spawn supervisor runner for session ${sessionId}`);
+  return child.pid;
+}
+
 /** The `__run-agent` entrypoint: drive a prepared agent to completion. */
 export async function runAgentToCompletion(agentId: string, config: TackConfig): Promise<void> {
   const agent = getAgent(agentId);
