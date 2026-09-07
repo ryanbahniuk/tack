@@ -46,7 +46,8 @@ export const PricingSchema = z.object({
 export type Pricing = z.infer<typeof PricingSchema>;
 
 /**
- * A model available to Tack. `key` is the stable handle referenced by roles;
+ * A model available to Tack. `key` is the stable handle referenced by roles, and
+ * is version-qualified (e.g. `opus-5`) so multiple versions of one model coexist;
  * `provider`/`name`/`version` describe the model (e.g. "anthropic" / "Opus" / "5");
  * `id` is what we pass to the CLI (`claude --model <id>` / `codex exec -m <id>`).
  * `effort` maps to `--effort` (claude) / `-c model_reasoning_effort=` (codex).

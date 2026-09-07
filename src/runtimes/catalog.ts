@@ -7,27 +7,55 @@ import type { Model, RuntimeKind } from "../config/schema";
  * actually connected (resolve to a working binary). Keep it current as the CLIs
  * gain models; a model here is just a starting point the user can edit in place.
  *
- * `key` is the stable handle roles pin to. Claude reports `total_cost_usd`
+ * `key` is the stable handle roles pin to, and is version-qualified (e.g.
+ * `opus-5`) so multiple versions of the same model coexist as distinct keys. `id`
+ * is the model's full versioned name (`claude-opus-5`), NOT a floating alias like
+ * `opus` — an alias resolves to whatever the CLI currently calls latest (today
+ * `opus` is Opus 4.8, not 5), which would defeat a version-pinned key. Claude
+ * reports `total_cost_usd`
  * directly, so its entries carry no `pricing`; Codex reports tokens only, so its
  * entries MUST carry `pricing` (USD per 1M tokens) to yield a cost (SPEC §5).
  */
 export const MODEL_CATALOG: Record<RuntimeKind, Model[]> = {
   claude: [
-    { key: "opus", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "opus", effort: "high" },
-    { key: "sonnet", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "sonnet" },
-    { key: "haiku", provider: "anthropic", name: "Haiku", version: "4.5", runtime: "claude", id: "haiku" },
-    { key: "fable", provider: "anthropic", name: "Fable", version: "5", runtime: "claude", id: "fable" },
+    { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
+    { key: "opus-4.8", provider: "anthropic", name: "Opus", version: "4.8", runtime: "claude", id: "claude-opus-4-8", effort: "high" },
+    { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },
+    { key: "haiku-4.5", provider: "anthropic", name: "Haiku", version: "4.5", runtime: "claude", id: "claude-haiku-4-5" },
+    { key: "fable-5", provider: "anthropic", name: "Fable", version: "5", runtime: "claude", id: "claude-fable-5" },
   ],
   codex: [
     {
-      key: "gpt-5-codex",
+      key: "gpt-5.6-sol",
       provider: "openai",
-      name: "GPT-5 Codex",
-      version: "5",
+      name: "GPT-5.6 Sol",
+      version: "5.6",
       runtime: "codex",
-      id: "gpt-5-codex",
+      id: "gpt-5.6-sol",
       effort: "medium",
-      pricing: { inputPer1M: 1.25, outputPer1M: 10, cacheReadPer1M: 0.125 },
+      // Short-context Standard rates; Tack's single-tier pricing can't express the
+      // separate long-context tier the vendor also lists.
+      pricing: { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.4, cacheWritePer1M: 5 },
+    },
+    {
+      key: "gpt-5.6-terra",
+      provider: "openai",
+      name: "GPT-5.6 Terra",
+      version: "5.6",
+      runtime: "codex",
+      id: "gpt-5.6-terra",
+      effort: "medium",
+      pricing: { inputPer1M: 2, outputPer1M: 12, cacheReadPer1M: 0.2, cacheWritePer1M: 2.5 },
+    },
+    {
+      key: "gpt-5.6-luna",
+      provider: "openai",
+      name: "GPT-5.6 Luna",
+      version: "5.6",
+      runtime: "codex",
+      id: "gpt-5.6-luna",
+      effort: "medium",
+      pricing: { inputPer1M: 0.2, outputPer1M: 1.2, cacheReadPer1M: 0.02, cacheWritePer1M: 0.25 },
     },
   ],
 };

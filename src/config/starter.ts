@@ -11,24 +11,24 @@ export default ({
   ],
 
   models: [
-    { key: "opus", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "opus", effort: "high" },
-    { key: "sonnet", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "sonnet" },
+    { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
+    { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },
     {
-      key: "gpt-5-codex",
+      key: "gpt-5.6-sol",
       provider: "openai",
-      name: "GPT-5 Codex",
-      version: "5",
+      name: "GPT-5.6 Sol",
+      version: "5.6",
       runtime: "codex",
-      id: "gpt-5-codex",
+      id: "gpt-5.6-sol",
       effort: "medium",
-      pricing: { inputPer1M: 1.25, outputPer1M: 10, cacheReadPer1M: 0.125 },
+      pricing: { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.4, cacheWritePer1M: 5 },
     },
   ],
 
   roles: {
-    supervisor: "opus",
-    agent: "gpt-5-codex",
-    summary: "sonnet",
+    supervisor: "opus-5",
+    agent: "gpt-5.6-sol",
+    summary: "sonnet-5",
   },
 
   // Pin the CLI runtimes. \`bin\` points at a specific executable (defaults to the
