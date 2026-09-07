@@ -5,6 +5,7 @@ import type { Runtime } from "./types";
 
 export * from "./types";
 export { costFromPricing } from "./pricing";
+export { MODEL_CATALOG } from "./catalog";
 export {
   resolveRuntime,
   runtimeBin,

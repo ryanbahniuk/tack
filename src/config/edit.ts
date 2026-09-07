@@ -1,6 +1,14 @@
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { expandHome } from "../paths";
-import { ConfigSchema, type Project, type ProjectMetadata, type RuntimeKind, type RuntimeSettings } from "./schema";
+import {
+  ConfigSchema,
+  type Model,
+  type Pricing,
+  type Project,
+  type ProjectMetadata,
+  type RuntimeKind,
+  type RuntimeSettings,
+} from "./schema";
 
 /**
  * Programmatic edits to the user's `config.ts`. The config is a hand-authored TS
@@ -226,4 +234,77 @@ export async function removeProjectFromConfig(configPath: string, target: string
   const removed = parsed.projects[idx]!;
   writeProjectsBlock(configPath, parsed.projects.filter((_, i) => i !== idx));
   return removed;
+}
+
+/** Serializes a model's optional pricing table, omitting unset rates. */
+function serializePricing(p: Pricing): string {
+  const parts: string[] = [];
+  if (p.inputPer1M !== undefined) parts.push(`inputPer1M: ${p.inputPer1M}`);
+  if (p.outputPer1M !== undefined) parts.push(`outputPer1M: ${p.outputPer1M}`);
+  if (p.cacheReadPer1M !== undefined) parts.push(`cacheReadPer1M: ${p.cacheReadPer1M}`);
+  if (p.cacheWritePer1M !== undefined) parts.push(`cacheWritePer1M: ${p.cacheWritePer1M}`);
+  return `{ ${parts.join(", ")} }`;
+}
+
+/** Serializes one model to a single-line object literal. */
+function serializeModel(m: Model): string {
+  const parts = [
+    `key: ${JSON.stringify(m.key)}`,
+    `provider: ${JSON.stringify(m.provider)}`,
+    `name: ${JSON.stringify(m.name)}`,
+    `version: ${JSON.stringify(m.version)}`,
+    `runtime: ${JSON.stringify(m.runtime)}`,
+    `id: ${JSON.stringify(m.id)}`,
+  ];
+  if (m.effort) parts.push(`effort: ${JSON.stringify(m.effort)}`);
+  if (m.pricing) parts.push(`pricing: ${serializePricing(m.pricing)}`);
+  return `{ ${parts.join(", ")} }`;
+}
+
+/** Serializes the whole `models:` array at the given base indentation. */
+function serializeModels(models: Model[], indent: string): string {
+  if (models.length === 0) return "models: []";
+  const inner = indent + "  ";
+  const lines = models.map((m) => `${inner}${serializeModel(m)},`);
+  return `models: [\n${lines.join("\n")}\n${indent}]`;
+}
+
+/**
+ * Rewrites the `models:` array in place with `next`, preserving the rest of the
+ * file byte-for-byte (comments, other blocks, indentation). Mirrors
+ * `writeProjectsBlock`.
+ */
+function writeModelsBlock(configPath: string, next: Model[]): void {
+  const src = readFileSync(configPath, "utf8");
+  const masked = maskNonCode(src);
+  const m = /(^|\n)([^\S\n]*)models[^\S\n]*:[^\S\n]*\[/.exec(masked);
+  if (!m) throw new Error(`Could not find a \`models:\` block in ${configPath}.`);
+  const start = m.index + m[1]!.length + m[2]!.length; // start of the `models` keyword
+  const open = m.index + m[0].length - 1; // index of the opening `[`
+  const close = matchDelimiter(masked, open, "[", "]");
+  if (close < 0) throw new Error(`Unbalanced brackets in the \`models:\` block in ${configPath}.`);
+  const out = src.slice(0, start) + serializeModels(next, m[2]!) + src.slice(close + 1);
+  writeFileSync(configPath, out, "utf8");
+}
+
+/**
+ * Appends models to the config file, preserving the rest of the file. Existing
+ * models are read back from the parsed config and the new entries are merged in,
+ * skipping any whose `key` already exists; only the `models:` array is rewritten
+ * in place. Returns the entries actually added.
+ */
+export async function addModelsToConfig(configPath: string, entries: Model[]): Promise<Model[]> {
+  const parsed = await loadParsedConfig(configPath);
+
+  const existingKeys = new Set(parsed.models.map((m) => m.key));
+  const added: Model[] = [];
+  for (const e of entries) {
+    if (existingKeys.has(e.key)) continue;
+    existingKeys.add(e.key);
+    added.push(e);
+  }
+  if (added.length === 0) return [];
+
+  writeModelsBlock(configPath, [...parsed.models, ...added]);
+  return added;
 }

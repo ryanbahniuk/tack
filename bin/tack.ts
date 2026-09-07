@@ -8,6 +8,7 @@ import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
 import { loadConfig, modelForRole, resolveModel } from "../src/config/load";
 import {
+  addModelsToConfig,
   addProjectsToConfig,
   pinRuntimeInConfig,
   removeProjectFromConfig,
@@ -24,12 +25,12 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import type { Project } from "../src/config/schema";
+import type { Model, Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { startSpinner } from "../src/cli/spinner";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
-import { ensureRuntimeInstalled, resolveRuntime, type EnsureResult } from "../src/runtimes";
+import { ensureRuntimeInstalled, resolveRuntime, MODEL_CATALOG, type EnsureResult } from "../src/runtimes";
 import type { RuntimeKind, TackConfig } from "../src/config/schema";
 
 const usd = (n: number) => pc.green(`$${n.toFixed(4)}`);
@@ -411,20 +412,64 @@ const projects = defineCommand({
   default: "list",
 });
 
-const models = defineCommand({
-  meta: { name: "models", description: "List configured models and role pins" },
+const modelsList = defineCommand({
+  meta: { name: "list", description: "List configured models and role pins" },
   async run() {
     const config = await loadConfig();
     console.log(pc.bold("Models"));
     for (const m of config.models) {
       const price = m.pricing ? pc.dim(" (priced)") : m.runtime === "codex" ? pc.red(" (no pricing!)") : "";
-      console.log(`  ${pc.cyan(m.name)}  ${pc.dim(`${m.runtime}:${m.id}`)}${m.effort ? pc.dim(` @${m.effort}`) : ""}${price}`);
+      console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}${m.effort ? pc.dim(` @${m.effort}`) : ""}${price}`);
     }
     console.log(pc.bold("Roles"));
-    for (const [role, name] of Object.entries(config.roles)) {
-      console.log(`  ${role.padEnd(11)} → ${pc.cyan(name)}`);
+    for (const [role, key] of Object.entries(config.roles)) {
+      console.log(`  ${role.padEnd(11)} → ${pc.cyan(key)}`);
     }
   },
+});
+
+const modelsRefresh = defineCommand({
+  meta: {
+    name: "refresh",
+    description: "Add catalog models offered by the connected runtime CLIs, skipping ones already configured",
+  },
+  async run() {
+    if (!existsSync(CONFIG_PATH)) {
+      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+      return process.exit(1);
+    }
+    const config = await loadConfig();
+
+    // Gather catalog candidates from the runtimes that actually resolve to a
+    // working binary (honoring any version pin) — an unavailable CLI contributes
+    // no models. This is what "the models the connected CLIs allow" means.
+    const candidates: Model[] = [];
+    for (const kind of RUNTIME_KINDS) {
+      try {
+        const r = resolveRuntime(config, kind);
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(r.version)}`);
+        candidates.push(...MODEL_CATALOG[kind]);
+      } catch (err) {
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.yellow("not connected")} ${pc.dim((err as Error).message)}`);
+      }
+    }
+
+    const added = await addModelsToConfig(CONFIG_PATH, candidates);
+    if (added.length === 0) {
+      console.log(pc.dim("\nNo new models to add — every catalog model is already configured."));
+      return;
+    }
+    console.log(`\nAdded ${pc.bold(String(added.length))} model(s) to ${pc.dim(CONFIG_PATH)}:`);
+    for (const m of added) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
+  },
+});
+
+// `default: "list"` makes bare `tack models` run the list subcommand without
+// double-printing (see the note on `projects`).
+const models = defineCommand({
+  meta: { name: "models", description: "List configured models and role pins; refresh from connected runtimes" },
+  subCommands: { list: modelsList, refresh: modelsRefresh },
+  default: "list",
 });
 
 const requireSession = (id: string) => {

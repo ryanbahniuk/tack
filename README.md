@@ -118,6 +118,14 @@ tack projects       # list configured projects
 tack models         # list models and role pins
 ```
 
+Seed the `models` block from the catalog instead of hand-authoring entries —
+`refresh` adds every model offered by a connected runtime CLI, skipping ones
+already configured:
+
+```bash
+tack models refresh  # add catalog models for the connected runtimes
+```
+
 Manage the runtime CLIs from the command line instead of hand-editing the config:
 
 ```bash
