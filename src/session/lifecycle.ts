@@ -38,6 +38,7 @@ export function stopSession(sessionId: string): void {
 }
 
 export function archiveSession(sessionId: string): void {
+  stopSession(sessionId);
   tmuxKillSession(sessionId);
   setSessionStatus(sessionId, "archived");
 }
