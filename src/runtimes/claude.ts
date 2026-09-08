@@ -280,10 +280,19 @@ export class ClaudeRuntime implements Runtime {
   }
 }
 
-/** The `--disallowedTools` list for a read-only run: never the native edit or
- * subagent tools, plus Bash when the caller forbids shelling out entirely. */
+/**
+ * The `--disallowedTools` list for a read-only run. We deliberately do NOT list
+ * the native edit tools (Edit/Write/NotebookEdit): a read-only run is always in
+ * `--permission-mode plan`, which already blocks every file edit — and does so
+ * gracefully, intercepting the call and steering the model to ExitPlanMode.
+ * Hard-disallowing those tools instead turns that graceful block into a jarring
+ * "No such tool available: Write. Write is disabled for this session" error that
+ * surfaces to the human right before the plan. So we only disallow what plan mode
+ * does NOT cover: the subagent tools (named "Task" or "Agent" across CLI
+ * versions), plus Bash when the caller forbids shelling out entirely.
+ */
 function readOnlyDisallowed(opts: RunOptions): string {
-  const base = ["Edit", "Write", "NotebookEdit", "Task", "Agent"];
+  const base = ["Task", "Agent"];
   if (opts.disallowShell) base.push("Bash");
   return base.join(",");
 }
