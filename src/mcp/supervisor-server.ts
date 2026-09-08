@@ -88,9 +88,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // pre-approved). Refuse until then so a spawn can't slip out during planning.
       if (!session.plan_approved_at)
         throw new Error(
-          "Plan not approved yet. Present your plan and shared contract to the human and get their " +
-            "approval (finish planning / accept the plan) before spawning any agents. `spawn_agent` " +
-            "stays blocked until they approve.",
+          "Plan not approved yet. Present your plan and shared contract to the human and let them accept " +
+            "it before spawning any agents. Don't ask the human to change or exit any mode — just wait for " +
+            "their approval. `spawn_agent` stays blocked until then.",
         );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
