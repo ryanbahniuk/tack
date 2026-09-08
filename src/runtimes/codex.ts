@@ -14,8 +14,10 @@ import { costFromPricing, type TokenUsage } from "./pricing";
 
 /**
  * Drives Codex headless: `codex exec --json`. Autonomous, unattended posture for a
- * worktree: `-a never -s workspace-write` (no approvals, writes confined to the
- * workspace). Codex reports tokens but NO dollar figure, so we accumulate the
+ * worktree: `-s workspace-write` (writes confined to the workspace). `codex exec`
+ * is non-interactive and never prompts for approval, so there is no approval flag
+ * to set — the sandbox mode is the whole posture. Codex reports tokens but NO
+ * dollar figure, so we accumulate the
  * final `token_count` usage and compute cost from the model's pricing table.
  *
  * The exact `--json` event schema varies across Codex builds (this targets an
@@ -198,7 +200,7 @@ export class CodexRuntime implements Runtime {
   private buildCmd(opts: RunOptions): string[] {
     const m = opts.model;
     const sandbox = opts.readOnly ? "read-only" : "workspace-write";
-    const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, "-a", "never", "-s", sandbox];
+    const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, "-s", sandbox];
     if (m.effort) cmd.push("-c", `model_reasoning_effort=${m.effort}`);
     for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
     // Codex has no per-run system-prompt flag; the one file-based hook is the
