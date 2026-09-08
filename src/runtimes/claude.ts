@@ -1,4 +1,14 @@
-import type { AgentEvent, RunOptions, Runtime } from "./types";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  AgentEvent,
+  InteractiveSpec,
+  RecoverOptions,
+  RecoveredUsage,
+  RunOptions,
+  Runtime,
+} from "./types";
 import { streamJson } from "./proc";
 
 /**
@@ -84,6 +94,69 @@ export class ClaudeRuntime implements Runtime {
       ok = false;
     }
     yield { type: "done", ok, summary };
+  }
+
+  /**
+   * The interactive counterpart to `run`: the real `claude` TUI with the same
+   * read-only supervisor posture (plan mode, no edit/subagent tools) and the same
+   * mounted MCP servers, context, and add-dirs. We drop the headless `-p`
+   * streaming flags (and `--permission-prompts none`) so a human is genuinely in
+   * the loop, but keep the capability boundary identical: it can read and drive
+   * the `tack-supervisor` tools, never edit code directly.
+   */
+  interactiveCommand(opts: RunOptions): InteractiveSpec {
+    const m = opts.model;
+    const args = ["--model", m.id];
+    if (opts.readOnly) {
+      args.push("--permission-mode", "plan");
+      args.push("--disallowedTools", "Edit,Write,NotebookEdit,Task,Agent");
+    }
+    if (m.effort) args.push("--effort", m.effort);
+    if (opts.resume && opts.sessionRef) args.push("--resume", opts.sessionRef);
+    else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
+    for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
+    if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
+    const mcpServers: Record<string, { command: string; args: string[] }> = {};
+    for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
+    args.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
+    // A non-empty prompt seeds the first turn; an empty one drops the user straight
+    // into an idle TUI to type their own opener.
+    if (opts.prompt.trim()) args.push(opts.prompt);
+    return { command: opts.bin, args };
+  }
+
+  /**
+   * Sum token usage across a claude session transcript. Claude Code stores one
+   * JSONL per session at `~/.claude/projects/<slugified-cwd>/<session-id>.jsonl`
+   * (cwd slug replaces `/` and `.` with `-`), with per-assistant-message `usage`
+   * but no cost figure — so the caller applies pricing to what we return here.
+   */
+  recoverUsage(opts: RecoverOptions): RecoveredUsage | null {
+    if (!opts.sessionRef) return null;
+    const slug = opts.cwd.replace(/[/.]/g, "-");
+    const file = join(homedir(), ".claude", "projects", slug, `${opts.sessionRef}.jsonl`);
+    if (!existsSync(file)) return null;
+    const usage: RecoveredUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    let saw = false;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let ev: any;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const u = ev?.message?.usage;
+      if (!u) continue;
+      saw = true;
+      // Per-message usage is additive across the whole conversation (each turn is a
+      // fresh request), so we accumulate rather than keep-latest.
+      usage.input += u.input_tokens ?? 0;
+      usage.output += u.output_tokens ?? 0;
+      usage.cacheRead += u.cache_read_input_tokens ?? 0;
+      usage.cacheWrite += u.cache_creation_input_tokens ?? 0;
+    }
+    return saw ? usage : null;
   }
 
   private buildCmd(opts: RunOptions): string[] {

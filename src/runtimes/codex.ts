@@ -1,4 +1,14 @@
-import type { AgentEvent, RunOptions, Runtime } from "./types";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type {
+  AgentEvent,
+  InteractiveSpec,
+  RecoverOptions,
+  RecoveredUsage,
+  RunOptions,
+  Runtime,
+} from "./types";
 import { streamJson } from "./proc";
 import { costFromPricing, type TokenUsage } from "./pricing";
 
@@ -67,6 +77,84 @@ export class CodexRuntime implements Runtime {
     if (usd !== null) yield { type: "cost", usd, source: "pricing" };
     ok = !sawError;
     yield { type: "done", ok };
+  }
+
+  /**
+   * The interactive counterpart to `run`: the real `codex` TUI with the same
+   * read-only posture, mounted MCP servers, context override, and add-dirs. We
+   * leave approvals interactive (no `-a never`) so a human is in the loop. NOTE:
+   * codex is not the currently-exercised interactive runtime — claude is — so this
+   * mirrors the tested `exec` flags but may need adjusting against a pinned build.
+   */
+  interactiveCommand(opts: RunOptions): InteractiveSpec {
+    const m = opts.model;
+    const flags = ["-m", m.id, "-s", opts.readOnly ? "read-only" : "workspace-write"];
+    if (m.effort) flags.push("-c", `model_reasoning_effort=${m.effort}`);
+    for (const dir of opts.addDirs ?? []) flags.push("--add-dir", dir);
+    if (opts.contextFile) flags.push("-c", `experimental_instructions_file=${quote(opts.contextFile)}`);
+    for (const s of opts.mcpServers ?? []) {
+      flags.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
+      flags.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+    }
+    const prompt = opts.prompt.trim() ? [opts.prompt] : [];
+    // `codex resume <id>` continues a prior session; a fresh run omits it. Codex
+    // can't pre-assign an id, so a fresh interactive run has no sessionRef.
+    if (opts.resume && opts.sessionRef) {
+      return { command: opts.bin, args: ["resume", opts.sessionRef, ...flags, ...prompt] };
+    }
+    return { command: opts.bin, args: [...flags, ...prompt] };
+  }
+
+  /**
+   * Recover cumulative token usage from a codex rollout transcript
+   * (`~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl`). We match by session id
+   * when known, else fall back to the most recently modified rollout — codex can't
+   * pre-assign an id, so an interactive run only learns it after the fact. Each
+   * `token_count` event carries a cumulative `total_token_usage`; we keep latest.
+   */
+  recoverUsage(opts: RecoverOptions): RecoveredUsage | null {
+    const file = this.findRollout(opts.sessionRef);
+    if (!file) return null;
+    let usage: RecoveredUsage | null = null;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes("total_token_usage")) continue;
+      let ev: any;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const info =
+        ev?.payload?.info?.total_token_usage ?? ev?.info?.total_token_usage ?? ev?.total_token_usage;
+      if (!info) continue;
+      usage = {
+        input: info.input_tokens ?? 0,
+        output: info.output_tokens ?? 0,
+        cacheRead: info.cached_input_tokens ?? 0,
+        cacheWrite: info.cache_write_input_tokens ?? 0,
+      };
+    }
+    return usage;
+  }
+
+  /** The rollout file whose name contains `sessionRef`, or the newest one. */
+  private findRollout(sessionRef?: string): string | null {
+    const root = join(homedir(), ".codex", "sessions");
+    if (!existsSync(root)) return null;
+    let best: { path: string; mtime: number } | null = null;
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.isFile() && e.name.endsWith(".jsonl")) {
+          if (sessionRef && e.name.includes(sessionRef)) return void (best = { path: p, mtime: Infinity });
+          const mtime = statSync(p).mtimeMs;
+          if (!best || mtime > best.mtime) best = { path: p, mtime };
+        }
+      }
+    };
+    walk(root);
+    return best ? (best as { path: string }).path : null;
   }
 
   private buildCmd(opts: RunOptions): string[] {

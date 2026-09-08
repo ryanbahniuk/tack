@@ -260,7 +260,14 @@ stdout/stderr to the log, and yields parsed JSON lines.
 
 1. **`tack session create`** (also bare `tack`) creates a session and launches the supervisor
    runtime read-only, with project roots granted as read dirs and the supervisor MCP
-   server mounted.
+   server mounted. By default this is the runtime's own **interactive** TUI (Claude
+   Code / Codex) with inherited stdio — same capability posture (plan mode, no edit
+   tools, only the `tack-supervisor` MCP tools), so you chat with the supervisor
+   directly and follow up with `--resume` in the same live session. Since the TUI
+   owns the terminal there is no event stream to persist; cost is recovered from the
+   runtime's transcript once it exits (claude sums per-message `usage` × pricing;
+   codex reads its rollout's cumulative token count). `--background` keeps the
+   headless, detached, streamed runner for unattended runs.
 2. The supervisor investigates, calls `set_shared_context`, then `spawn_agent` per
    unit of work. Each spawn `prepareAgent`s (creates the row + prompt artifact) and
    launches a **detached** `tack __run-agent <agentId>` runner.

@@ -11,7 +11,13 @@ import {
   stampSessionHeartbeat,
   type SessionRow,
 } from "../db";
-import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
+import {
+  costFromPricing,
+  pricingFor,
+  resolveRuntime,
+  selectRuntime,
+  type AgentEvent,
+} from "../runtimes";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
 import { buildSupervisorContext } from "./context";
@@ -136,6 +142,83 @@ async function* runSupervisor(opts: {
   }
 
   return getSession(session.id)!;
+}
+
+/**
+ * Runs the supervisor as an attended, interactive session: launches the pinned
+ * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
+ * posture as the headless supervisor — plan mode, no edit tools, only the
+ * `tack-supervisor` MCP tools, the supervisor context, and read access to the
+ * projects. The runtime owns the terminal, so unlike `supervise` there is no event
+ * stream to persist; instead we pre-persist the resume handle up front and recover
+ * the session's cost from the runtime's transcript once the TUI exits.
+ *
+ * `resume` continues an existing session's conversation (its stored `resume_ref`);
+ * a fresh run pre-assigns a claude session id so its resume handle and transcript
+ * path are known before launch. Returns the session's exit code from the runtime.
+ */
+export async function superviseInteractive(opts: {
+  session: SessionRow;
+  prompt: string;
+  resume: boolean;
+  config: TackConfig;
+}): Promise<number> {
+  const { session, prompt, resume, config } = opts;
+  if (!session.supervisor_model) throw new Error(`Session ${session.id} has no recorded supervisor model.`);
+  if (resume && !session.resume_ref)
+    throw new Error(`Session ${session.id} has no resume handle yet — it never got far enough to follow up on.`);
+  const model = resolveModel(config, session.supervisor_model);
+  stampSessionHeartbeat(session.id, process.pid);
+
+  const contextFile = buildSupervisorContext(session.id, config);
+  const supervisorMcp = selfCommand(["__supervisor-mcp", session.id]);
+  const runtime = selectRuntime(model.runtime);
+  const resolved = resolveRuntime(config, model.runtime); // verifies version pin
+
+  const cwd = join(TACK_HOME, "supervisor", session.id);
+  mkdirSync(cwd, { recursive: true });
+  const addDirs = [...config.projects.map((p) => p.path), ...config.readAllowlist];
+  // Fresh claude runs pre-assign a session id so the resume handle + transcript
+  // path are known before launch; resumed runs pass the stored one back. Codex
+  // can't pre-assign, so a fresh run has none (its id is recovered afterwards).
+  const sessionRef = resume ? session.resume_ref! : model.runtime === "claude" ? uuid() : undefined;
+  // Persist the resume handle up front so a follow-up (or the dashboard) works even
+  // if the user closes the TUI abruptly. Codex has no id yet — see below.
+  if (sessionRef) setSessionResumeRef(session.id, sessionRef);
+
+  const spec = runtime.interactiveCommand({
+    prompt,
+    cwd,
+    model,
+    bin: resolved.bin,
+    readOnly: true,
+    addDirs,
+    resume,
+    sessionRef,
+    contextFile,
+    mcpServers: [{ name: "tack-supervisor", command: supervisorMcp.command, args: supervisorMcp.args }],
+    logPath: join(LOGS_DIR, session.id, "supervisor.log"),
+  });
+
+  const proc = Bun.spawn([spec.command, ...spec.args], {
+    cwd,
+    env: { ...process.env, ...spec.env },
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+
+  // Recover cost from the runtime's transcript now that the TUI has exited. For
+  // codex, whose id we couldn't pre-assign, recovery falls back to the newest
+  // rollout under this cwd's sessions tree.
+  const usage = runtime.recoverUsage({ sessionRef, cwd });
+  if (usage) {
+    const usd = costFromPricing(pricingFor(model), usage);
+    if (usd !== null) setSessionCost(session.id, usd);
+  }
+
+  return code;
 }
 
 /** Whether a detached supervisor run is a brand-new turn or a follow-up resume. */

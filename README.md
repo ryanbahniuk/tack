@@ -142,9 +142,16 @@ tack runtimes install --all           # install every configured runtime
 tack agent my-app "Add a health-check endpoint"
 
 # Plan and coordinate agents across projects for a larger problem. Bare `tack`
-# is shorthand for `tack session create`; with no `-m` it opens your editor.
+# is shorthand for `tack session create`, which drops you into the supervisor
+# runtime's own interactive chat (Claude Code / Codex) — read-only, delegating to
+# agents through its tools. `-m` seeds the first message; `--resume` continues a
+# session in the same live chat.
 tack
 tack session create -m "Migrate all services off the deprecated auth client"
+tack session create --resume <session>          # follow up, in the chat
+
+# Or run the supervisor headless & detached (no chat), watched via `tack stable`.
+tack session create --background -m "Migrate all services off the deprecated auth client"
 
 # Watch live work: Session → Agent → PR tree with cost and liveness.
 tack stable

@@ -43,6 +43,33 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
+/** A spawn spec for an attended, terminal-owning runtime session. Unlike `run`
+ * (headless JSON streaming), the interactive CLI takes over the TTY, so Tack just
+ * hands back the argv/env to spawn with inherited stdio and awaits exit — there is
+ * no event stream to parse. Cost is recovered afterwards from the transcript. */
+export interface InteractiveSpec {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/** Cumulative token usage recovered from a runtime's on-disk session transcript. */
+export interface RecoveredUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Where an interactive session's transcript lives, so cost can be recovered. */
+export interface RecoverOptions {
+  /** The runtime session id. For claude this is pre-assigned; for codex it's
+   * unknown up front, so adapters fall back to the newest transcript under `cwd`. */
+  sessionRef?: string;
+  /** The cwd the interactive session ran in (used to locate its transcript). */
+  cwd: string;
+}
+
 /** Normalized events every runtime emits, so the supervisor stays runtime-agnostic. */
 export type AgentEvent =
   | { type: "session"; ref: string } // runtime session id -> agents.resume_ref
@@ -65,4 +92,17 @@ export interface Runtime {
   readonly kind: RuntimeKind;
   /** Execute an agent turn (fresh, or a continuation when `opts.resume`). */
   run(opts: RunOptions): AsyncIterable<AgentEvent>;
+  /**
+   * Build the argv/env to launch this runtime's interactive TUI with the same
+   * capability posture as `run` (read-only, mounted MCP servers, context file,
+   * add-dirs, session/resume). The caller spawns it with inherited stdio; a
+   * non-empty `opts.prompt` seeds the first message.
+   */
+  interactiveCommand(opts: RunOptions): InteractiveSpec;
+  /**
+   * Recover cumulative token usage for an interactive session from the runtime's
+   * on-disk transcript, so cost can be computed after the TUI exits. Returns null
+   * when no transcript can be located.
+   */
+  recoverUsage(opts: RecoverOptions): RecoveredUsage | null;
 }

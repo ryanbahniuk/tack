@@ -14,12 +14,11 @@ import {
   removeProjectFromConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
-import { createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
+import { createSession, getSession, listSessions, sessionTotalCost, type SessionRow } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import {
-  supervise,
-  resumeSupervise,
+  superviseInteractive,
   createSupervisorSession,
   writeSupervisorPrompt,
   runSupervisorToCompletion,
@@ -587,43 +586,29 @@ const GO_FOLLOWUP_TEMPLATE = `<!-- Follow up with the supervisor: a course corre
 const sessionCreate = defineCommand({
   meta: { name: "create", description: "Create a session: plan and coordinate agents for a problem" },
   args: {
-    message: { type: "string", alias: "m", description: "The problem to solve, given inline instead of via the editor" },
+    message: { type: "string", alias: "m", description: "Seed the first message inline (foreground) or the problem to solve (--background)" },
     resume: { type: "string", alias: "r", description: "Follow up on an existing session id instead of starting a new one" },
-    background: { type: "boolean", alias: "b", description: "Run the supervisor detached and return the terminal; watch it with `tack stable`" },
+    background: { type: "boolean", alias: "b", description: "Run the supervisor headless & detached instead of interactively; watch it with `tack stable`" },
   },
   async run({ args }) {
     const resumeId = args.resume !== undefined ? String(args.resume) : undefined;
     const background = Boolean(args.background);
-    // The problem comes from your editor by default; `-m/--message` supplies it
-    // inline for scripting or quick one-liners.
-    let problem: string;
-    if (args.message !== undefined) {
-      problem = String(args.message).trim();
-      if (!problem) {
-        console.error(pc.red("Empty problem. Pass a non-empty --message."));
-        return process.exit(1);
-      }
-    } else {
-      try {
-        problem = captureViaEditor(resumeId ? GO_FOLLOWUP_TEMPLATE : GO_EDITOR_TEMPLATE);
-      } catch (err) {
-        console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
-        console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack session create -m \"…\"`."));
-        return process.exit(1);
-      }
-      if (!problem) {
-        console.error(pc.red(`Aborting: no ${resumeId ? "follow-up" : "problem"} entered.`));
-        return process.exit(1);
-      }
+    const message = args.message !== undefined ? String(args.message).trim() : undefined;
+
+    // Foreground (default) drops you into the runtime's own interactive TUI as the
+    // supervisor — no editor round-trip, real scrollback, follow-ups in the same
+    // live session. `--background` keeps the headless autonomous runner, which
+    // needs a seed prompt up front (via `-m` or the editor).
+    if (background) {
+      return runBackground({ resumeId, message });
     }
 
     const config = await ensureCwdProject(await loadConfig());
+    // A seed is optional interactively: `-m` sends the first message, otherwise you
+    // land in an idle TUI and type it yourself.
+    const prompt = message ?? "";
 
-    // Two postures: foreground streams the supervisor's planning to this terminal
-    // under a spinner; `--background` detaches it and hands the terminal back,
-    // with work watched via `tack stable`. Either way we print a header up front
-    // naming the runtime+model that's planning.
-    let run: ReturnType<typeof supervise>;
+    let session: SessionRow;
     if (resumeId) {
       const existing = getSession(resumeId);
       if (!existing) {
@@ -635,38 +620,72 @@ const sessionCreate = defineCommand({
         return process.exit(1);
       }
       console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
-      if (background) {
-        writeSupervisorPrompt(existing.id, problem);
-        const pid = spawnSupervisorRunner(existing.id, "resume");
-        return printBackgroundHandoff(existing.id, pid);
-      }
-      run = resumeSupervise(resumeId, problem, config);
+      session = existing;
     } else {
       const model = modelForRole(config, "supervisor");
-      console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
-      if (background) {
-        const session = createSupervisorSession(problem, config);
-        writeSupervisorPrompt(session.id, problem);
-        const pid = spawnSupervisorRunner(session.id, "fresh");
-        return printBackgroundHandoff(session.id, pid);
-      }
-      run = supervise(problem, config);
+      session = createSupervisorSession(prompt || "(interactive session)", config);
+      console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
     }
 
-    const pending: Pending = { spinner: startSpinner("Thinking") };
-    let step = await run.next();
-    while (!step.done) {
-      renderStreamEvent(step.value, pending);
-      step = await run.next();
-    }
-    pending.spinner?.stop();
+    await superviseInteractive({ session, prompt, resume: Boolean(resumeId), config });
 
-    const session = step.value;
-    console.log(`\n${pc.green("supervisor done")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
+    // The TUI has exited; cost was recovered from its transcript inside the run.
+    console.log(`\n${pc.green("supervisor exited")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
     console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
     console.log(pc.dim(`Follow up with \`tack session create --resume ${session.id}\`.`));
   },
 });
+
+/**
+ * The headless, detached supervisor path (`--background`): unlike interactive, it
+ * has no human in the loop, so it needs a seed prompt up front — from `-m` or the
+ * editor. It spawns the runner and hands the terminal straight back.
+ */
+async function runBackground(opts: { resumeId?: string; message?: string }): Promise<void> {
+  const { resumeId, message } = opts;
+  let problem: string;
+  if (message !== undefined) {
+    if (!message) {
+      console.error(pc.red("Empty problem. Pass a non-empty --message."));
+      return process.exit(1);
+    }
+    problem = message;
+  } else {
+    try {
+      problem = captureViaEditor(resumeId ? GO_FOLLOWUP_TEMPLATE : GO_EDITOR_TEMPLATE);
+    } catch (err) {
+      console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
+      console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack session create -b -m \"…\"`."));
+      return process.exit(1);
+    }
+    if (!problem) {
+      console.error(pc.red(`Aborting: no ${resumeId ? "follow-up" : "problem"} entered.`));
+      return process.exit(1);
+    }
+  }
+
+  const config = await ensureCwdProject(await loadConfig());
+  if (resumeId) {
+    const existing = getSession(resumeId);
+    if (!existing) {
+      console.error(pc.red(`Unknown session "${resumeId}". List them with \`tack session list\`.`));
+      return process.exit(1);
+    }
+    if (!existing.resume_ref) {
+      console.error(pc.red(`Session "${resumeId}" has no resume handle yet — it never got far enough to follow up on.`));
+      return process.exit(1);
+    }
+    writeSupervisorPrompt(existing.id, problem);
+    const pid = spawnSupervisorRunner(existing.id, "resume");
+    return printBackgroundHandoff(existing.id, pid);
+  }
+  const model = modelForRole(config, "supervisor");
+  console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
+  const session = createSupervisorSession(problem, config);
+  writeSupervisorPrompt(session.id, problem);
+  const pid = spawnSupervisorRunner(session.id, "fresh");
+  return printBackgroundHandoff(session.id, pid);
+}
 
 /** Prints where a detached supervisor went and how to watch/follow it. */
 function printBackgroundHandoff(sessionId: string, pid: number): void {
