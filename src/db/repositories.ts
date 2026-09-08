@@ -23,6 +23,15 @@ export interface SessionRow {
   /** When the human approved this session's plan (gates `spawn_agent`); null = not
    * yet approved. Background sessions are stamped up front — no human in the loop. */
   plan_approved_at: string | null;
+  /** Ephemeral "supervisor is blocked on a human decision" toggle (e.g. a plan
+   * presented via ExitPlanMode). Set when it blocks, cleared when it proceeds, so it
+   * re-arms every iteration. null = not currently waiting. See `awaiting_reason`. */
+  awaiting_input_at: string | null;
+  /** Why the supervisor is waiting (e.g. "plan"), when `awaiting_input_at` is set. */
+  awaiting_reason: string | null;
+  /** When the human last looked at this session (`tack stable` selection, attach,
+   * resume). Compared against agents' `finished_at` to find unread completed work. */
+  last_seen_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -47,6 +56,10 @@ export interface AgentRow {
   prompt_ref: string | null;
   output_ref: string | null;
   diff_ref: string | null;
+  /** When the agent reached a terminal state (done/failed/stopped); null while it's
+   * pending/running. Backs the "unread completed work" check against a session's
+   * `last_seen_at`. */
+  finished_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -144,10 +157,45 @@ export function setSessionCost(id: string, usd: number): void {
  * ExitPlanMode hook when the human accepts the plan, and up front for background
  * sessions (which have no human to approve). */
 export function approveSessionPlan(id: string): void {
+  // Approval always means the human resolved the plan decision, so clear the
+  // ephemeral awaiting flag in the same write (the plan gate itself stays latched).
   getDb()
     .prepare(
-      `UPDATE sessions SET plan_approved_at = COALESCE(plan_approved_at, ?), updated_at = ? WHERE id = ?`,
+      `UPDATE sessions
+         SET plan_approved_at = COALESCE(plan_approved_at, ?),
+             awaiting_input_at = NULL, awaiting_reason = NULL,
+             updated_at = ?
+       WHERE id = ?`,
     )
+    .run(nowIso(), nowIso(), id);
+}
+
+/** Marks the supervisor as blocked on a human decision (ephemeral — cleared by
+ * `clearSessionAwaitingInput`/`approveSessionPlan` when it proceeds). Unlike
+ * `plan_approved_at`, this re-arms on every plan iteration. */
+export function setSessionAwaitingInput(id: string, reason: string): void {
+  const now = nowIso();
+  getDb()
+    .prepare(
+      `UPDATE sessions SET awaiting_input_at = ?, awaiting_reason = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(now, reason, now, id);
+}
+
+/** Clears the "waiting on a human" flag once the supervisor proceeds. */
+export function clearSessionAwaitingInput(id: string): void {
+  getDb()
+    .prepare(
+      `UPDATE sessions SET awaiting_input_at = NULL, awaiting_reason = NULL, updated_at = ? WHERE id = ?`,
+    )
+    .run(nowIso(), id);
+}
+
+/** Records that the human just looked at this session, clearing "unread completed
+ * work" (completed agents from before this moment count as seen). */
+export function stampSessionSeen(id: string): void {
+  getDb()
+    .prepare(`UPDATE sessions SET last_seen_at = ?, updated_at = ? WHERE id = ?`)
     .run(nowIso(), nowIso(), id);
 }
 
@@ -214,8 +262,17 @@ export function listAgents(sessionId: string): AgentRow[] {
     .all(sessionId) as AgentRow[];
 }
 
+const TERMINAL_AGENT_STATUSES: ReadonlySet<AgentStatus> = new Set(["done", "failed", "stopped"]);
+
 export function setAgentStatus(id: string, status: AgentStatus): void {
-  getDb().prepare(`UPDATE agents SET status = ?, updated_at = ? WHERE id = ?`).run(status, nowIso(), id);
+  const now = nowIso();
+  // Stamp finish time on the transition into a terminal state; clear it if the agent
+  // goes back to pending/running (a resume), so `finished_at` always reflects the
+  // current status.
+  const finishedAt = TERMINAL_AGENT_STATUSES.has(status) ? now : null;
+  getDb()
+    .prepare(`UPDATE agents SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?`)
+    .run(status, finishedAt, now, id);
 }
 
 export function setAgentWorktree(id: string, worktreePath: string, branch: string): void {

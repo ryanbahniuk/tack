@@ -10,6 +10,7 @@ import {
   setSessionCost,
   setSessionResumeRef,
   stampSessionHeartbeat,
+  stampSessionSeen,
   type SessionRow,
 } from "../db";
 import {
@@ -201,7 +202,12 @@ export async function superviseInteractive(opts: {
   // open the gate up front and rely on their own in-loop approvals.
   const usesPlanHook = model.runtime === "claude";
   const approveHook = usesPlanHook ? selfCommand(["__approve-plan", session.id]) : undefined;
+  const awaitHook = usesPlanHook ? selfCommand(["__await-plan", session.id]) : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
+
+  // The human is now looking at this session (creating/resuming it), so anything
+  // that finished before this turn counts as seen.
+  stampSessionSeen(session.id);
 
   const cwd = join(TACK_HOME, "supervisor", session.id);
   mkdirSync(cwd, { recursive: true });
@@ -227,6 +233,7 @@ export async function superviseInteractive(opts: {
     contextFile,
     mcpServers: [{ name: SUPERVISOR_MCP_NAME, command: supervisorMcp.command, args: supervisorMcp.args }],
     onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
+    onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
     // Keep opening a PR behind an explicit per-call human ok even after plan approval.
     approvalTools: SUPERVISOR_APPROVAL_TOOLS,
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
@@ -282,6 +289,9 @@ export async function attachSupervisor(
   if (!tmuxAvailable()) return { code: 0, detached: false, alive: false };
   const name = tmuxSessionName(sessionId);
   if (!tmuxHasSession(name)) return { code: 0, detached: false, alive: false };
+
+  // Rejoining the live supervisor = the human is looking at this session again.
+  stampSessionSeen(sessionId);
 
   // Refresh the detach hint for how we're attaching now — nested (inside tmux) vs
   // not — since this session may have been created in the other context.

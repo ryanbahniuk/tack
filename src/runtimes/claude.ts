@@ -149,14 +149,22 @@ export class ClaudeRuntime implements Runtime {
       hooks?: unknown;
       permissions?: { ask?: string[] };
     } = {};
-    // (1) Flip the session's plan-approval gate when the human accepts the plan. A
-    // PostToolUse hook on ExitPlanMode fires only after acceptance (rejection /
-    // "keep planning" never completes the tool), so this is an un-forgeable human
-    // signal the model can't self-trigger.
+    // (1) Track the plan-approval decision through the session's lifecycle:
+    //  - PreToolUse on ExitPlanMode fires when the plan is presented (before the human
+    //    decides) → mark the session as awaiting input. This re-arms every iteration.
+    //  - PostToolUse fires only after acceptance (rejection / "keep planning" never
+    //    completes the tool), so it's an un-forgeable human signal the model can't
+    //    self-trigger → flip the plan-approval gate and clear the awaiting flag.
+    const hooks: Record<string, unknown[]> = {};
+    if (opts.onPlanPresented) {
+      const command = shellJoin([opts.onPlanPresented.command, ...opts.onPlanPresented.args]);
+      hooks.PreToolUse = [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }];
+    }
     if (opts.onPlanApproved) {
       const command = shellJoin([opts.onPlanApproved.command, ...opts.onPlanApproved.args]);
-      settings.hooks = { PostToolUse: [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }] };
+      hooks.PostToolUse = [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }];
     }
+    if (Object.keys(hooks).length > 0) settings.hooks = hooks;
     // (2) Force a per-call prompt for the approval tools (e.g. open_pr). An `ask`
     // rule outranks the `--allowedTools mcp__<server>` wildcard below, so these stay
     // gated even though the rest of the server is auto-allowed — the model can't

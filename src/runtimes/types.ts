@@ -60,6 +60,14 @@ export interface RunOptions {
    * explicit per-call human ok. Only the attended supervisor sets this.
    */
   approvalTools?: string[];
+  /**
+   * A command to run when the supervisor presents a plan for approval. The claude
+   * adapter wires it as a PreToolUse hook on ExitPlanMode (which fires when the plan
+   * is put in front of the human, before they decide), so Tack can mark the session
+   * as awaiting input. Cleared by the matching `onPlanApproved` (acceptance) hook.
+   * Only the attended read-only supervisor sets this.
+   */
+  onPlanPresented?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;

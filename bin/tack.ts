@@ -14,7 +14,16 @@ import {
   removeProjectFromConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
-import { approveSessionPlan, createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
+import {
+  approveSessionPlan,
+  createSession,
+  getSession,
+  listAgents,
+  listSessions,
+  sessionTotalCost,
+  setSessionAwaitingInput,
+} from "../src/db";
+import { sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import {
@@ -24,7 +33,6 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
-import { tmuxAvailable, tmuxHasSession, tmuxSessionName } from "../src/session/tmux";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -538,12 +546,12 @@ const sessionsList = defineCommand({
   async run({ args }) {
     const rows = listSessions(Boolean(args.all));
     if (rows.length === 0) return console.log(pc.dim("No sessions yet."));
-    const tmux = tmuxAvailable();
     for (const s of rows) {
-      // A live tmux session means the interactive supervisor is parked and can be
-      // rejoined right where it was left, via `tack session attach`.
-      const attachable = tmux && tmuxHasSession(tmuxSessionName(s.id));
-      const tag = attachable ? `  ${pc.yellow("attachable")}` : "";
+      // Flag sessions waiting on the human — a plan to approve, or unread completed
+      // agent work. Any session can be rejoined (`tack session resume`), so we no
+      // longer surface an "attachable" tag; this is the state that actually needs you.
+      const needsInput = sessionNeedsInput(s, listAgents(s.id));
+      const tag = needsInput ? `  ${pc.yellow("◆ needs input")}` : "";
       console.log(`${pc.bold(s.id)}  ${pc.dim(s.status)}  ${usd(sessionTotalCost(s.id).total)}${tag}  ${s.title ? pc.dim(s.title) : ""}`);
     }
   },
@@ -805,10 +813,17 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__await-plan") {
+  // Fired by the interactive supervisor's PreToolUse/ExitPlanMode hook when a plan is
+  // presented for approval; marks the session as awaiting the human's decision (the
+  // matching __approve-plan clears it on acceptance). Silent so it doesn't disturb
+  // the runtime's TUI.
+  const [, , , sessionId] = process.argv;
+  setSessionAwaitingInput(sessionId!, "plan");
 } else if (hidden === "__approve-plan") {
   // Fired by the interactive supervisor's ExitPlanMode hook when the human accepts
-  // the plan; opens the session's `spawn_agent` gate. Stays silent (no stdout) so
-  // it doesn't disturb the runtime's TUI.
+  // the plan; opens the session's `spawn_agent` gate and clears the awaiting flag.
+  // Stays silent (no stdout) so it doesn't disturb the runtime's TUI.
   const [, , , sessionId] = process.argv;
   approveSessionPlan(sessionId!);
 } else {

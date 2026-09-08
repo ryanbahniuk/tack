@@ -104,6 +104,26 @@ const migrations: Migration[] = [
     // are stamped up front since there is no human in the loop.
     sql: `ALTER TABLE sessions ADD COLUMN plan_approved_at TEXT;`,
   },
+  {
+    version: 3,
+    name: "session_attention",
+    // Signals for the derived "needs input" state (see cli/liveness.ts).
+    //
+    // `awaiting_input_at`/`awaiting_reason` are an EPHEMERAL toggle, not a latch
+    // like `plan_approved_at`: set when the supervisor blocks on a human decision
+    // (e.g. a plan presented via ExitPlanMode) and cleared when it proceeds, so it
+    // re-arms on every plan iteration. NULL = not currently waiting.
+    //
+    // `last_seen_at` (session) + `finished_at` (agent) back the "unread completed
+    // work" half: an agent that finished after the human last looked at the session
+    // is unread. Both NULL until first stamped.
+    sql: `
+      ALTER TABLE sessions ADD COLUMN awaiting_input_at TEXT;
+      ALTER TABLE sessions ADD COLUMN awaiting_reason TEXT;
+      ALTER TABLE sessions ADD COLUMN last_seen_at TEXT;
+      ALTER TABLE agents ADD COLUMN finished_at TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

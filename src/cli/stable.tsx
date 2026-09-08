@@ -9,9 +9,9 @@ import {
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { agentLive, sessionLive } from "./liveness";
-import { tmuxAvailable, tmuxHasSession, tmuxSessionName } from "../session/tmux";
+import { agentLive, sessionLive, sessionNeedsInput } from "./liveness";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
+import { selfCommand } from "../process/self";
 import { discoverSessionPrs } from "../projects/prs";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
@@ -22,35 +22,37 @@ interface View {
   prs: SessionPrRow[];
   cost: number;
   live: boolean;
-  attachable: boolean;
+  needsInput: boolean;
 }
 
-// Resolve tmux's presence once, not on every 1s snapshot — it can't change while
-// the dashboard is open, and each `tmuxHasSession` probe already shells out.
-const HAS_TMUX = tmuxAvailable();
-
 function snapshot(showArchived: boolean): View[] {
-  return listSessions(showArchived).map((session) => ({
-    session,
-    agents: listAgents(session.id),
-    prs: listSessionPrs(session.id),
-    cost: sessionTotalCost(session.id).total,
-    live: sessionLive(session),
-    // A live tmux session = a parked interactive supervisor you can rejoin with
-    // `tack session attach <id>` (right where it was left, e.g. a pending plan).
-    attachable: HAS_TMUX && tmuxHasSession(tmuxSessionName(session.id)),
-  }));
+  return listSessions(showArchived).map((session) => {
+    const agents = listAgents(session.id);
+    return {
+      session,
+      agents,
+      prs: listSessionPrs(session.id),
+      cost: sessionTotalCost(session.id).total,
+      live: sessionLive(session),
+      // Waiting on the human: a plan to approve, or unread completed agent work.
+      needsInput: sessionNeedsInput(session, agents),
+    };
+  });
 }
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-function Dashboard({ config }: { config: TackConfig | null }) {
+function Dashboard({ config, onOpen }: { config: TackConfig | null; onOpen: (id: string) => void }) {
   const { exit } = useApp();
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<View[]>(() => snapshot(false));
   const [cursor, setCursor] = useState(0);
   const [notice, setNotice] = useState("");
 
+  // The dashboard only observes — it never marks a session seen. The "unread work"
+  // badge clears when the human actually opens the session (`tack session resume`,
+  // which attaches/resumes the supervisor and stamps `last_seen_at`), not just by
+  // highlighting it here.
   useEffect(() => {
     const t = setInterval(() => setRows(snapshot(showArchived)), 1000);
     return () => clearInterval(t);
@@ -66,7 +68,13 @@ function Dashboard({ config }: { config: TackConfig | null }) {
       setShowArchived((v) => !v);
       setCursor(0);
     } else if (!selected) return;
-    else if (input === "x") {
+    else if (input === "o" || key.return) {
+      // Hand the terminal to the interactive supervisor. Tearing down Ink and
+      // launching the session happens in `runStable` once this unmounts — we just
+      // record which session and exit.
+      onOpen(selected.session.id);
+      exit();
+    } else if (input === "x") {
       stopSession(selected.session.id);
       setNotice(`stopped ${selected.session.id}`);
     } else if (input === "a") {
@@ -100,7 +108,7 @@ function Dashboard({ config }: { config: TackConfig | null }) {
             <Text bold>{v.session.id}</Text>
             <Text dimColor> {v.session.status} </Text>
             <Text color="green">{usd(v.cost)}</Text>
-            {v.attachable ? <Text color="yellow"> attachable</Text> : null}
+            {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
             <Text dimColor> {v.session.title ?? ""}</Text>
           </Text>
           {i === cursor &&
@@ -126,7 +134,7 @@ function Dashboard({ config }: { config: TackConfig | null }) {
       ))}
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
-        <Text dimColor>j/k move · x stop · a archive · d delete · p find PRs · z toggle archived · q quit</Text>
+        <Text dimColor>j/k move · enter/o open · x stop · a archive · d delete · p find PRs · z toggle archived · q quit</Text>
       </Box>
     </Box>
   );
@@ -138,9 +146,42 @@ function agentStatusColor(status: string): string | undefined {
   return "gray";
 }
 
-/** Renders the live dashboard and resolves when the user quits. */
+// Alternate-screen-buffer controls: the dashboard renders on its own full screen and
+// restores the prior terminal contents (scrollback intact) on exit. Ink has no
+// built-in alt-screen, so we drive the escape sequences ourselves.
+const ALT_SCREEN_ENTER = "\u001b[?1049h";
+const ALT_SCREEN_EXIT = "\u001b[?1049l";
+
+/**
+ * Renders the live dashboard on a full-screen alternate buffer, resolving when the
+ * user quits. Pressing enter/o opens the selected session: we leave the alt buffer
+ * (restoring the normal screen), hand the terminal to an interactive
+ * `tack session resume <id>` subprocess — which attaches to the live supervisor or
+ * resumes it, and stamps `last_seen_at` so its "needs input" badge clears — then
+ * re-enter the dashboard when that session is left.
+ */
 export async function runStable(): Promise<void> {
   const config = await loadConfig().catch(() => null);
-  const app = render(<Dashboard config={config} />);
-  await app.waitUntilExit();
+  for (;;) {
+    let openId: string | undefined;
+    process.stdout.write(ALT_SCREEN_ENTER);
+    try {
+      const app = render(<Dashboard config={config} onOpen={(id) => (openId = id)} />);
+      await app.waitUntilExit();
+    } finally {
+      // Always restore the normal screen — whether quitting, opening a session, or
+      // if render throws — so we never strand the terminal in the alt buffer.
+      process.stdout.write(ALT_SCREEN_EXIT);
+    }
+    if (!openId) return; // quit, not open
+
+    // Runs on the normal screen so the session keeps real scrollback.
+    const { command, args } = selfCommand(["session", "resume", openId]);
+    const proc = Bun.spawn([command, ...args], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    await proc.exited;
+  }
 }
