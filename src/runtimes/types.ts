@@ -71,9 +71,13 @@ export interface RunOptions {
   /**
    * A command to run when the supervisor presents a plan for approval. The claude
    * adapter wires it as a PreToolUse hook on ExitPlanMode (which fires when the plan
-   * is put in front of the human, before they decide), so Tack can mark the session
-   * as awaiting input. Cleared by the matching `onPlanApproved` (acceptance) hook.
-   * Only the attended read-only supervisor sets this.
+   * is put in front of the human, before they decide). Tack uses it to mark the
+   * session as awaiting input AND to return an `ask` permission decision, so the
+   * human sees a single approve/change prompt instead of claude's native
+   * "auto-accept edits vs manually approve edits" fork — that fork is meaningless
+   * for the delegate-only supervisor, whose spawned agents always run in auto mode.
+   * Cleared by the matching `onPlanApproved` (acceptance) hook. Only the attended
+   * read-only supervisor sets this.
    */
   onPlanPresented?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */

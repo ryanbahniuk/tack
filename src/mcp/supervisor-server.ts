@@ -45,6 +45,18 @@ export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`
 export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
 
 /**
+ * Plain-language wording for the plan-approval prompt. Handed to the runtime via
+ * the ExitPlanMode PreToolUse hook so the human sees a single approve/change
+ * decision instead of Claude's native "auto-accept edits vs manually approve
+ * edits" fork. That fork is meaningless here: the supervisor never edits, and the
+ * agents it spawns always run headless in auto mode (see PERMISSION_ARGS in the
+ * claude adapter) regardless of which branch the human would pick — so we suppress
+ * it and state plainly what approving does.
+ */
+export const SUPERVISOR_PLAN_APPROVAL_PROMPT =
+  "Start the agents on this plan? They run autonomously in auto mode.";
+
+/**
  * The supervisor's tool server. The supervisor is itself a runtime session
  * (claude|codex) running read-only; these tools are how it plans, delegates to
  * agents, waits on them, reads their results, and adjudicates amendments — the

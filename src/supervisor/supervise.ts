@@ -26,6 +26,7 @@ import {
   SUPERVISOR_APPROVAL_PROMPT,
   SUPERVISOR_APPROVAL_TOOLS,
   SUPERVISOR_MCP_NAME,
+  SUPERVISOR_PLAN_APPROVAL_PROMPT,
 } from "../mcp/supervisor-server";
 import { buildSupervisorContext } from "./context";
 import {
@@ -206,7 +207,13 @@ export async function superviseInteractive(opts: {
   // open the gate up front and rely on their own in-loop approvals.
   const usesPlanHook = model.runtime === "claude";
   const approveHook = usesPlanHook ? selfCommand(["__approve-plan", session.id]) : undefined;
-  const awaitHook = usesPlanHook ? selfCommand(["__await-plan", session.id]) : undefined;
+  // The await-plan hook both records the awaiting-input state AND emits the plan's
+  // approve/change prompt (its wording passed here) — replacing claude's native
+  // auto-vs-manual fork, which is meaningless for a delegate-only supervisor whose
+  // agents always run in auto mode.
+  const awaitHook = usesPlanHook
+    ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
+    : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
 
   // The human is now looking at this session (creating/resuming it), so anything

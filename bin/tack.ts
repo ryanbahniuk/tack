@@ -815,11 +815,27 @@ if (hidden === "__mcp") {
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse/ExitPlanMode hook when a plan is
-  // presented for approval; marks the session as awaiting the human's decision (the
-  // matching __approve-plan clears it on acceptance). Silent so it doesn't disturb
-  // the runtime's TUI.
-  const [, , , sessionId] = process.argv;
+  // presented for approval. Two jobs: (1) mark the session as awaiting the human's
+  // decision (the matching __approve-plan clears it on acceptance); (2) emit an `ask`
+  // permission decision so claude shows OUR single approve/change prompt instead of
+  // its native "auto-accept edits vs manually approve edits" fork. That fork is
+  // meaningless for the delegate-only supervisor — the agents it spawns always run in
+  // auto mode regardless — so we suppress it and word the prompt plainly. When the
+  // reason arg is present its JSON is the only thing on stdout (claude reads it as the
+  // hook decision); otherwise this stays silent.
+  const [, , , sessionId, reason] = process.argv;
   setSessionAwaitingInput(sessionId!, "plan");
+  if (reason) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: reason,
+        },
+      }),
+    );
+  }
 } else if (hidden === "__approve-plan") {
   // Fired by the interactive supervisor's ExitPlanMode hook when the human accepts
   // the plan; opens the session's `spawn_agent` gate and clears the awaiting flag.
