@@ -68,6 +68,21 @@ export function tmuxEnsureSession(sessionId: string, cwd: string, spec: Interact
   return true;
 }
 
+/**
+ * Kill the tmux session backing `sessionId`, if one exists. Idempotent and
+ * best-effort: a missing session or absent tmux client is a no-op. Called when a
+ * Tack session is archived or deleted, so no orphaned `tack-<id>` session is left
+ * running in the background. The `=` prefix forces an exact-name match.
+ */
+export function tmuxKillSession(sessionId: string): void {
+  const name = tmuxSessionName(sessionId);
+  try {
+    spawnSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
+  } catch {
+    /* tmux absent or session already gone */
+  }
+}
+
 /** Whether we're running inside a tmux session already. When true, attaching to one
  * of our sessions nests tmux, so the prefix must be pressed twice to reach the inner
  * session — which the detach hint reflects. */

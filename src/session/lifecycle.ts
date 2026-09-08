@@ -10,6 +10,7 @@ import {
   setSessionStatus,
 } from "../db";
 import { isAlive } from "../process/self";
+import { tmuxKillSession } from "./tmux";
 import { purgeSessionWorktrees } from "../worktree/worktree";
 
 function kill(pid: number | null | undefined): void {
@@ -37,6 +38,7 @@ export function stopSession(sessionId: string): void {
 }
 
 export function archiveSession(sessionId: string): void {
+  tmuxKillSession(sessionId);
   setSessionStatus(sessionId, "archived");
 }
 
@@ -51,6 +53,7 @@ export function unarchiveSession(sessionId: string): void {
  */
 export function deleteSession(sessionId: string): void {
   stopSession(sessionId);
+  tmuxKillSession(sessionId);
   purgeSessionWorktrees(sessionId);
   dbDeleteSession(sessionId);
   for (const dir of [ARTIFACTS_DIR, CONTEXT_DIR, LOGS_DIR]) {
