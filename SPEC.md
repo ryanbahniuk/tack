@@ -317,7 +317,9 @@ name**; loading fails loudly if a role names an undefined model.
 ## 11. Stable view, PRs, lifecycle
 
 - **`tack stable`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
-  liveness, refresh loop, keys `j/k x a d p z q`.
+  liveness, refresh loop, keys `j/k c x a d p z q`. `c` hands the terminal to the
+  interactive supervisor TUI to create a session, returning to the dashboard when
+  it exits or detaches.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +

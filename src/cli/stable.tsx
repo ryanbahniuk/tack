@@ -15,6 +15,7 @@ import { archiveSession, deleteSession, stopSession, unarchiveSession } from "..
 import { discoverSessionPrs } from "../projects/prs";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
+import { createSupervisorSession, superviseInteractive } from "../supervisor/supervise";
 
 interface View {
   session: SessionRow;
@@ -44,12 +45,20 @@ function snapshot(showArchived: boolean): View[] {
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-function Dashboard({ config }: { config: TackConfig | null }) {
+function Dashboard({
+  config,
+  initialNotice,
+  onOutcome,
+}: {
+  config: TackConfig | null;
+  initialNotice: string;
+  onOutcome: (outcome: Outcome) => void;
+}) {
   const { exit } = useApp();
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<View[]>(() => snapshot(false));
   const [cursor, setCursor] = useState(0);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(initialNotice);
 
   useEffect(() => {
     const t = setInterval(() => setRows(snapshot(showArchived)), 1000);
@@ -65,6 +74,9 @@ function Dashboard({ config }: { config: TackConfig | null }) {
     else if (input === "z") {
       setShowArchived((v) => !v);
       setCursor(0);
+    } else if (input === "c") {
+      onOutcome("create");
+      exit();
     } else if (!selected) return;
     else if (input === "x") {
       stopSession(selected.session.id);
@@ -91,7 +103,7 @@ function Dashboard({ config }: { config: TackConfig | null }) {
       <Text bold>
         Tack {showArchived ? "(all)" : "(active)"} — {rows.length} session(s)
       </Text>
-      {rows.length === 0 && <Text dimColor>No sessions. Run `tack session create`.</Text>}
+      {rows.length === 0 && <Text dimColor>No sessions. Press `c` to create one.</Text>}
       {rows.map((v, i) => (
         <Box key={v.session.id} flexDirection="column">
           <Text>
@@ -126,7 +138,9 @@ function Dashboard({ config }: { config: TackConfig | null }) {
       ))}
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
-        <Text dimColor>j/k move · x stop · a archive · d delete · p find PRs · z toggle archived · q quit</Text>
+        <Text dimColor>
+          j/k move · c new session · x stop · a archive · d delete · p find PRs · z toggle archived · q quit
+        </Text>
       </Box>
     </Box>
   );
@@ -138,9 +152,58 @@ function agentStatusColor(status: string): string | undefined {
   return "gray";
 }
 
+type Outcome = "quit" | "create";
+
+/**
+ * Erases the visible screen and homes the cursor (`ESC[2J` + `ESC[H`), not the
+ * `3J` variant — that would also nuke scrollback, which users expect to keep
+ * (e.g. to scroll back after a `q`).
+ */
+function clearScreen(): void {
+  process.stdout.write("\x1b[2J\x1b[H");
+}
+
+/**
+ * Creates a session via the same foreground path as bare `tack` with no `-m`
+ * (bin/tack.ts's `sessionCreate`): an idle interactive supervisor TUI the user
+ * types into. Never throws — a failure (e.g. a missing runtime binary) becomes
+ * a footer notice instead of crashing the dashboard.
+ */
+async function createSessionInteractive(config: TackConfig | null): Promise<string> {
+  if (!config) return "no config — run `tack init`";
+  try {
+    // Mirrors bin/tack.ts:614 — an empty prompt falls back to a placeholder title
+    // since the session needs one before the user types anything.
+    const session = createSupervisorSession("(interactive session)", config);
+    const { detached } = await superviseInteractive({ session, prompt: "", resume: false, config });
+    if (detached) return `${session.id} detached — still running`;
+    return `${session.id} exited · ${usd(sessionTotalCost(session.id).total)}`;
+  } catch (err) {
+    return `create failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 /** Renders the live dashboard and resolves when the user quits. */
 export async function runStable(): Promise<void> {
   const config = await loadConfig().catch(() => null);
-  const app = render(<Dashboard config={config} />);
-  await app.waitUntilExit();
+  let notice = "";
+
+  for (;;) {
+    clearScreen();
+    let outcome: Outcome = "quit";
+    const app = render(
+      <Dashboard
+        config={config}
+        initialNotice={notice}
+        onOutcome={(o) => {
+          outcome = o;
+        }}
+      />,
+    );
+    await app.waitUntilExit();
+    app.unmount();
+
+    if (outcome === "quit") return;
+    notice = await createSessionInteractive(config);
+  }
 }

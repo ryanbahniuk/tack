@@ -154,6 +154,7 @@ tack session create --resume <session>          # follow up, in the chat
 tack session create --background -m "Migrate all services off the deprecated auth client"
 
 # Watch live work: Session → Agent → PR tree with cost and liveness.
+# Press `c` in the dashboard to create a new session without leaving it.
 tack stable
 
 # Inspect and manage sessions.
