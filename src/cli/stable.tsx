@@ -123,10 +123,10 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
           {i === cursor &&
             v.agents.map((a) => (
               <Text key={a.id}>
-                {"    ├─ "}
+                {"    ├─ Agent "}
                 <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
-                <Text> {a.project_name} </Text>
                 <Text dimColor>
+                  {" "}
                   {a.runtime}:{a.model}
                 </Text>
                 <Text color="green"> {usd(a.cost)}</Text>
