@@ -95,6 +95,15 @@ const migrations: Migration[] = [
       CREATE UNIQUE INDEX idx_session_prs_url ON session_prs(session_id, url);
     `,
   },
+  {
+    version: 2,
+    name: "session_plan_approval",
+    // The plan-approval gate for `spawn_agent`: an attended supervisor must get the
+    // human's approval (via the runtime's ExitPlanMode) before any agent runs. Null
+    // means unapproved; a timestamp means approved. Background (headless) sessions
+    // are stamped up front since there is no human in the loop.
+    sql: `ALTER TABLE sessions ADD COLUMN plan_approved_at TEXT;`,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

@@ -20,6 +20,9 @@ export interface SessionRow {
   cost: number;
   pid: number | null;
   heartbeat_at: string | null;
+  /** When the human approved this session's plan (gates `spawn_agent`); null = not
+   * yet approved. Background sessions are stamped up front — no human in the loop. */
+  plan_approved_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -133,6 +136,19 @@ export function addSessionCost(id: string, delta: number): void {
 /** Sets the supervisor-conversation cost outright (for a cumulative cost figure). */
 export function setSessionCost(id: string, usd: number): void {
   getDb().prepare(`UPDATE sessions SET cost = ?, updated_at = ? WHERE id = ?`).run(usd, nowIso(), id);
+}
+
+/**
+ * Marks a session's plan as approved (idempotent — the first approval time wins),
+ * opening the `spawn_agent` gate. Called by the interactive supervisor's
+ * ExitPlanMode hook when the human accepts the plan, and up front for background
+ * sessions (which have no human to approve). */
+export function approveSessionPlan(id: string): void {
+  getDb()
+    .prepare(
+      `UPDATE sessions SET plan_approved_at = COALESCE(plan_approved_at, ?), updated_at = ? WHERE id = ?`,
+    )
+    .run(nowIso(), nowIso(), id);
 }
 
 export function stampSessionHeartbeat(id: string, pid: number): void {

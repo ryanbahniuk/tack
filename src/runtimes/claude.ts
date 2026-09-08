@@ -109,13 +109,32 @@ export class ClaudeRuntime implements Runtime {
     const args = ["--model", m.id];
     if (opts.readOnly) {
       args.push("--permission-mode", "plan");
-      args.push("--disallowedTools", "Edit,Write,NotebookEdit,Task,Agent");
+      // With `disallowShell`, Bash is forbidden too so the supervisor can't route
+      // around its no-write posture by shelling out (e.g. `echo … > plan.md`) — it
+      // plans via its `tack-supervisor` tools and the chat, never by writing files.
+      args.push("--disallowedTools", readOnlyDisallowed(opts));
+      // Auto-allow the mounted Tack MCP servers so their read/coordinate calls don't
+      // each raise a permission prompt — the ONE human gate we want is the plan
+      // approval (ExitPlanMode), after which spawn_agent proceeds. `spawn_agent` is
+      // still held before approval by its own plan-gate, not by a per-call prompt.
+      for (const s of opts.mcpServers ?? []) args.push("--allowedTools", `mcp__${s.name}`);
     }
     if (m.effort) args.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) args.push("--resume", opts.sessionRef);
     else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
+    // Flip the session's plan-approval gate when the human accepts the plan. A
+    // PostToolUse hook on ExitPlanMode fires only after acceptance (rejection /
+    // "keep planning" never completes the tool), so this is an un-forgeable human
+    // signal the model can't self-trigger.
+    if (opts.onPlanApproved) {
+      const command = shellJoin([opts.onPlanApproved.command, ...opts.onPlanApproved.args]);
+      const settings = {
+        hooks: { PostToolUse: [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }] },
+      };
+      args.push("--settings", JSON.stringify(settings));
+    }
     const mcpServers: Record<string, { command: string; args: string[] }> = {};
     for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
     args.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
@@ -198,7 +217,9 @@ export class ClaudeRuntime implements Runtime {
     // e.g. `tack projects refresh` spawning an Explore agent to read a README.
     if (opts.readOnly) {
       cmd.push("--permission-mode", "plan", "--permission-prompts", "none");
-      cmd.push("--disallowedTools", "Edit,Write,NotebookEdit,Task,Agent");
+      // `disallowShell` also forbids Bash so a delegate-only run can't shell out to
+      // write files; plain read-only runs keep Bash for read investigation.
+      cmd.push("--disallowedTools", readOnlyDisallowed(opts));
     } else {
       cmd.push(...PERMISSION_ARGS);
     }
@@ -218,6 +239,20 @@ export class ClaudeRuntime implements Runtime {
     // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }
+}
+
+/** The `--disallowedTools` list for a read-only run: never the native edit or
+ * subagent tools, plus Bash when the caller forbids shelling out entirely. */
+function readOnlyDisallowed(opts: RunOptions): string {
+  const base = ["Edit", "Write", "NotebookEdit", "Task", "Agent"];
+  if (opts.disallowShell) base.push("Bash");
+  return base.join(",");
+}
+
+/** Joins a command + args into a single shell string (hook commands run via `sh
+ * -c`), single-quoting each token so paths/args with spaces survive intact. */
+function shellJoin(parts: string[]): string {
+  return parts.map((p) => `'${p.replace(/'/g, `'\\''`)}'`).join(" ");
 }
 
 function previewOf(content: unknown): string {

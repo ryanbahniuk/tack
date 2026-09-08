@@ -242,9 +242,13 @@ Adapter specifics, hidden behind the interface:
 - **claude** (`src/runtimes/claude.ts`): `claude -p --output-format stream-json
   --verbose --model <id>`; autonomous agents use `--permission-mode auto
   --permission-prompts none`; the supervisor uses `--permission-mode plan
-  --permission-prompts none --disallowedTools Edit,Write,NotebookEdit`; MCP via
-  inline `--mcp-config` JSON + `--strict-mcp-config`; cost from the final `result`
-  event's `total_cost_usd`.
+  --permission-prompts none --disallowedTools Edit,Write,NotebookEdit,Task,Agent,Bash`
+  (Bash disallowed via `disallowShell` so a delegate-only run can't shell out to
+  write files); MCP via inline `--mcp-config` JSON + `--strict-mcp-config`; cost from
+  the final `result` event's `total_cost_usd`. The **interactive** supervisor also
+  auto-allows the mounted MCP servers (`--allowedTools mcp__<server>`) and wires a
+  `--settings` PostToolUse hook on `ExitPlanMode` — accepting the plan runs `tack
+  __approve-plan <id>`, which opens the session's `spawn_agent` gate (see §9).
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's
@@ -268,9 +272,14 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime's transcript once it exits (claude sums per-message `usage` × pricing;
    codex reads its rollout's cumulative token count). `--background` keeps the
    headless, detached, streamed runner for unattended runs.
-2. The supervisor investigates, calls `set_shared_context`, then `spawn_agent` per
-   unit of work. Each spawn `prepareAgent`s (creates the row + prompt artifact) and
-   launches a **detached** `tack __run-agent <agentId>` runner.
+2. The supervisor investigates, calls `set_shared_context`, presents its plan, and
+   gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
+   it refuses until the session's `plan_approved_at` is set. An attended claude
+   session flips that gate when the human accepts the plan (the `ExitPlanMode` hook →
+   `tack __approve-plan`); background runs (no human) and codex interactive sessions
+   (which keep native per-tool approvals) are pre-approved up front. Once approved,
+   each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
+   a **detached** `tack __run-agent <agentId>` runner.
 3. Each agent (`runAgent`) creates its worktree, materializes context, mounts the
    coordination server, runs its runtime autonomously, and persists usage/cost/refs
    as events stream; on completion it captures the worktree diff.

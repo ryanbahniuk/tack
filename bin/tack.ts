@@ -14,7 +14,7 @@ import {
   removeProjectFromConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
-import { createSession, getSession, listSessions, sessionTotalCost, type SessionRow } from "../src/db";
+import { approveSessionPlan, createSession, getSession, listSessions, sessionTotalCost, type SessionRow } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import {
@@ -675,6 +675,8 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
       console.error(pc.red(`Session "${resumeId}" has no resume handle yet — it never got far enough to follow up on.`));
       return process.exit(1);
     }
+    // Headless: no human to approve the plan, so open the gate up front.
+    approveSessionPlan(existing.id);
     writeSupervisorPrompt(existing.id, problem);
     const pid = spawnSupervisorRunner(existing.id, "resume");
     return printBackgroundHandoff(existing.id, pid);
@@ -682,6 +684,8 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
   const model = modelForRole(config, "supervisor");
   console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
   const session = createSupervisorSession(problem, config);
+  // Headless: no human to approve the plan, so open the gate up front.
+  approveSessionPlan(session.id);
   writeSupervisorPrompt(session.id, problem);
   const pid = spawnSupervisorRunner(session.id, "fresh");
   return printBackgroundHandoff(session.id, pid);
@@ -758,6 +762,12 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__approve-plan") {
+  // Fired by the interactive supervisor's ExitPlanMode hook when the human accepts
+  // the plan; opens the session's `spawn_agent` gate. Stays silent (no stdout) so
+  // it doesn't disturb the runtime's TUI.
+  const [, , , sessionId] = process.argv;
+  approveSessionPlan(sessionId!);
 } else {
   await runMain(main);
 }

@@ -83,6 +83,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
     async ({ project, prompt, model }) => {
       const session = requireSession();
+      // Plan-gate: agents only run once the human has approved the plan (attended
+      // sessions flip this via the ExitPlanMode hook; background sessions are
+      // pre-approved). Refuse until then so a spawn can't slip out during planning.
+      if (!session.plan_approved_at)
+        throw new Error(
+          "Plan not approved yet. Present your plan and shared contract to the human and get their " +
+            "approval (finish planning / accept the plan) before spawning any agents. `spawn_agent` " +
+            "stays blocked until they approve.",
+        );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
       const m = resolveModel(config, model ?? config.roles.agent);

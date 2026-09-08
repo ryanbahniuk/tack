@@ -36,8 +36,22 @@ export interface RunOptions {
    * never edits. Adapters translate to their CLI's read-only sandbox/permissions.
    */
   readOnly?: boolean;
+  /**
+   * Also forbid the shell (Bash) on top of `readOnly`. The delegate-only supervisor
+   * sets this so it can't route around its no-write posture by shelling out to
+   * create files — it plans through its MCP tools and the chat. Plain read-only
+   * runs (e.g. project summarization) leave it off and keep Bash for investigation.
+   */
+  disallowShell?: boolean;
   /** Extra directories the run may read beyond its cwd (project roots, allowlist). */
   addDirs?: string[];
+  /**
+   * A command to run when the human approves the plan. The claude adapter wires it
+   * as a PostToolUse hook on ExitPlanMode (which only fires on acceptance), so Tack
+   * can flip the session's plan-approval gate that `spawn_agent` checks. Only the
+   * attended read-only supervisor sets this; headless/agent runs omit it.
+   */
+  onPlanApproved?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;

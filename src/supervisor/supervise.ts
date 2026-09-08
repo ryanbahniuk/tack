@@ -4,6 +4,7 @@ import { LOGS_DIR, TACK_HOME } from "../paths";
 import type { TackConfig } from "../config/schema";
 import { modelForRole, resolveModel } from "../config/load";
 import {
+  approveSessionPlan,
   createSession,
   getSession,
   setSessionCost,
@@ -126,6 +127,7 @@ async function* runSupervisor(opts: {
     model,
     bin: resolved.bin,
     readOnly: true,
+    disallowShell: true,
     addDirs,
     resume,
     sessionRef,
@@ -175,6 +177,15 @@ export async function superviseInteractive(opts: {
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
 
+  // The plan-approval gate on `spawn_agent` is flipped by claude's ExitPlanMode
+  // hook when the human accepts the plan. Codex has no such hook — instead it keeps
+  // approvals interactive (a human okays each tool call natively), so gating there
+  // would just deadlock. So: claude wires the hook and starts gated; other runtimes
+  // open the gate up front and rely on their own in-loop approvals.
+  const usesPlanHook = model.runtime === "claude";
+  const approveHook = usesPlanHook ? selfCommand(["__approve-plan", session.id]) : undefined;
+  if (!usesPlanHook) approveSessionPlan(session.id);
+
   const cwd = join(TACK_HOME, "supervisor", session.id);
   mkdirSync(cwd, { recursive: true });
   const addDirs = [...config.projects.map((p) => p.path), ...config.readAllowlist];
@@ -192,11 +203,13 @@ export async function superviseInteractive(opts: {
     model,
     bin: resolved.bin,
     readOnly: true,
+    disallowShell: true,
     addDirs,
     resume,
     sessionRef,
     contextFile,
     mcpServers: [{ name: "tack-supervisor", command: supervisorMcp.command, args: supervisorMcp.args }],
+    onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
   });
 
