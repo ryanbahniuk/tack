@@ -1,5 +1,4 @@
 import { writeContextFile } from "../artifacts/store";
-import { sessionPrBranch } from "../worktree/worktree";
 
 export interface AgentContextParts {
   sessionId: string;
@@ -13,11 +12,10 @@ export interface AgentContextParts {
  * Materializes the single context file handed to an agent BY PATH. This is
  * Tack-owned guidance layered on top of — never replacing — the repo's own
  * CLAUDE.md/AGENTS.md. It frames the agent's role, surfaces the shared contract,
- * documents the coordination tools, and pins the PR-branch nomenclature so a PR
- * can be discovered and tied back to the session.
+ * documents the coordination tools, and tells the agent how to finish (commit its
+ * work; the supervisor, not the agent, opens PRs).
  */
 export function buildAgentContext(parts: AgentContextParts): string {
-  const branch = sessionPrBranch(parts.sessionId, "<short-slug>");
   const sections: string[] = [];
 
   sections.push(
@@ -49,11 +47,13 @@ export function buildAgentContext(parts: AgentContextParts): string {
 
   sections.push(
     [
-      "## Opening a PR",
+      "## Finishing up",
       "",
-      "If your task warrants a pull request, create it with the `gh` CLI from a branch",
-      `named \`${branch}\` (replace \`<short-slug>\` with a few words describing the change).`,
-      "Encoding the session id in the branch is what lets Tack find the PR afterward.",
+      "When your task is complete, commit ALL of your changes to your worktree branch",
+      "with clear messages (several commits are fine). Do NOT open a pull request and do",
+      "NOT push — the supervisor reviews every agent's work, summarizes it for the human,",
+      "and opens PRs itself once approved. Anything you leave uncommitted risks being",
+      "left out, so make sure your working tree is clean before you finish.",
     ].join("\n"),
   );
 

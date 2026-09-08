@@ -10,6 +10,7 @@ import {
   listAgents,
   listPendingAmendments,
   resolveAmendment,
+  upsertSessionPr,
   type AgentStatus,
 } from "../db";
 import {
@@ -19,9 +20,22 @@ import {
 } from "../artifacts/store";
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
+import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
+import { openSessionPr } from "../projects/prs";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The MCP name this server is mounted under (see supervise.ts). */
+export const SUPERVISOR_MCP_NAME = "tack-supervisor";
+
+/**
+ * Supervisor tools that must prompt the human on every call rather than riding the
+ * server-wide auto-allow — opening a PR is outward-facing, so it stays behind an
+ * explicit per-call human ok even after the plan is approved. The attended
+ * launcher hands these to the runtime as `approvalTools`.
+ */
+export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`];
 
 /**
  * The supervisor's tool server. The supervisor is itself a runtime session
@@ -98,6 +112,58 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const agent = prepareAgent({ session, project: proj, model: m, prompt });
       spawnAgentRunner(session.id, agent.id);
       return text({ agentId: agent.id, project, model: m.name, runtime: m.runtime });
+    },
+  );
+
+  server.registerTool(
+    "open_pr",
+    {
+      description:
+        "Open a pull request for a finished agent's committed work. YOU own PRs — agents no longer open their " +
+        "own. Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
+        "explicitly approved opening PRs. Pushes the agent's worktree branch under the tack/pr/<session>/<slug> " +
+        "nomenclature and runs `gh pr create`; returns the PR url.",
+      inputSchema: {
+        agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
+        title: z.string().describe("PR title"),
+        body: z.string().describe("PR description (markdown)"),
+        slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
+        base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
+        draft: z.boolean().optional().describe("Open as a draft PR"),
+      },
+    },
+    async ({ agentId, title, body, slug, base, draft }) => {
+      requireSession();
+      const a = getAgent(agentId);
+      if (!a) throw new Error(`Unknown agent ${agentId}`);
+      if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
+      if (!a.branch || !a.worktree_path)
+        throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
+      const proj = config.projects.find((p) => p.name === a.project_name);
+      if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
+      // Safety net: fold any changes the agent left uncommitted into its branch so
+      // nothing is dropped from the PR (a push only carries commits).
+      commitWorktree(a.worktree_path, `Tack: finalize work for agent ${agentId}`);
+      const pr = openSessionPr({
+        repoPath: proj.path,
+        localBranch: a.branch,
+        prBranch: sessionPrBranch(sessionId, slug ?? title),
+        title,
+        body,
+        base,
+        draft,
+      });
+      upsertSessionPr({
+        sessionId,
+        url: pr.url,
+        agentId,
+        projectName: a.project_name,
+        number: pr.number,
+        title,
+        state: draft ? "draft" : "open",
+        headBranch: pr.headBranch,
+      });
+      return text({ ok: true, url: pr.url, number: pr.number, branch: pr.headBranch });
     },
   );
 

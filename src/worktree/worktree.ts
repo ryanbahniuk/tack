@@ -7,6 +7,10 @@ export interface Worktree {
   repo: string;
   path: string;
   branch: string;
+  /** The commit the branch forked from. Diffs are taken against this so an agent's
+   * committed work (it commits and opens PRs) shows up — `git diff HEAD` would
+   * only capture uncommitted changes and read empty after a commit. */
+  base: string;
 }
 
 function git(args: string[], cwd: string): string {
@@ -57,6 +61,23 @@ function assertRepoRoot(repo: string): void {
   }
 }
 
+/** The ref where we stash a worktree branch's fork point, mirroring the branch
+ * name under `refs/tack-base/` so the base survives the agent moving HEAD (commits,
+ * rebases) and can be recovered on resume. */
+function baseRef(branch: string): string {
+  return `refs/tack-base/${branch.slice("tack/".length)}`;
+}
+
+/** Reads the recorded fork point for a branch, or null if it was never recorded. */
+function readBaseRef(repo: string, branch: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--verify", "--quiet", baseRef(branch)], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  const sha = (r.stdout ?? "").trim();
+  return r.status === 0 && sha ? sha : null;
+}
+
 /** Creates a fresh git worktree on a new `tack/<sessionId>/<agentId>` branch off HEAD. */
 export function createWorktree(repo: string, sessionId: string, agentId: string): Worktree {
   assertRepoRoot(repo);
@@ -64,15 +85,23 @@ export function createWorktree(repo: string, sessionId: string, agentId: string)
   mkdirSync(root, { recursive: true });
   const path = join(root, agentId);
   const branch = `tack/${sessionId}/${agentId}`;
+  const base = git(["rev-parse", "HEAD"], repo);
   git(["worktree", "add", "-b", branch, path, "HEAD"], repo);
-  return { repo, path, branch };
+  // Pin the fork point so the accumulated diff is recoverable even after the agent
+  // commits (which moves the branch HEAD away from `base`).
+  git(["update-ref", baseRef(branch), base], repo);
+  return { repo, path, branch, base };
 }
 
 /** Reuses an existing worktree at the expected path, else creates one (resume-safe). */
 export function ensureWorktree(repo: string, sessionId: string, agentId: string): Worktree {
   const path = join(sessionWorktreesRoot(sessionId), agentId);
   if (existsSync(path)) {
-    return { repo, path, branch: `tack/${sessionId}/${agentId}` };
+    const branch = `tack/${sessionId}/${agentId}`;
+    // Recover the pinned fork point; fall back to the worktree's own HEAD only if a
+    // legacy worktree predates base-ref recording (yields today's HEAD-only diff).
+    const base = readBaseRef(repo, branch) ?? git(["rev-parse", "HEAD"], path);
+    return { repo, path, branch, base };
   }
   return createWorktree(repo, sessionId, agentId);
 }
@@ -81,11 +110,12 @@ function tryGit(args: string[], cwd: string): void {
   spawnSync("git", args, { cwd, encoding: "utf8" });
 }
 
-/** Best-effort teardown of one agent's worktree and its branch. */
+/** Best-effort teardown of one agent's worktree, its branch, and its base ref. */
 export function removeWorktree(wt: Worktree): void {
   if (existsSync(wt.path)) tryGit(["worktree", "remove", wt.path, "--force"], wt.repo);
   tryGit(["worktree", "prune"], wt.repo);
   tryGit(["branch", "-D", wt.branch], wt.repo);
+  tryGit(["update-ref", "-d", baseRef(wt.branch)], wt.repo);
 }
 
 /** Removes the whole session's worktree directory (best-effort). */
@@ -93,8 +123,24 @@ export function purgeSessionWorktrees(sessionId: string): void {
   rmSync(sessionWorktreesRoot(sessionId), { recursive: true, force: true });
 }
 
-/** The diff a worktree accumulated vs its base HEAD, as a unified patch. */
+/**
+ * Commits any uncommitted changes left in a worktree so they're included when the
+ * branch is pushed for a PR. Agents are asked to commit their own work; this is a
+ * safety net for the ones that don't, so no work is silently dropped from the PR.
+ * No-op (returns false) when the tree is already clean.
+ */
+export function commitWorktree(worktreePath: string, message: string): boolean {
+  const status = spawnSync("git", ["status", "--porcelain"], { cwd: worktreePath, encoding: "utf8" });
+  if ((status.stdout ?? "").trim() === "") return false;
+  git(["add", "-A"], worktreePath);
+  git(["commit", "-m", message], worktreePath);
+  return true;
+}
+
+/** The full diff a worktree accumulated since it forked, as a unified patch.
+ * Taken against the recorded fork point (`wt.base`) rather than HEAD so it includes
+ * the agent's commits, not just uncommitted working-tree changes. */
 export function worktreeDiff(wt: Worktree): string {
-  const r = spawnSync("git", ["diff", "HEAD"], { cwd: wt.path, encoding: "utf8" });
+  const r = spawnSync("git", ["diff", wt.base], { cwd: wt.path, encoding: "utf8" });
   return r.status === 0 ? (r.stdout ?? "") : "";
 }

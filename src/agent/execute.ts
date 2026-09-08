@@ -82,6 +82,10 @@ export async function* runAgent(
 
   setAgentStatus(agent.id, "running");
   let ok = false;
+  // Accumulate streamed text as a fallback output: a runtime's final `summary` can
+  // come back empty (e.g. an agent that ends on a tool call with no closing prose),
+  // and we'd rather persist the transcript than leave `read_agent_output` blank.
+  let transcript = "";
 
   for await (const ev of runtime.run({
     prompt,
@@ -109,10 +113,15 @@ export async function* runAgent(
       case "cost":
         setAgentCost(agent.id, ev.usd, ev.source);
         break;
-      case "done":
-        ok = ev.ok;
-        if (ev.summary) writeAgentArtifact(session.id, agent.id, "output", ev.summary);
+      case "text":
+        transcript += ev.text;
         break;
+      case "done": {
+        ok = ev.ok;
+        const output = ev.summary?.trim() || transcript.trim();
+        if (output) writeAgentArtifact(session.id, agent.id, "output", output);
+        break;
+      }
     }
     yield ev;
   }

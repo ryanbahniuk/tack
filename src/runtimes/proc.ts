@@ -24,7 +24,7 @@ export async function* streamJson(
      * (e.g. Claude Code) that read it from stdin when stdin isn't a TTY. */
     stdin?: string;
   },
-): AsyncGenerator<unknown> {
+): AsyncGenerator<unknown, number> {
   mkdirSync(dirname(opts.logPath), { recursive: true });
   const logFd = openSync(opts.logPath, "a");
   appendFileSync(logFd, `\n$ ${cmd.join(" ")}\n`);
@@ -72,8 +72,11 @@ export async function* streamJson(
         /* ignore */
       }
     }
-    await proc.exited;
+    const code = await proc.exited;
     await stderrDone;
+    // Returned as the generator's completion value so callers can distinguish a
+    // clean run from a crash — a `for await` loop simply ignores it.
+    return code;
   } finally {
     closeSync(logFd);
   }

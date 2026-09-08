@@ -30,37 +30,59 @@ export class CodexRuntime implements Runtime {
     const cmd = this.buildCmd(opts);
     let sawSession = false;
     let usage: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    let ok = true;
     let sawError = false;
+    // Track whether any event we recognized came through and keep the last agent
+    // message. The `--json` schema is version-fragile, so a build we can't parse —
+    // or a run that crashed on startup (e.g. a denied macOS file-access prompt) —
+    // streams nothing we understand; we use `sawActivity` to catch that below, and
+    // `summary` so a codex agent's final message is captured as its output (claude
+    // gets this from its `result` event; codex has no equivalent single field).
+    let sawActivity = false;
+    let summary = "";
+    let exitCode = 0;
 
     try {
-      for await (const raw of streamJson(cmd, {
+      const stream = streamJson(cmd, {
         cwd: opts.cwd,
         logPath: opts.logPath,
         signal: opts.signal,
-      })) {
-        const ev = raw as any;
+      });
+      let next = await stream.next();
+      for (; !next.done; next = await stream.next()) {
+        const ev = next.value as any;
 
         const sid = findSessionId(ev);
         if (!sawSession && sid) {
           sawSession = true;
+          sawActivity = true;
           yield { type: "session", ref: sid };
         }
 
         const u = findUsage(ev);
-        if (u) usage = u; // cumulative total; keep latest
+        if (u) {
+          usage = u; // cumulative total; keep latest
+          sawActivity = true;
+        }
 
         const text = findAgentText(ev);
-        if (text) yield { type: "text", text };
+        if (text) {
+          summary = text; // keep latest agent message as the run's summary
+          sawActivity = true;
+          yield { type: "text", text };
+        }
 
         const tool = findToolCall(ev);
-        if (tool) yield { type: "tool_call", tool: tool.name, input: tool.input };
+        if (tool) {
+          sawActivity = true;
+          yield { type: "tool_call", tool: tool.name, input: tool.input };
+        }
 
         if (isError(ev)) {
           sawError = true;
           yield { type: "error", message: errorMessage(ev) };
         }
       }
+      exitCode = next.value ?? 0;
     } catch (err) {
       yield { type: "error", message: (err as Error).message };
       sawError = true;
@@ -75,8 +97,24 @@ export class CodexRuntime implements Runtime {
     };
     const usd = costFromPricing(opts.model.pricing, usage);
     if (usd !== null) yield { type: "cost", usd, source: "pricing" };
-    ok = !sawError;
-    yield { type: "done", ok };
+
+    // Surface silent failures rather than reporting a no-op run as success: a
+    // non-zero exit is an outright failure, and a run that produced zero parseable
+    // events almost always means the codex build's `--json` shape drifted from our
+    // extractors (see the class doc-comment) or the process never really started.
+    if (exitCode !== 0) {
+      sawError = true;
+      yield { type: "error", message: `codex exited with code ${exitCode}` };
+    } else if (!sawActivity) {
+      sawError = true;
+      yield {
+        type: "error",
+        message:
+          "codex produced no recognizable output — its --json schema may have drifted from Tack's parser, or the run was blocked before it started",
+      };
+    }
+
+    yield { type: "done", ok: !sawError, summary: summary || undefined };
   }
 
   /**

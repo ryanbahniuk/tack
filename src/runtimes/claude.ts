@@ -124,17 +124,25 @@ export class ClaudeRuntime implements Runtime {
     else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
-    // Flip the session's plan-approval gate when the human accepts the plan. A
+    // A single --settings blob carrying two independent human gates:
+    const settings: {
+      hooks?: unknown;
+      permissions?: { ask?: string[] };
+    } = {};
+    // (1) Flip the session's plan-approval gate when the human accepts the plan. A
     // PostToolUse hook on ExitPlanMode fires only after acceptance (rejection /
     // "keep planning" never completes the tool), so this is an un-forgeable human
     // signal the model can't self-trigger.
     if (opts.onPlanApproved) {
       const command = shellJoin([opts.onPlanApproved.command, ...opts.onPlanApproved.args]);
-      const settings = {
-        hooks: { PostToolUse: [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }] },
-      };
-      args.push("--settings", JSON.stringify(settings));
+      settings.hooks = { PostToolUse: [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }] };
     }
+    // (2) Force a per-call prompt for the approval tools (e.g. open_pr). An `ask`
+    // rule outranks the `--allowedTools mcp__<server>` wildcard below, so these stay
+    // gated even though the rest of the server is auto-allowed — the model can't
+    // open a PR without the human okaying that specific call.
+    if (opts.approvalTools?.length) settings.permissions = { ask: opts.approvalTools };
+    if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     const mcpServers: Record<string, { command: string; args: string[] }> = {};
     for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
     args.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");

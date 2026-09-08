@@ -52,6 +52,14 @@ export interface RunOptions {
    * attended read-only supervisor sets this; headless/agent runs omit it.
    */
   onPlanApproved?: { command: string; args: string[] };
+  /**
+   * Fully-qualified tool names (e.g. `mcp__tack-supervisor__open_pr`) that must
+   * prompt the human on every call even when their MCP server is otherwise
+   * auto-allowed. The claude adapter wires these as a permissions `ask` rule, which
+   * outranks the server-wide allow — Tack uses it so opening a PR stays behind an
+   * explicit per-call human ok. Only the attended supervisor sets this.
+   */
+  approvalTools?: string[];
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;
