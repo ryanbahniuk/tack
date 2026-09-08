@@ -188,6 +188,22 @@ export async function runStable(): Promise<void> {
     }
     if (!launch) return; // quit, not open
 
+    // Fully relinquish stdin before handing the terminal to the child. Ink turns raw
+    // mode off and `unref`s stdin on unmount, but never *pauses* the stream — so this
+    // process keeps reading the shared TTY. That races the child for input: the first
+    // keypress meant for the opened session gets stolen here, and the child's tmux
+    // client, seeing its terminal input yanked away, detaches back to the dashboard.
+    // Pausing stops our read so the child owns the terminal; Ink re-arms stdin when
+    // the dashboard re-renders after the child exits.
+    if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        /* stdin may not support raw mode in every environment */
+      }
+    }
+    process.stdin.pause();
+
     // Runs on the normal screen so the session keeps real scrollback.
     const argv = launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id];
     const { command, args } = selfCommand(argv);
