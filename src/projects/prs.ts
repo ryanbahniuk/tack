@@ -18,8 +18,15 @@ export interface DiscoverResult {
   ghMissing: boolean;
 }
 
+// `gh` presence can't change mid-process, and this is about to be probed on every
+// refresh tick (up to once/minute per dashboard) — memoize instead of re-spawning.
+let ghAvailableCache: boolean | null = null;
+
 function ghAvailable(): boolean {
-  return spawnSync("gh", ["--version"], { encoding: "utf8" }).status === 0;
+  if (ghAvailableCache === null) {
+    ghAvailableCache = spawnSync("gh", ["--version"], { encoding: "utf8" }).status === 0;
+  }
+  return ghAvailableCache;
 }
 
 export interface OpenPrInput {
@@ -82,35 +89,49 @@ function numberFromPrUrl(url: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-function ghPrList(repoPath: string): GhPr[] {
-  const r = spawnSync(
-    "gh",
-    ["pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName"],
-    { cwd: repoPath, encoding: "utf8" },
+async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
+  const proc = Bun.spawn(
+    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName"],
+    { cwd: repoPath, stdout: "pipe", stderr: "pipe" },
   );
-  if (r.status !== 0) throw new Error((r.stderr || r.stdout || "gh pr list failed").trim().split("\n")[0]);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) throw new Error((stderr || stdout || "gh pr list failed").trim().split("\n")[0]);
   try {
-    return JSON.parse(r.stdout || "[]") as GhPr[];
+    return JSON.parse(stdout || "[]") as GhPr[];
   } catch {
     return [];
   }
 }
 
 /**
- * Discovers the PRs a session produced by scanning the GitHub repos it touched for
- * branches following our `tack/pr/<sessionId>/…` nomenclature, then records each in
- * `session_prs`. Best-effort: repos without `gh`/a GitHub remote are reported in
- * `skipped`, not fatal.
+ * Refreshes PR status for many sessions at once — the dashboard's background poll,
+ * covering every currently-listed session with one `gh pr list` per distinct project
+ * rather than one per session. Async end-to-end (`Bun.spawn`, not `spawnSync`) since
+ * this runs on a timer inside the Ink render loop and must never block a frame.
+ * Best-effort, same contract as before: a project missing from config or a failing
+ * `gh` call lands in `skipped`, never throws.
  */
-export function discoverSessionPrs(config: TackConfig, sessionId: string): DiscoverResult {
+export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]): Promise<DiscoverResult> {
   const skipped: DiscoverResult["skipped"] = [];
-  if (!ghAvailable()) return { prs: listSessionPrs(sessionId), skipped, ghMissing: true };
+  const union = () => sessionIds.flatMap((id) => listSessionPrs(id));
+  if (!ghAvailable()) return { prs: union(), skipped, ghMissing: true };
 
-  // Which projects did this session touch, and via which agent (most recent wins)?
-  const agentByProject = new Map<string, string>();
-  for (const a of listAgents(sessionId)) agentByProject.set(a.project_name, a.id);
+  // Which projects did each session touch, and via which agent (most recent wins)?
+  // Inverted to project -> session -> agent so we can issue one `gh pr list` per
+  // project and fan its results back out to whichever sessions own those branches.
+  const sessionsByProject = new Map<string, Map<string, string>>();
+  for (const sessionId of sessionIds) {
+    for (const a of listAgents(sessionId)) {
+      if (!sessionsByProject.has(a.project_name)) sessionsByProject.set(a.project_name, new Map());
+      sessionsByProject.get(a.project_name)!.set(sessionId, a.id);
+    }
+  }
 
-  for (const [projectName, agentId] of agentByProject) {
+  for (const [projectName, agentBySession] of sessionsByProject) {
     const project = config.projects.find((p) => p.name === projectName);
     if (!project) {
       skipped.push({ project: projectName, reason: "no longer in config" });
@@ -118,13 +139,16 @@ export function discoverSessionPrs(config: TackConfig, sessionId: string): Disco
     }
     let prs: GhPr[];
     try {
-      prs = ghPrList(project.path);
+      prs = await ghPrListAsync(project.path);
     } catch (err) {
       skipped.push({ project: projectName, reason: (err as Error).message });
       continue;
     }
     for (const pr of prs) {
-      if (sessionIdFromPrBranch(pr.headRefName) !== sessionId) continue;
+      const sessionId = sessionIdFromPrBranch(pr.headRefName);
+      if (!sessionId) continue;
+      const agentId = agentBySession.get(sessionId);
+      if (!agentId) continue; // not one of the sessions we were asked to refresh
       upsertSessionPr({
         sessionId,
         url: pr.url,
@@ -138,5 +162,5 @@ export function discoverSessionPrs(config: TackConfig, sessionId: string): Disco
     }
   }
 
-  return { prs: listSessionPrs(sessionId), skipped, ghMissing: false };
+  return { prs: union(), skipped, ghMissing: false };
 }
