@@ -13,6 +13,24 @@ import type { InteractiveSpec } from "../runtimes/types";
  * can't leave and come back.
  */
 
+/**
+ * Tack runs its supervisor sessions on a dedicated tmux server (its own socket)
+ * rather than the user's default server. Sharing the default server means a user
+ * who launched Tack from inside their own tmux ends up with two clients on one
+ * server — a fragile arrangement where the inner attach gets spuriously detached
+ * (e.g. an arrow key at a plan prompt bumps them back to the dashboard). A private
+ * socket isolates Tack's sessions entirely: no cross-client contention, and Tack's
+ * status-bar tweaks never touch the user's own sessions. Everything that talks to a
+ * Tack session must go through `tmuxArgs` so it targets this server, not the default.
+ */
+const TMUX_SOCKET = "tack";
+
+/** argv (after the `tmux` binary) for a command on Tack's dedicated server: the
+ * `-L <socket>` selector followed by the rest of the command. */
+function tmuxArgs(...rest: string[]): string[] {
+  return ["-L", TMUX_SOCKET, ...rest];
+}
+
 /** tmux session name for a Tack supervisor session. Session ids are `ses_<hex>` —
  * free of the `.`/`:` that tmux reserves for window/pane targets — so they're safe
  * to use verbatim. */
@@ -34,7 +52,7 @@ export function tmuxAvailable(): boolean {
  * `tack-ses_ab` would spuriously match `tack-ses_abcd`. */
 export function tmuxHasSession(name: string): boolean {
   try {
-    return spawnSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" }).status === 0;
+    return spawnSync("tmux", tmuxArgs("has-session", "-t", `=${name}`), { stdio: "ignore" }).status === 0;
   } catch {
     return false;
   }
@@ -60,7 +78,7 @@ export function tmuxEnsureSession(sessionId: string, cwd: string, spec: Interact
     : [];
   const created = spawnSync(
     "tmux",
-    ["new-session", "-d", "-s", name, "-c", cwd, ...envPrefix, spec.command, ...spec.args],
+    tmuxArgs("new-session", "-d", "-s", name, "-c", cwd, ...envPrefix, spec.command, ...spec.args),
     { stdio: "ignore" },
   );
   if (created.status !== 0) return false;
@@ -77,7 +95,7 @@ export function tmuxEnsureSession(sessionId: string, cwd: string, spec: Interact
 export function tmuxKillSession(sessionId: string): void {
   const name = tmuxSessionName(sessionId);
   try {
-    spawnSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
+    spawnSync("tmux", tmuxArgs("kill-session", "-t", `=${name}`), { stdio: "ignore" });
   } catch {
     /* tmux absent or session already gone */
   }
@@ -103,7 +121,7 @@ export function tmuxSetStatusHint(sessionId: string): void {
   const detach = insideTmux() ? `${prefix} ${prefix} d` : `${prefix} d`;
   const hint = ` #[bold]tack#[default] ${sessionId}  ·  detach: ${detach}  ·  resume: tack session resume ${sessionId} `;
   const set = (option: string, value: string) =>
-    spawnSync("tmux", ["set-option", "-t", name, option, value], { stdio: "ignore" });
+    spawnSync("tmux", tmuxArgs("set-option", "-t", name, option, value), { stdio: "ignore" });
   set("status", "on");
   set("status-left-length", "200");
   set("status-left", hint);
@@ -115,7 +133,7 @@ export function tmuxSetStatusHint(sessionId: string): void {
  * prefix shows correctly in the hint. Falls back to the tmux default if unreadable. */
 export function tmuxPrefixKey(): string {
   try {
-    const out = spawnSync("tmux", ["show-options", "-gv", "prefix"], { encoding: "utf8" });
+    const out = spawnSync("tmux", tmuxArgs("show-options", "-gv", "prefix"), { encoding: "utf8" });
     const key = out.status === 0 ? out.stdout.trim() : "";
     return key || "C-b";
   } catch {
@@ -123,9 +141,10 @@ export function tmuxPrefixKey(): string {
   }
 }
 
-/** argv (after `tmux`) to attach to an existing session by exact name. */
+/** argv (after `tmux`) to attach to an existing session by exact name, on Tack's
+ * dedicated server. */
 export function tmuxAttachArgs(name: string): string[] {
-  return ["attach-session", "-t", `=${name}`];
+  return tmuxArgs("attach-session", "-t", `=${name}`);
 }
 
 /**
