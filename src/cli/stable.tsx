@@ -42,7 +42,11 @@ function snapshot(showArchived: boolean): View[] {
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-function Dashboard({ config, onOpen }: { config: TackConfig | null; onOpen: (id: string) => void }) {
+/** What the human asked for by leaving the dashboard: open the highlighted
+ *  session, or create a new one. */
+type Launch = { kind: "resume"; id: string } | { kind: "create" };
+
+function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<View[]>(() => snapshot(false));
@@ -67,12 +71,17 @@ function Dashboard({ config, onOpen }: { config: TackConfig | null; onOpen: (id:
     else if (input === "z") {
       setShowArchived((v) => !v);
       setCursor(0);
+    } else if (input === "c") {
+      // Same hand-off as opening a session, but for a brand-new one — works even
+      // with zero sessions, which is exactly when this is most useful.
+      onLaunch({ kind: "create" });
+      exit();
     } else if (!selected) return;
     else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
       // launching the session happens in `runStable` once this unmounts — we just
       // record which session and exit.
-      onOpen(selected.session.id);
+      onLaunch({ kind: "resume", id: selected.session.id });
       exit();
     } else if (input === "x") {
       stopSession(selected.session.id);
@@ -99,7 +108,7 @@ function Dashboard({ config, onOpen }: { config: TackConfig | null; onOpen: (id:
       <Text bold>
         Tack {showArchived ? "(all)" : "(active)"} — {rows.length} session(s)
       </Text>
-      {rows.length === 0 && <Text dimColor>No sessions. Run `tack session create`.</Text>}
+      {rows.length === 0 && <Text dimColor>No sessions. Press c to create one.</Text>}
       {rows.map((v, i) => (
         <Box key={v.session.id} flexDirection="column">
           <Text>
@@ -134,7 +143,9 @@ function Dashboard({ config, onOpen }: { config: TackConfig | null; onOpen: (id:
       ))}
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
-        <Text dimColor>j/k move · enter/o open · x stop · a archive · d delete · p find PRs · z toggle archived · q quit</Text>
+        <Text dimColor>
+          j/k move · enter/o open · c new · x stop · a archive · d delete · p find PRs · z toggle archived · q quit
+        </Text>
       </Box>
     </Box>
   );
@@ -158,25 +169,28 @@ const ALT_SCREEN_EXIT = "\u001b[?1049l";
  * (restoring the normal screen), hand the terminal to an interactive
  * `tack session resume <id>` subprocess — which attaches to the live supervisor or
  * resumes it, and stamps `last_seen_at` so its "needs input" badge clears — then
- * re-enter the dashboard when that session is left.
+ * re-enter the dashboard when that session is left. Pressing `c` does the same
+ * hand-off but for `tack session create` (no seed message), landing the human in a
+ * fresh supervisor's idle TUI to type the first message themselves.
  */
 export async function runStable(): Promise<void> {
   const config = await loadConfig().catch(() => null);
   for (;;) {
-    let openId: string | undefined;
+    let launch: Launch | undefined;
     process.stdout.write(ALT_SCREEN_ENTER);
     try {
-      const app = render(<Dashboard config={config} onOpen={(id) => (openId = id)} />);
+      const app = render(<Dashboard config={config} onLaunch={(l) => (launch = l)} />);
       await app.waitUntilExit();
     } finally {
       // Always restore the normal screen — whether quitting, opening a session, or
       // if render throws — so we never strand the terminal in the alt buffer.
       process.stdout.write(ALT_SCREEN_EXIT);
     }
-    if (!openId) return; // quit, not open
+    if (!launch) return; // quit, not open
 
     // Runs on the normal screen so the session keeps real scrollback.
-    const { command, args } = selfCommand(["session", "resume", openId]);
+    const argv = launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id];
+    const { command, args } = selfCommand(argv);
     const proc = Bun.spawn([command, ...args], {
       stdin: "inherit",
       stdout: "inherit",
