@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -123,6 +123,35 @@ export class ClaudeRuntime implements Runtime {
     // into an idle TUI to type their own opener.
     if (opts.prompt.trim()) args.push(opts.prompt);
     return { command: opts.bin, args };
+  }
+
+  /**
+   * Pre-record workspace trust for `cwd` so the interactive TUI doesn't stop to
+   * ask "trust this folder?" on launch. Claude shows that dialog the first time
+   * it runs interactively in a directory it hasn't seen, and every supervisor
+   * session gets a brand-new `~/.tack/supervisor/ses_<id>` cwd — so without this
+   * it would prompt at the start of every session. Tack creates and owns these
+   * directories, so we set the same per-project flag the dialog would write
+   * (`~/.claude.json` -> `projects[cwd].hasTrustDialogAccepted`). Headless `-p`
+   * runs skip the dialog entirely, so only the interactive path needs this.
+   */
+  prepareInteractive(cwd: string): void {
+    const file = join(homedir(), ".claude.json");
+    let config: any = {};
+    if (existsSync(file)) {
+      try {
+        config = JSON.parse(readFileSync(file, "utf8"));
+      } catch {
+        // Corrupt/unreadable — don't clobber it; claude will handle the dialog.
+        return;
+      }
+    }
+    if (typeof config !== "object" || config === null) return;
+    const projects = (config.projects ??= {});
+    const entry = (projects[cwd] ??= {});
+    if (entry.hasTrustDialogAccepted === true) return;
+    entry.hasTrustDialogAccepted = true;
+    writeFileSync(file, JSON.stringify(config, null, 2));
   }
 
   /**

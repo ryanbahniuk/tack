@@ -100,6 +100,13 @@ export interface Runtime {
    */
   interactiveCommand(opts: RunOptions): InteractiveSpec;
   /**
+   * Optional one-time prep run before the interactive TUI is spawned in `cwd`.
+   * claude uses it to pre-record workspace trust for the freshly-created session
+   * directory so its "trust this folder" dialog doesn't interrupt the start of
+   * every interactive supervisor session. Headless `run` never needs this.
+   */
+  prepareInteractive?(cwd: string): void;
+  /**
    * Recover cumulative token usage for an interactive session from the runtime's
    * on-disk transcript, so cost can be computed after the TUI exits. Returns null
    * when no transcript can be located.

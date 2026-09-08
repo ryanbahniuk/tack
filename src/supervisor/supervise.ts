@@ -200,6 +200,10 @@ export async function superviseInteractive(opts: {
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
   });
 
+  // Pre-record trust for the freshly-created session cwd so the runtime's TUI
+  // doesn't stop to ask before it can start (see Runtime.prepareInteractive).
+  runtime.prepareInteractive?.(cwd);
+
   const proc = Bun.spawn([spec.command, ...spec.args], {
     cwd,
     env: { ...process.env, ...spec.env },
