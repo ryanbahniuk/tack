@@ -14,9 +14,11 @@ import { costFromPricing, type TokenUsage } from "./pricing";
 
 /**
  * Drives Codex headless: `codex exec --json`. Autonomous, unattended posture for a
- * worktree: `-s workspace-write` (writes confined to the workspace). `codex exec`
- * is non-interactive and never prompts for approval, so there is no approval flag
- * to set — the sandbox mode is the whole posture. Codex reports tokens but NO
+ * worktree via `--approve-for-me` — approvals are auto-reviewed inside a
+ * workspace-write sandbox (writes confined to the workspace). This matters under a
+ * managed-device profile: plain `codex exec` forces `approval_policy=never`, which
+ * an MDM can disallow, leaving approval requests that exec mode can't answer and
+ * silently rejecting every tool call (see `buildCmd`). Codex reports tokens but NO
  * dollar figure, so we accumulate the
  * final `token_count` usage and compute cost from the model's pricing table.
  *
@@ -199,8 +201,18 @@ export class CodexRuntime implements Runtime {
 
   private buildCmd(opts: RunOptions): string[] {
     const m = opts.model;
-    const sandbox = opts.readOnly ? "read-only" : "workspace-write";
-    const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, "-s", sandbox];
+    // Approval posture. Plain `codex exec` forces `approval_policy=never`, which a
+    // managed-device (MDM) profile can forbid — it then downgrades to a stricter
+    // policy whose approval requests exec mode can't service, so EVERY command and
+    // edit is auto-rejected and the agent produces an empty diff. `--approve-for-me`
+    // routes those approvals through automatic review inside a workspace-write
+    // sandbox, which stays within the MDM-allowed set. It IMPLIES workspace-write
+    // and refuses to coexist with `-s`, so we pass it instead of `-s workspace-write`
+    // on the write path. The read-only supervisor/summary posture still needs an
+    // explicit `-s read-only` (and isn't exercised on codex today — those roles run
+    // on claude — so it keeps codex's original read-only sandbox flag).
+    const posture = opts.readOnly ? ["-s", "read-only"] : ["--approve-for-me"];
+    const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, ...posture];
     if (m.effort) cmd.push("-c", `model_reasoning_effort=${m.effort}`);
     for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
     // Codex has no per-run system-prompt flag; the one file-based hook is the
