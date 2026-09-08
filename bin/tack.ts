@@ -14,15 +14,17 @@ import {
   removeProjectFromConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
-import { approveSessionPlan, createSession, getSession, listSessions, sessionTotalCost, type SessionRow } from "../src/db";
+import { approveSessionPlan, createSession, getSession, listSessions, sessionTotalCost } from "../src/db";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import {
   superviseInteractive,
+  attachSupervisor,
   createSupervisorSession,
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { tmuxAvailable, tmuxHasSession, tmuxSessionName } from "../src/session/tmux";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -536,8 +538,13 @@ const sessionsList = defineCommand({
   async run({ args }) {
     const rows = listSessions(Boolean(args.all));
     if (rows.length === 0) return console.log(pc.dim("No sessions yet."));
+    const tmux = tmuxAvailable();
     for (const s of rows) {
-      console.log(`${pc.bold(s.id)}  ${pc.dim(s.status)}  ${usd(sessionTotalCost(s.id).total)}  ${s.title ? pc.dim(s.title) : ""}`);
+      // A live tmux session means the interactive supervisor is parked and can be
+      // rejoined right where it was left, via `tack session attach`.
+      const attachable = tmux && tmuxHasSession(tmuxSessionName(s.id));
+      const tag = attachable ? `  ${pc.yellow("attachable")}` : "";
+      console.log(`${pc.bold(s.id)}  ${pc.dim(s.status)}  ${usd(sessionTotalCost(s.id).total)}${tag}  ${s.title ? pc.dim(s.title) : ""}`);
     }
   },
 });
@@ -587,54 +594,90 @@ const sessionCreate = defineCommand({
   meta: { name: "create", description: "Create a session: plan and coordinate agents for a problem" },
   args: {
     message: { type: "string", alias: "m", description: "Seed the first message inline (foreground) or the problem to solve (--background)" },
-    resume: { type: "string", alias: "r", description: "Follow up on an existing session id instead of starting a new one" },
     background: { type: "boolean", alias: "b", description: "Run the supervisor headless & detached instead of interactively; watch it with `tack stable`" },
   },
   async run({ args }) {
-    const resumeId = args.resume !== undefined ? String(args.resume) : undefined;
     const background = Boolean(args.background);
     const message = args.message !== undefined ? String(args.message).trim() : undefined;
 
     // Foreground (default) drops you into the runtime's own interactive TUI as the
-    // supervisor — no editor round-trip, real scrollback, follow-ups in the same
-    // live session. `--background` keeps the headless autonomous runner, which
-    // needs a seed prompt up front (via `-m` or the editor).
-    if (background) {
-      return runBackground({ resumeId, message });
-    }
+    // supervisor — no editor round-trip, real scrollback. `--background` runs the
+    // headless autonomous runner, which needs a seed prompt up front (via `-m` or
+    // the editor). Continuing an existing session lives in `tack session resume`.
+    if (background) return runBackground({ message });
 
     const config = await ensureCwdProject(await loadConfig());
     // A seed is optional interactively: `-m` sends the first message, otherwise you
     // land in an idle TUI and type it yourself.
     const prompt = message ?? "";
+    const model = modelForRole(config, "supervisor");
+    const session = createSupervisorSession(prompt || "(interactive session)", config);
+    console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
 
-    let session: SessionRow;
-    if (resumeId) {
-      const existing = getSession(resumeId);
-      if (!existing) {
-        console.error(pc.red(`Unknown session "${resumeId}". List them with \`tack session list\`.`));
-        return process.exit(1);
-      }
-      if (!existing.resume_ref) {
-        console.error(pc.red(`Session "${resumeId}" has no resume handle yet — it never got far enough to follow up on.`));
-        return process.exit(1);
-      }
-      console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
-      session = existing;
-    } else {
-      const model = modelForRole(config, "supervisor");
-      session = createSupervisorSession(prompt || "(interactive session)", config);
-      console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
-    }
-
-    await superviseInteractive({ session, prompt, resume: Boolean(resumeId), config });
-
-    // The TUI has exited; cost was recovered from its transcript inside the run.
-    console.log(`\n${pc.green("supervisor exited")}  ${pc.bold(session.id)}  ${usd(sessionTotalCost(session.id).total)}`);
-    console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
-    console.log(pc.dim(`Follow up with \`tack session create --resume ${session.id}\`.`));
+    const { detached } = await superviseInteractive({ session, prompt, resume: false, config });
+    reportInteractiveOutcome(session.id, detached);
   },
 });
+
+const sessionResume = defineCommand({
+  meta: {
+    name: "resume",
+    description: "Rejoin a running session (right where you left it), or resume a stopped one's conversation",
+  },
+  args: {
+    session: { type: "positional", description: "Session id" },
+    message: { type: "string", alias: "m", description: "Seed a message on resume (foreground) or the follow-up (--background)" },
+    background: { type: "boolean", alias: "b", description: "Resume headless & detached instead of interactively" },
+  },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const message = args.message !== undefined ? String(args.message).trim() : undefined;
+
+    // Headless follow-up: no human in the loop, so hand it to the background runner.
+    if (args.background) return runBackground({ resumeId: id, message });
+
+    const config = await loadConfig();
+
+    // Prefer rejoining a live, parked session — that lands you back exactly where
+    // you left it (e.g. a pending plan approval), which a transcript resume can't
+    // reconstruct. Falls through when there's nothing live to rejoin.
+    const attached = await attachSupervisor(id, config);
+    if (attached.alive) return reportInteractiveOutcome(id, attached.detached);
+
+    // Nothing live to rejoin — resume the conversation from its transcript, which
+    // reloads the plan/agents/context but starts a fresh turn.
+    const existing = getSession(id)!;
+    if (!existing.resume_ref) {
+      console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
+      return process.exit(1);
+    }
+    const prompt = message ?? "";
+    console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
+    const { detached } = await superviseInteractive({ session: existing, prompt, resume: true, config });
+    reportInteractiveOutcome(id, detached);
+  },
+});
+
+/**
+ * Prints the outcome of an interactive supervisor turn. Detaching leaves it running
+ * (rejoin with `resume`); a genuine exit reports final cost. Shared by `create`
+ * (fresh) and `resume` (rejoin / transcript-resume) so their tails read identically.
+ */
+function reportInteractiveOutcome(id: string, detached: boolean): void {
+  if (detached) {
+    // Left running inside tmux — still on whatever it was doing (e.g. a pending plan
+    // approval). Rejoin lands back exactly there; open another terminal to work in
+    // parallel meanwhile.
+    console.log(`\n${pc.yellow("supervisor detached")}  ${pc.bold(id)} ${pc.dim("· still running")}`);
+    console.log(pc.dim(`Rejoin it with \`tack session resume ${id}\`.`));
+    console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+    return;
+  }
+  console.log(`\n${pc.green("supervisor exited")}  ${pc.bold(id)}  ${usd(sessionTotalCost(id).total)}`);
+  console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+  console.log(pc.dim(`Resume it with \`tack session resume ${id}\`.`));
+}
 
 /**
  * The headless, detached supervisor path (`--background`): unlike interactive, it
@@ -655,7 +698,7 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
       problem = captureViaEditor(resumeId ? GO_FOLLOWUP_TEMPLATE : GO_EDITOR_TEMPLATE);
     } catch (err) {
       console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
-      console.error(pc.dim("Set $EDITOR, or pass the problem inline with `tack session create -b -m \"…\"`."));
+      console.error(pc.dim("Set $EDITOR, or pass it inline with `-b -m \"…\"`."));
       return process.exit(1);
     }
     if (!problem) {
@@ -695,7 +738,7 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
 function printBackgroundHandoff(sessionId: string, pid: number): void {
   console.log(`${pc.green("supervisor running in background")}  ${pc.bold(sessionId)}  ${pc.dim(`pid ${pid}`)}`);
   console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
-  console.log(pc.dim(`Follow up with \`tack session create --resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
+  console.log(pc.dim(`Follow up with \`tack session resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
 }
 
 // `default: "list"` makes bare `tack session` run the list subcommand.
@@ -705,9 +748,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, list, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, list: sessionsList, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

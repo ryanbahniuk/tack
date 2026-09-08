@@ -1,0 +1,128 @@
+import { spawnSync } from "node:child_process";
+import type { InteractiveSpec } from "../runtimes/types";
+
+/**
+ * The interactive supervisor TUI is an ordinary foreground terminal process, so a
+ * plan-approval prompt (or any live state) dies the moment you leave it — a plain
+ * `--resume` reloads the transcript but lands you in a fresh turn, not back on the
+ * pending prompt. To leave a session parked and return to it exactly as it was, we
+ * run the TUI inside a tmux session Tack owns (`tack-<sessionId>`): detaching keeps
+ * claude alive and still waiting, and `tack session attach` drops you back in.
+ *
+ * tmux is optional. Without it the TUI still runs (spawned directly), you just
+ * can't leave and come back.
+ */
+
+/** tmux session name for a Tack supervisor session. Session ids are `ses_<hex>` —
+ * free of the `.`/`:` that tmux reserves for window/pane targets — so they're safe
+ * to use verbatim. */
+export function tmuxSessionName(sessionId: string): string {
+  return `tack-${sessionId}`;
+}
+
+/** Whether the `tmux` client is on PATH. */
+export function tmuxAvailable(): boolean {
+  try {
+    return spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a tmux session with exactly this name currently exists. The `=` prefix
+ * forces an exact-name match — tmux target lookups are prefix-based otherwise, so
+ * `tack-ses_ab` would spuriously match `tack-ses_abcd`. */
+export function tmuxHasSession(name: string): boolean {
+  try {
+    return spawnSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure a detached tmux session exists for `sessionId` running `spec`, and paint
+ * its status bar with a detach + resume hint. Returns false if tmux fails to create
+ * it (so the caller can fall back to a direct spawn). Idempotent: an existing
+ * session is left running as-is — its status was set at creation.
+ *
+ * We create detached and attach separately (rather than one `new-session` that
+ * attaches) because `new-session`'s trailing shell-command greedily swallows any
+ * following `;`-chained `set-option` commands — there's no `--` terminator. Spec env
+ * is applied with an `env` prefix on the pane command rather than tmux's `-e` (which
+ * older tmux lacks, and which wouldn't reach a pane spawned by a running server).
+ */
+export function tmuxEnsureSession(sessionId: string, cwd: string, spec: InteractiveSpec): boolean {
+  const name = tmuxSessionName(sessionId);
+  if (tmuxHasSession(name)) return true;
+  const envPrefix = spec.env
+    ? ["env", ...Object.entries(spec.env).map(([k, v]) => `${k}=${v}`)]
+    : [];
+  const created = spawnSync(
+    "tmux",
+    ["new-session", "-d", "-s", name, "-c", cwd, ...envPrefix, spec.command, ...spec.args],
+    { stdio: "ignore" },
+  );
+  if (created.status !== 0) return false;
+  tmuxSetStatusHint(sessionId);
+  return true;
+}
+
+/** Whether we're running inside a tmux session already. When true, attaching to one
+ * of our sessions nests tmux, so the prefix must be pressed twice to reach the inner
+ * session — which the detach hint reflects. */
+export function insideTmux(): boolean {
+  return Boolean(process.env.TMUX);
+}
+
+/**
+ * Paint a session's status bar with the detach + resume hint, reflecting the current
+ * attach context: nested (inside tmux) needs the prefix doubled to reach the inner
+ * session. Session-scoped (`-t <name>`), so it never touches the user's other tmux
+ * sessions. Re-applied at each attach, since the same session can be reattached from
+ * inside or outside tmux on different occasions.
+ */
+export function tmuxSetStatusHint(sessionId: string): void {
+  const name = tmuxSessionName(sessionId);
+  const prefix = tmuxPrefixKey();
+  const detach = insideTmux() ? `${prefix} ${prefix} d` : `${prefix} d`;
+  const hint = ` #[bold]tack#[default] ${sessionId}  ·  detach: ${detach}  ·  resume: tack session resume ${sessionId} `;
+  const set = (option: string, value: string) =>
+    spawnSync("tmux", ["set-option", "-t", name, option, value], { stdio: "ignore" });
+  set("status", "on");
+  set("status-left-length", "200");
+  set("status-left", hint);
+  // Clear the default right side (clock/host) so the hint isn't crowded.
+  set("status-right", "");
+}
+
+/** The effective tmux prefix key (e.g. `C-b`), read from the server so a remapped
+ * prefix shows correctly in the hint. Falls back to the tmux default if unreadable. */
+export function tmuxPrefixKey(): string {
+  try {
+    const out = spawnSync("tmux", ["show-options", "-gv", "prefix"], { encoding: "utf8" });
+    const key = out.status === 0 ? out.stdout.trim() : "";
+    return key || "C-b";
+  } catch {
+    return "C-b";
+  }
+}
+
+/** argv (after `tmux`) to attach to an existing session by exact name. */
+export function tmuxAttachArgs(name: string): string[] {
+  return ["attach-session", "-t", `=${name}`];
+}
+
+/**
+ * A copy of `base` (defaulting to the current env) with tmux's client vars removed,
+ * so an attach launched from *inside* an existing tmux session doesn't refuse to
+ * nest ("sessions should be nested with care, unset $TMUX to force"). A no-op when
+ * not already inside tmux. Used for the attach client, not the detached create
+ * (which nests fine).
+ */
+export function tmuxClientEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env.TMUX;
+  delete env.TMUX_PANE;
+  return env;
+}

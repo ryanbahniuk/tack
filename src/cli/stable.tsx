@@ -10,6 +10,7 @@ import {
   type SessionRow,
 } from "../db";
 import { agentLive, sessionLive } from "./liveness";
+import { tmuxAvailable, tmuxHasSession, tmuxSessionName } from "../session/tmux";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { discoverSessionPrs } from "../projects/prs";
 import { loadConfig } from "../config/load";
@@ -21,7 +22,12 @@ interface View {
   prs: SessionPrRow[];
   cost: number;
   live: boolean;
+  attachable: boolean;
 }
+
+// Resolve tmux's presence once, not on every 1s snapshot — it can't change while
+// the dashboard is open, and each `tmuxHasSession` probe already shells out.
+const HAS_TMUX = tmuxAvailable();
 
 function snapshot(showArchived: boolean): View[] {
   return listSessions(showArchived).map((session) => ({
@@ -30,6 +36,9 @@ function snapshot(showArchived: boolean): View[] {
     prs: listSessionPrs(session.id),
     cost: sessionTotalCost(session.id).total,
     live: sessionLive(session),
+    // A live tmux session = a parked interactive supervisor you can rejoin with
+    // `tack session attach <id>` (right where it was left, e.g. a pending plan).
+    attachable: HAS_TMUX && tmuxHasSession(tmuxSessionName(session.id)),
   }));
 }
 
@@ -91,6 +100,7 @@ function Dashboard({ config }: { config: TackConfig | null }) {
             <Text bold>{v.session.id}</Text>
             <Text dimColor> {v.session.status} </Text>
             <Text color="green">{usd(v.cost)}</Text>
+            {v.attachable ? <Text color="yellow"> attachable</Text> : null}
             <Text dimColor> {v.session.title ?? ""}</Text>
           </Text>
           {i === cursor &&

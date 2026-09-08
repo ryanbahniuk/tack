@@ -22,6 +22,15 @@ import {
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
 import { buildSupervisorContext } from "./context";
+import {
+  tmuxAttachArgs,
+  tmuxAvailable,
+  tmuxClientEnv,
+  tmuxEnsureSession,
+  tmuxHasSession,
+  tmuxSessionName,
+  tmuxSetStatusHint,
+} from "../session/tmux";
 
 /**
  * Creates the session row for a new supervisor run and pins the model/runtime it
@@ -157,14 +166,21 @@ async function* runSupervisor(opts: {
  *
  * `resume` continues an existing session's conversation (its stored `resume_ref`);
  * a fresh run pre-assigns a claude session id so its resume handle and transcript
- * path are known before launch. Returns the session's exit code from the runtime.
+ * path are known before launch.
+ *
+ * When tmux is available the TUI is launched inside a `tack-<sessionId>` tmux
+ * session so it can be left parked and reattached (see ./tmux and `attachSupervisor`).
+ * The returned `detached` flag says which way the client exited: `true` means the
+ * user detached and the supervisor is still running (still on its prompt), `false`
+ * means the TUI genuinely exited. Cost is recovered from the transcript only on a
+ * real exit — a detach leaves the session live to accrue more.
  */
 export async function superviseInteractive(opts: {
   session: SessionRow;
   prompt: string;
   resume: boolean;
   config: TackConfig;
-}): Promise<number> {
+}): Promise<{ code: number; detached: boolean }> {
   const { session, prompt, resume, config } = opts;
   if (!session.supervisor_model) throw new Error(`Session ${session.id} has no recorded supervisor model.`);
   if (resume && !session.resume_ref)
@@ -217,25 +233,92 @@ export async function superviseInteractive(opts: {
   // doesn't stop to ask before it can start (see Runtime.prepareInteractive).
   runtime.prepareInteractive?.(cwd);
 
-  const proc = Bun.spawn([spec.command, ...spec.args], {
+  // Launch inside tmux when it's available so the session can be detached and
+  // reattached with its live state intact: create it detached (with a status-bar
+  // hint), then attach in the foreground. Otherwise spawn the TUI directly (still
+  // fully usable, just not leaveable-and-returnable).
+  const tmuxName = tmuxSessionName(session.id);
+  const useTmux = tmuxAvailable() && tmuxEnsureSession(session.id, cwd, spec);
+  const [command, args] = useTmux
+    ? (["tmux", tmuxAttachArgs(tmuxName)] as const)
+    : ([spec.command, spec.args] as const);
+
+  const proc = Bun.spawn([command, ...args], {
     cwd,
-    env: { ...process.env, ...spec.env },
+    // Under tmux the pane already carries spec.env (applied at create); the attach
+    // client just needs $TMUX stripped so it can nest if we're inside tmux already.
+    env: useTmux ? tmuxClientEnv() : { ...process.env, ...spec.env },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
   });
   const code = await proc.exited;
 
-  // Recover cost from the runtime's transcript now that the TUI has exited. For
-  // codex, whose id we couldn't pre-assign, recovery falls back to the newest
-  // rollout under this cwd's sessions tree.
-  const usage = runtime.recoverUsage({ sessionRef, cwd });
-  if (usage) {
-    const usd = costFromPricing(pricingFor(model), usage);
-    if (usd !== null) setSessionCost(session.id, usd);
-  }
+  // A tmux client exits 0 both when the user detaches and when the TUI truly quits;
+  // the session's survival is the discriminator — detach leaves it alive, quitting
+  // tears it down. Non-tmux runs can only truly exit.
+  const detached = useTmux && tmuxHasSession(tmuxName);
+  if (!detached) recoverSupervisorCost({ session, model, cwd, sessionRef });
 
-  return code;
+  return { code, detached };
+}
+
+/**
+ * Reattaches to a parked supervisor's tmux session, handing the caller's terminal
+ * back to the still-running TUI (right where they left it — e.g. a pending plan
+ * approval). Returns `alive: false` when there's no live tmux session to attach to
+ * (it exited, tmux isn't installed, or this session never ran interactively) so the
+ * caller can point the user at `--resume` instead. As with the initial launch,
+ * `detached` distinguishes leaving again from a real exit, and cost is recovered
+ * only on a real exit.
+ */
+export async function attachSupervisor(
+  sessionId: string,
+  config: TackConfig,
+): Promise<{ code: number; detached: boolean; alive: boolean }> {
+  if (!tmuxAvailable()) return { code: 0, detached: false, alive: false };
+  const name = tmuxSessionName(sessionId);
+  if (!tmuxHasSession(name)) return { code: 0, detached: false, alive: false };
+
+  // Refresh the detach hint for how we're attaching now — nested (inside tmux) vs
+  // not — since this session may have been created in the other context.
+  tmuxSetStatusHint(sessionId);
+  const proc = Bun.spawn(["tmux", ...tmuxAttachArgs(name)], {
+    env: tmuxClientEnv(),
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+
+  const detached = tmuxHasSession(name);
+  if (!detached) {
+    const session = getSession(sessionId);
+    if (session?.supervisor_model) {
+      const model = resolveModel(config, session.supervisor_model);
+      const cwd = join(TACK_HOME, "supervisor", sessionId);
+      recoverSupervisorCost({ session, model, cwd, sessionRef: session.resume_ref ?? undefined });
+    }
+  }
+  return { code, detached, alive: true };
+}
+
+/**
+ * Recover cost from the runtime's transcript once an interactive TUI has exited and
+ * persist it. For codex, whose id we couldn't pre-assign, recovery falls back to the
+ * newest rollout under this cwd's sessions tree.
+ */
+function recoverSupervisorCost(opts: {
+  session: SessionRow;
+  model: ReturnType<typeof resolveModel>;
+  cwd: string;
+  sessionRef?: string;
+}): void {
+  const { session, model, cwd, sessionRef } = opts;
+  const usage = selectRuntime(model.runtime).recoverUsage({ sessionRef, cwd });
+  if (!usage) return;
+  const usd = costFromPricing(pricingFor(model), usage);
+  if (usd !== null) setSessionCost(session.id, usd);
 }
 
 /** Whether a detached supervisor run is a brand-new turn or a follow-up resume. */
