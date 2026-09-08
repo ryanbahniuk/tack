@@ -21,6 +21,26 @@ import { streamJson } from "./proc";
 const PERMISSION_ARGS = ["--permission-mode", "auto", "--permission-prompts", "none"];
 
 /**
+ * OS-level read/write confinement for an autonomous worktree agent. The permission
+ * classifier alone bounds only the in-process edit tools; a `cat`/`rg` in Bash (or
+ * any subprocess it spawns) is unbounded and reads the whole filesystem — which is
+ * how an agent wanders outside its worktree and trips a macOS TCC prompt. Claude's
+ * built-in sandbox (Seatbelt on macOS, bubblewrap on Linux) is the only thing that
+ * actually contains Bash, so we turn it on and confine reads to the working dirs.
+ *
+ * There is exactly one agent per worktree and `cwd` is that worktree, so with no
+ * `--add-dir` the working set is the single worktree: reads AND writes both stay
+ * inside it, matching the write boundary. `blockReadsOutsideWorkingDirectories`
+ * covers the in-process Read/Grep/Glob tools too. `failIfUnavailable` +
+ * `allowUnsandboxedCommands: false` make the boundary a hard gate for an unattended
+ * run rather than a silent fallback (or a `dangerouslyDisableSandbox` retry).
+ */
+const AGENT_SANDBOX_SETTINGS = {
+  sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false },
+  permissions: { blockReadsOutsideWorkingDirectories: true },
+};
+
+/**
  * Drives Claude Code headless: `claude -p --output-format stream-json`. We inherit
  * every Claude feature for free (no SDK coupling) and read `total_cost_usd`
  * directly from the final result event, so cost is authoritative on this runtime.
@@ -230,6 +250,9 @@ export class ClaudeRuntime implements Runtime {
       cmd.push("--disallowedTools", readOnlyDisallowed(opts));
     } else {
       cmd.push(...PERMISSION_ARGS);
+      // Sandbox the worktree agent so Bash (and its subprocesses) can't read past
+      // the worktree — the classifier only bounds the in-process edit tools.
+      cmd.push("--settings", JSON.stringify(AGENT_SANDBOX_SETTINGS));
     }
     if (m.effort) cmd.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) cmd.push("--resume", opts.sessionRef);
