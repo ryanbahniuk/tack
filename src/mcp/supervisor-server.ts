@@ -38,6 +38,13 @@ export const SUPERVISOR_MCP_NAME = "tack-supervisor";
 export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`];
 
 /**
+ * Plain-language wording for the `open_pr` approval prompt, handed to the runtime as
+ * `approvalPrompt` so the human sees "Open a PR for this?" instead of the generic
+ * MCP "requires confirmation for this tool" line.
+ */
+export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
+
+/**
  * The supervisor's tool server. The supervisor is itself a runtime session
  * (claude|codex) running read-only; these tools are how it plans, delegates to
  * agents, waits on them, reads their results, and adjudicates amendments — the

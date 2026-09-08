@@ -55,11 +55,19 @@ export interface RunOptions {
   /**
    * Fully-qualified tool names (e.g. `mcp__tack-supervisor__open_pr`) that must
    * prompt the human on every call even when their MCP server is otherwise
-   * auto-allowed. The claude adapter wires these as a permissions `ask` rule, which
-   * outranks the server-wide allow — Tack uses it so opening a PR stays behind an
-   * explicit per-call human ok. Only the attended supervisor sets this.
+   * auto-allowed. The claude adapter wires these as a PreToolUse hook that forces an
+   * `ask` decision, which overrides the server-wide allow — Tack uses it so opening a
+   * PR stays behind an explicit per-call human ok. Only the attended supervisor sets
+   * this. See `approvalPrompt` for the wording shown on that prompt.
    */
   approvalTools?: string[];
+  /**
+   * The human-facing message shown on the `approvalTools` confirmation prompt (e.g.
+   * "Open a PR for this?"). Supplied as the hook's `permissionDecisionReason` so the
+   * prompt reads in plain language instead of the generic "requires confirmation"
+   * line. Defaults to a generic message when omitted.
+   */
+  approvalPrompt?: string;
   /**
    * A command to run when the supervisor presents a plan for approval. The claude
    * adapter wires it as a PreToolUse hook on ExitPlanMode (which fires when the plan

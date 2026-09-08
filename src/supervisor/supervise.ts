@@ -22,7 +22,11 @@ import {
 } from "../runtimes";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
-import { SUPERVISOR_APPROVAL_TOOLS, SUPERVISOR_MCP_NAME } from "../mcp/supervisor-server";
+import {
+  SUPERVISOR_APPROVAL_PROMPT,
+  SUPERVISOR_APPROVAL_TOOLS,
+  SUPERVISOR_MCP_NAME,
+} from "../mcp/supervisor-server";
 import { buildSupervisorContext } from "./context";
 import {
   tmuxAttachArgs,
@@ -236,6 +240,7 @@ export async function superviseInteractive(opts: {
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
     // Keep opening a PR behind an explicit per-call human ok even after plan approval.
     approvalTools: SUPERVISOR_APPROVAL_TOOLS,
+    approvalPrompt: SUPERVISOR_APPROVAL_PROMPT,
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
   });
 

@@ -144,32 +144,50 @@ export class ClaudeRuntime implements Runtime {
     else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
-    // A single --settings blob carrying two independent human gates:
-    const settings: {
-      hooks?: unknown;
-      permissions?: { ask?: string[] };
-    } = {};
+    // A single --settings blob carrying the session's human gates, all wired as hooks:
+    const settings: { hooks?: unknown } = {};
     // (1) Track the plan-approval decision through the session's lifecycle:
     //  - PreToolUse on ExitPlanMode fires when the plan is presented (before the human
     //    decides) → mark the session as awaiting input. This re-arms every iteration.
     //  - PostToolUse fires only after acceptance (rejection / "keep planning" never
     //    completes the tool), so it's an un-forgeable human signal the model can't
     //    self-trigger → flip the plan-approval gate and clear the awaiting flag.
-    const hooks: Record<string, unknown[]> = {};
+    const preToolUse: unknown[] = [];
+    const postToolUse: unknown[] = [];
     if (opts.onPlanPresented) {
       const command = shellJoin([opts.onPlanPresented.command, ...opts.onPlanPresented.args]);
-      hooks.PreToolUse = [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }];
+      preToolUse.push({ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] });
     }
     if (opts.onPlanApproved) {
       const command = shellJoin([opts.onPlanApproved.command, ...opts.onPlanApproved.args]);
-      hooks.PostToolUse = [{ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] }];
+      postToolUse.push({ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] });
     }
+    // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok. A
+    // PreToolUse hook that returns an `ask` decision forces the prompt even though the
+    // tool's MCP server is otherwise auto-allowed by the `--allowedTools mcp__<server>`
+    // wildcard below — the model can't open a PR without the human okaying that call.
+    // We use a hook (not a permissions `ask` rule) so the prompt carries our own
+    // wording via `permissionDecisionReason` instead of the generic "requires
+    // confirmation for this tool" line.
+    if (opts.approvalTools?.length) {
+      const reason = opts.approvalPrompt ?? "Approve this action?";
+      const payload = JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: reason,
+        },
+      });
+      // The hook command just echoes the decision JSON on stdout for Claude to read.
+      const command = shellJoin(["printf", "%s", payload]);
+      for (const tool of opts.approvalTools) {
+        preToolUse.push({ matcher: tool, hooks: [{ type: "command", command }] });
+      }
+    }
+    const hooks: Record<string, unknown[]> = {};
+    if (preToolUse.length) hooks.PreToolUse = preToolUse;
+    if (postToolUse.length) hooks.PostToolUse = postToolUse;
     if (Object.keys(hooks).length > 0) settings.hooks = hooks;
-    // (2) Force a per-call prompt for the approval tools (e.g. open_pr). An `ask`
-    // rule outranks the `--allowedTools mcp__<server>` wildcard below, so these stay
-    // gated even though the rest of the server is auto-allowed — the model can't
-    // open a PR without the human okaying that specific call.
-    if (opts.approvalTools?.length) settings.permissions = { ask: opts.approvalTools };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     const mcpServers: Record<string, { command: string; args: string[] }> = {};
     for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
