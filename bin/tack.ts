@@ -194,9 +194,13 @@ const doctor = defineCommand({
   },
 });
 
+// `default: "list"` makes bare `tack runtimes` run the list subcommand without
+// double-printing (see the note on `projects`). `alias: "runtime"` accepts the
+// singular spelling.
 const runtimes = defineCommand({
-  meta: { name: "runtimes", description: "Manage runtime CLIs (list, doctor, install, pin)" },
+  meta: { name: "runtimes", alias: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin)" },
   subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin },
+  default: "list",
 });
 
 /** Immediate subdirectories of `dir` that are git repositories. */
@@ -415,7 +419,7 @@ const projectsRemove = defineCommand({
 // runs a parent's own `run` even after dispatching to a subcommand, so listing
 // here via `run` would double-print on `tack projects list`; a default avoids that.
 const projects = defineCommand({
-  meta: { name: "projects", description: "List, add, refresh, and remove configured projects" },
+  meta: { name: "projects", alias: "project", description: "List, add, refresh, and remove configured projects" },
   subCommands: { list: projectsList, add: projectsAdd, refresh: projectsRefresh, remove: projectsRemove },
   default: "list",
 });
@@ -475,7 +479,7 @@ const modelsRefresh = defineCommand({
 // `default: "list"` makes bare `tack models` run the list subcommand without
 // double-printing (see the note on `projects`).
 const models = defineCommand({
-  meta: { name: "models", description: "List configured models and role pins; refresh from connected runtimes" },
+  meta: { name: "models", alias: "model", description: "List configured models and role pins; refresh from connected runtimes" },
   subCommands: { list: modelsList, refresh: modelsRefresh },
   default: "list",
 });
@@ -671,9 +675,9 @@ function printBackgroundHandoff(sessionId: string, pid: number): void {
   console.log(pc.dim(`Follow up with \`tack session create --resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
 }
 
-// `default: "create"` makes bare `tack session` (and bare `tack`, which defaults
-// to this group) run the create flow. `alias: "sessions"` keeps the old plural
-// spelling working for `list`/`stop`/etc.
+// `default: "list"` makes bare `tack session` run the list subcommand.
+// `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
+// `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
 const session = defineCommand({
   meta: {
     name: "session",
@@ -681,7 +685,7 @@ const session = defineCommand({
     description: "Create sessions and manage them (list, archive, unarchive, stop, delete)",
   },
   subCommands: { create: sessionCreate, list: sessionsList, archive, unarchive, stop, delete: del },
-  default: "create",
+  default: "list",
 });
 
 const stable = defineCommand({
@@ -689,6 +693,17 @@ const stable = defineCommand({
   async run() {
     await runStable();
   },
+});
+
+// Bare `tack` aliases `tack session create`. It can't just default to the
+// `session` group — that defaults to `list`, and a group can't tell bare `tack`
+// apart from an explicit `tack session`. So we point `main.default` at this
+// hidden wrapper, which reuses `sessionCreate`'s args and run. `hidden` keeps a
+// redundant top-level `create` out of the help listing.
+const sessionCreateDefault = defineCommand({
+  meta: { name: "create", hidden: true, description: sessionCreate.meta.description },
+  args: sessionCreate.args,
+  run: sessionCreate.run,
 });
 
 const main = defineCommand({
@@ -699,12 +714,12 @@ const main = defineCommand({
     projects,
     models,
     session,
+    create: sessionCreateDefault,
     agent,
     stable,
   },
-  // Bare `tack` (no subcommand) runs `tack session`, which in turn defaults to
-  // `create` — so `tack` alone starts a new session.
-  default: "session",
+  // Bare `tack` (no subcommand) creates a session — `tack session create`.
+  default: "create",
 });
 
 // Hidden subcommands (bypass citty). The MCP servers speak their protocol over
