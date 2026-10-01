@@ -12,6 +12,16 @@ function editorCommand(): string[] {
   return process.platform === "win32" ? ["notepad"] : ["vi"];
 }
 
+/**
+ * Opens the user's editor directly on an existing file (not a temp copy), waiting
+ * for them to save and close. Unlike `captureViaEditor`, this edits the file in
+ * place — used for `tack config edit`. Throws if no editor could be launched.
+ */
+export function openInEditor(path: string): void {
+  const [cmd, ...args] = editorCommand();
+  execFileSync(cmd!, [...args, path], { stdio: "inherit" });
+}
+
 /** A whole line that is nothing but an HTML comment, e.g. `<!-- help -->`. We use
  * these as git-style comment lines: they render invisibly in Markdown (so `#`
  * stays a heading) and get stripped from the captured body. */

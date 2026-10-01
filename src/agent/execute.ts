@@ -86,6 +86,10 @@ export async function* runAgent(
   // come back empty (e.g. an agent that ends on a tool call with no closing prose),
   // and we'd rather persist the transcript than leave `read_agent_output` blank.
   let transcript = "";
+  // Capture the output artifact's ref so it's persisted alongside the diff below —
+  // the file is always written to a deterministic path, but the DB `output_ref` must
+  // point at it for `read_agent_output` and the dashboard viewer to find it.
+  let outputRef: string | null = null;
 
   for await (const ev of runtime.run({
     prompt,
@@ -119,7 +123,7 @@ export async function* runAgent(
       case "done": {
         ok = ev.ok;
         const output = ev.summary?.trim() || transcript.trim();
-        if (output) writeAgentArtifact(session.id, agent.id, "output", output);
+        if (output) outputRef = writeAgentArtifact(session.id, agent.id, "output", output);
         break;
       }
     }
@@ -128,7 +132,7 @@ export async function* runAgent(
 
   const diff = worktreeDiff(worktree);
   const diffRef = diff.trim() ? writeAgentArtifact(session.id, agent.id, "diff", diff) : null;
-  setAgentRefs(agent.id, { diffRef });
+  setAgentRefs(agent.id, { outputRef, diffRef });
   setAgentStatus(agent.id, ok ? "done" : "failed");
 
   return { ok, agent: getAgent(agent.id)! };

@@ -19,11 +19,12 @@ import {
   createSession,
   getSession,
   listAgents,
+  listSessionPrs,
   listSessions,
   sessionTotalCost,
   setSessionAwaitingInput,
 } from "../src/db";
-import { sessionNeedsInput } from "../src/cli/liveness";
+import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import {
@@ -44,15 +45,30 @@ import type { Model, Project } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { startSpinner } from "../src/cli/spinner";
 import { renderStreamEvent, type Pending } from "../src/cli/render";
-import { captureViaEditor } from "../src/util/editor";
+import { captureViaEditor, openInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
-import { ensureRuntimeInstalled, resolveRuntime, MODEL_CATALOG, type EnsureResult } from "../src/runtimes";
+import { ensureRuntimeInstalled, resolveRuntime, runtimeAuth, MODEL_CATALOG, type EnsureResult } from "../src/runtimes";
 import type { RuntimeKind, TackConfig } from "../src/config/schema";
 
 const usd = (n: number) => pc.green(`$${n.toFixed(4)}`);
 
 const RUNTIME_KINDS: RuntimeKind[] = ["claude", "codex"];
+
+/** Exits with the one "run tack init" message shared by every command that needs an
+ * existing config, so the wording stays in a single place. */
+function ensureConfigExists(): void {
+  if (!existsSync(CONFIG_PATH)) {
+    console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
+    process.exit(1);
+  }
+}
+
+/** `ensureConfigExists` + `loadConfig`, the opening move of most commands. */
+async function requireConfig(): Promise<TackConfig> {
+  ensureConfigExists();
+  return loadConfig();
+}
 
 /** Validates a runtime name from the CLI, exiting with a clear error if unknown. */
 function asRuntimeKind(name: string): RuntimeKind {
@@ -156,10 +172,7 @@ const runtimePin = defineCommand({
     version: { type: "positional", required: true, description: "Version to pin" },
   },
   async run({ args }) {
-    if (!existsSync(CONFIG_PATH)) {
-      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-      return process.exit(1);
-    }
+    ensureConfigExists();
     const kind = asRuntimeKind(String(args.runtime));
     const version = String(args.version);
     await pinRuntimeInConfig(CONFIG_PATH, kind, version);
@@ -196,6 +209,13 @@ const doctor = defineCommand({
         const r = resolveRuntime(config, kind);
         const ok = pin ? pc.green(`pinned ${pin} ✓`) : pc.dim("unpinned");
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.bold(r.bin)}  ${pc.dim(r.version)}  ${ok}`);
+        // Resolving only proves the binary runs at the pinned version — not that it's
+        // logged in. A quick credential-presence check turns a confusing mid-run auth
+        // failure into an up-front nudge.
+        const auth = runtimeAuth(kind);
+        const authLabel =
+          auth.state === "signed-in" ? pc.green(`✓ ${auth.detail}`) : pc.yellow(`? ${auth.detail}`);
+        console.log(`${" ".padEnd(7)} ${pc.dim("auth")}  ${authLabel}`);
       } catch (err) {
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.red((err as Error).message)}`);
       }
@@ -302,11 +322,7 @@ const projectsAdd = defineCommand({
     all: { type: "boolean", description: "Add every git repo in the current directory" },
   },
   async run({ args }) {
-    if (!existsSync(CONFIG_PATH)) {
-      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-      return process.exit(1);
-    }
-    const config = await loadConfig();
+    const config = await requireConfig();
 
     // Resolve the candidate repo paths: every git repo under the current directory
     // with `--all`, otherwise the single path the user named.
@@ -348,11 +364,7 @@ const projectsRefresh = defineCommand({
     all: { type: "boolean", description: "Refresh every configured project" },
   },
   async run({ args }) {
-    if (!existsSync(CONFIG_PATH)) {
-      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-      return process.exit(1);
-    }
-    const config = await loadConfig();
+    const config = await requireConfig();
     if (config.projects.length === 0) return console.log(pc.dim("No projects configured."));
 
     // Resolve which configured projects to refresh: all of them, or the single one
@@ -411,10 +423,7 @@ const projectsRemove = defineCommand({
     project: { type: "positional", required: true, description: "Project name or path to remove" },
   },
   async run({ args }) {
-    if (!existsSync(CONFIG_PATH)) {
-      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-      return process.exit(1);
-    }
+    ensureConfigExists();
     const removed = await removeProjectFromConfig(CONFIG_PATH, String(args.project));
     if (!removed) {
       console.error(pc.red(`No configured project matches "${args.project}" (by name or path).`));
@@ -455,11 +464,7 @@ const modelsRefresh = defineCommand({
     description: "Add catalog models offered by the connected runtime CLIs, skipping ones already configured",
   },
   async run() {
-    if (!existsSync(CONFIG_PATH)) {
-      console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-      return process.exit(1);
-    }
-    const config = await loadConfig();
+    const config = await requireConfig();
 
     // Gather catalog candidates from the runtimes that actually resolve to a
     // working binary (honoring any version pin) — an unavailable CLI contributes
@@ -749,6 +754,66 @@ function printBackgroundHandoff(sessionId: string, pid: number): void {
   console.log(pc.dim(`Follow up with \`tack session resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
 }
 
+/** One-word PR state → glyph+color, matching the dashboard's vocabulary. */
+function prStateLabel(state: string | null): string {
+  switch (state) {
+    case "merged":
+      return pc.magenta("✔ merged");
+    case "open":
+      return pc.green("● open");
+    case "draft":
+      return pc.gray("◌ draft");
+    case "closed":
+      return pc.red("✖ closed");
+    default:
+      return pc.gray(state ?? "·");
+  }
+}
+
+const sessionShow = defineCommand({
+  meta: {
+    name: "show",
+    description: "Show one session's agents, PRs, and cost (a scriptable, non-interactive view)",
+  },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const s = getSession(id)!;
+    const agents = listAgents(id);
+    const prs = listSessionPrs(id);
+    const cost = sessionTotalCost(id);
+
+    const live = sessionLive(s) ? pc.green("● live") : pc.gray("○ idle");
+    const needs = sessionNeedsInput(s, agents) ? `  ${pc.yellow("◆ needs input")}` : "";
+    console.log(`${pc.bold(s.id)}  ${live}  ${pc.dim(s.status)}${needs}`);
+    if (s.title) console.log(`  ${s.title}`);
+    console.log(
+      pc.dim(`  ${s.supervisor_model ?? "?"} (${s.runtime ?? "?"})  ·  ${s.created_at}`),
+    );
+    console.log(
+      `  cost ${usd(cost.total)} ${pc.dim(`(supervisor ${cost.supervisor.toFixed(4)} + agents ${cost.agents.toFixed(4)})`)}`,
+    );
+
+    console.log(pc.bold(`\nAgents (${agents.length})`));
+    if (agents.length === 0) console.log(pc.dim("  none yet"));
+    for (const a of agents) {
+      const alive = a.status === "running";
+      const statusColor = alive ? pc.yellow : a.status === "done" ? pc.green : a.status === "failed" ? pc.red : pc.gray;
+      console.log(
+        `  ${pc.cyan(a.id)}  ${statusColor(a.status.padEnd(8))} ${pc.dim(`${a.runtime}:${a.model}`)}  ${usd(a.cost)}  ${pc.dim(a.project_name)}`,
+      );
+      if (a.branch) console.log(pc.dim(`    ${a.branch}`));
+    }
+
+    console.log(pc.bold(`\nPRs (${prs.length})`));
+    if (prs.length === 0) console.log(pc.dim("  none discovered"));
+    for (const pr of prs) {
+      console.log(`  ${pr.number ? `#${pr.number}` : "?"}  ${prStateLabel(pr.state)}  ${pc.dim(pr.url)}`);
+    }
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -756,10 +821,48 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, list, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, list: sessionsList, archive, unarchive, stop, delete: del },
   default: "list",
+});
+
+const configPathCmd = defineCommand({
+  meta: { name: "path", description: "Print the config file path" },
+  run() {
+    console.log(CONFIG_PATH);
+  },
+});
+
+const configEdit = defineCommand({
+  meta: { name: "edit", description: "Open the config in $EDITOR, then validate it" },
+  async run() {
+    ensureConfigExists();
+    try {
+      openInEditor(CONFIG_PATH);
+    } catch (err) {
+      console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
+      console.error(pc.dim("Set $VISUAL or $EDITOR."));
+      return process.exit(1);
+    }
+    // Validate right after editing so a typo surfaces now, not mid-run on the next
+    // session — the same loud-at-load contract `loadConfig` already enforces.
+    try {
+      await loadConfig();
+      console.log(pc.green("Config OK"));
+    } catch (err) {
+      console.error(pc.red(`Config has errors: ${(err as Error).message}`));
+      console.error(pc.dim(`Fix them with \`tack config edit\`.`));
+      process.exit(1);
+    }
+  },
+});
+
+// `default: "path"` makes bare `tack config` print the path (see the note on `projects`).
+const config = defineCommand({
+  meta: { name: "config", description: "Show or edit the Tack config file (path, edit)" },
+  subCommands: { path: configPathCmd, edit: configEdit },
+  default: "path",
 });
 
 const stable = defineCommand({
@@ -775,7 +878,10 @@ const stable = defineCommand({
 // hidden wrapper, which reuses `sessionCreate`'s args and run. `hidden` keeps a
 // redundant top-level `create` out of the help listing.
 const sessionCreateDefault = defineCommand({
-  meta: { name: "create", hidden: true, description: sessionCreate.meta.description },
+  // The description mirrors `sessionCreate`'s; it's a literal rather than
+  // `sessionCreate.meta.description` because citty types `.meta` as possibly-async,
+  // so reaching into it here doesn't typecheck.
+  meta: { name: "create", hidden: true, description: "Create a session: plan and coordinate agents for a problem" },
   args: sessionCreate.args,
   run: sessionCreate.run,
 });
@@ -787,6 +893,7 @@ const main = defineCommand({
     runtimes,
     projects,
     models,
+    config,
     session,
     create: sessionCreateDefault,
     agent,

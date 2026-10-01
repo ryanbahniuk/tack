@@ -24,6 +24,18 @@ export function readArtifact(ref: string | null | undefined): string {
   }
 }
 
+/** The deterministic path an agent artifact lives at — the single place the naming
+ * convention is encoded, so readers can reconstruct a ref even when the DB column is
+ * empty (e.g. an agent written before `output_ref` was persisted). */
+export function agentArtifactPath(
+  sessionId: string,
+  agentId: string,
+  kind: "prompt" | "output" | "diff",
+): string {
+  const ext = kind === "diff" ? "patch" : "md";
+  return join(ARTIFACTS_DIR, sessionId, agentId, `${kind}.${ext}`);
+}
+
 /** Writes an agent artifact (prompt/output/diff) and returns its ref path. */
 export function writeAgentArtifact(
   sessionId: string,
@@ -31,8 +43,7 @@ export function writeAgentArtifact(
   kind: "prompt" | "output" | "diff",
   body: string,
 ): string {
-  const ext = kind === "diff" ? "patch" : "md";
-  return write(join(ARTIFACTS_DIR, sessionId, agentId, `${kind}.${ext}`), body);
+  return write(agentArtifactPath(sessionId, agentId, kind), body);
 }
 
 /** Writes a versioned shared-context body and returns its ref path. */

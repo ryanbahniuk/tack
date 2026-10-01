@@ -15,6 +15,7 @@ export {
   type ResolvedRuntime,
 } from "./resolve";
 export { ensureRuntimeInstalled, type EnsureResult, type EnsureAction } from "./install";
+export { runtimeAuth, type AuthStatus } from "./auth";
 
 /** Picks the runtime implementation for a runtime kind. */
 export function selectRuntime(kind: RuntimeKind): Runtime {
