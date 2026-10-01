@@ -13,6 +13,54 @@ whole. `AGENTS.md` (contributor guide) points here.
 
 ---
 
+## Positioning: the supervisor is the product
+
+A class of tools looks superficially similar — "run many coding agents" — but they
+solve a different half of the problem, and Tack should not try to out-build them on
+theirs.
+
+- **An agent *runtime* is plumbing.** Its job is to keep agent processes
+  alive across restarts and disconnects, sync them across machines over SSH, and
+  show liveness (working / blocked / idle). It wraps *any* CLI transparently and
+  has no opinion about *what* the agents work on. The user is still the
+  orchestrator: you open N terminals and tell each agent what to do.
+- **Tack is a *supervisor* — a brain.** A persistent planning agent investigates,
+  decomposes the work, and *delegates* units to agents, then stitches the results
+  back together. The user describes an outcome; Tack decides how to fan it out.
+
+**The wedge is orchestration intelligence, not process persistence.** We compete
+on the layer *above* the runtime, and deliberately cede the plumbing layer:
+
+- **Lean into:**
+  - **The planning / decomposition layer as the headline.** "Describe the outcome,
+    I fan it out and merge it back," not "I keep your N agents alive."
+  - **Cross-runtime *context sharing*.** A runtime wraps CLIs as opaque processes
+    that can at most coordinate over a socket. Tack shares *context* between a
+    Claude agent and a Codex agent working the same problem — pick the best model
+    per unit of work and they still share what they learned. This is structurally
+    impossible for a tool that never looks inside the loop.
+  - **The accountability / ROI view.** Per-unit cost tracking and PR discovery
+    reframe the tool from "are my agents alive?" to "what did this plan cost and
+    what shipped?" — a manager's view, not just an operator's.
+  - **Correctness of parallel work, not just liveness.** The unsolved pain in
+    multi-agent coding is collision — merge conflicts, duplicated work, agents
+    stepping on each other — not uptime. Isolated worktrees are the floor;
+    conflict prediction and dependency ordering before dispatch are the ceiling,
+    and they are squarely the supervisor's job.
+
+- **Do not compete on:**
+  - Multi-machine / SSH / "survives laptop sleep" persistence — a runtime's moat.
+    Tack can ride *on top of* such a runtime rather than rebuild it.
+  - Breadth of supported CLIs. Depth on two (Claude + Codex) with real
+    context-sharing beats shallow support for twenty.
+
+A runtime keeps the herd alive; Tack decides what the herd works on and merges the
+results. That one-sentence distinction is something a runtime cannot claim without
+rebuilding its whole architecture — and it is the reason every design decision
+below favors the supervisor's intelligence over reimplementing the agent loop.
+
+---
+
 ## 1. Goals & non-goals
 
 **Goals**
