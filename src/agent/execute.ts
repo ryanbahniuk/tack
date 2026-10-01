@@ -7,7 +7,9 @@ import {
   getAgent,
   getSession,
   latestSharedContext,
+  setAgentActivity,
   setAgentCost,
+  setAgentError,
   setAgentPid,
   setAgentRefs,
   setAgentResumeRef,
@@ -33,12 +35,18 @@ export function prepareAgent(input: {
   project: Project;
   model: Model;
   prompt: string;
+  /** Files/globs this agent is expected to touch (for overlap detection). */
+  touches?: string[];
+  /** Sibling agent ids that must finish before this agent starts. */
+  dependsOn?: string[];
 }): AgentRow {
   const agent = createAgent({
     sessionId: input.session.id,
     projectName: input.project.name,
     model: input.model.key,
     runtime: input.model.runtime,
+    touches: input.touches ?? null,
+    dependsOn: input.dependsOn ?? null,
   });
   const promptRef = writeAgentArtifact(input.session.id, agent.id, "prompt", input.prompt);
   getDb().prepare(`UPDATE agents SET prompt_ref = ? WHERE id = ?`).run(promptRef, agent.id);
@@ -81,6 +89,7 @@ export async function* runAgent(
   const prompt = readArtifact(agent.prompt_ref) || "Continue.";
 
   setAgentStatus(agent.id, "running");
+  setAgentError(agent.id, null); // clear any error from a prior (failed) attempt
   let ok = false;
   // Accumulate streamed text as a fallback output: a runtime's final `summary` can
   // come back empty (e.g. an agent that ends on a tool call with no closing prose),
@@ -90,6 +99,9 @@ export async function* runAgent(
   // the file is always written to a deterministic path, but the DB `output_ref` must
   // point at it for `read_agent_output` and the dashboard viewer to find it.
   let outputRef: string | null = null;
+  // Remember the last error the runtime reported so a failure is legible in the
+  // dashboard (persisted below) instead of only in the raw log.
+  let lastError: string | null = null;
 
   for await (const ev of runtime.run({
     prompt,
@@ -120,6 +132,14 @@ export async function* runAgent(
       case "text":
         transcript += ev.text;
         break;
+      case "tool_call":
+        // Live "what is this agent doing right now" for the dashboard.
+        setAgentActivity(agent.id, activityLabel(ev.tool, ev.input));
+        break;
+      case "error":
+        // Keep the latest error; the final one is the most relevant on failure.
+        lastError = ev.message;
+        break;
       case "done": {
         ok = ev.ok;
         const output = ev.summary?.trim() || transcript.trim();
@@ -133,9 +153,27 @@ export async function* runAgent(
   const diff = worktreeDiff(worktree);
   const diffRef = diff.trim() ? writeAgentArtifact(session.id, agent.id, "diff", diff) : null;
   setAgentRefs(agent.id, { outputRef, diffRef });
+  // On failure, persist a reason so the dashboard can show it inline; a transcript
+  // tail is a reasonable fallback when the runtime emitted no explicit error.
+  if (!ok) setAgentError(agent.id, lastError ?? transcript.trim().slice(-500) ?? null);
   setAgentStatus(agent.id, ok ? "done" : "failed");
 
   return { ok, agent: getAgent(agent.id)! };
+}
+
+/**
+ * A short, human-readable label for a tool call, shown as the agent's live activity
+ * in the dashboard (e.g. `Bash: bun run typecheck`, `Edit src/foo.ts`). Pulls the
+ * most telling field out of the (runtime-shaped, loosely-typed) tool input, falling
+ * back to just the tool name.
+ */
+function activityLabel(tool: string, input: unknown): string {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof obj[k] === "string" ? (obj[k] as string) : undefined);
+  const detail =
+    str("command") ?? str("file_path") ?? str("path") ?? str("pattern") ?? str("query") ?? str("url");
+  const label = detail ? `${tool}: ${detail}` : tool;
+  return label.replace(/\s+/g, " ").trim();
 }
 
 /** Convenience for the direct `tack agent` command: prepare + run inline. */

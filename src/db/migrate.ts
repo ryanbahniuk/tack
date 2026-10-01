@@ -124,6 +124,31 @@ const migrations: Migration[] = [
       ALTER TABLE agents ADD COLUMN finished_at TEXT;
     `,
   },
+  {
+    version: 4,
+    name: "agent_activity_failure_coordination",
+    // Three features share one migration so the schema moves in a single step:
+    //
+    //  - Live activity (dashboard): `activity` is a short human label for what the
+    //    agent is doing right now (its last tool call), stamped with `activity_at`
+    //    so the dashboard can show "… 4s ago". Both NULL until the first tool call.
+    //  - Failure legibility + retry: `error` holds the last error message (shown
+    //    inline on failed rows instead of only in the output file); `attempt` counts
+    //    how many times the runner has (re)started this agent after a transient
+    //    failure (0 = first run, never retried).
+    //  - Conflict/dependency prediction: `touches` is a JSON array of the files/globs
+    //    the supervisor declared this agent will modify (for overlap detection);
+    //    `depends_on` is a JSON array of sibling agent ids that must finish before
+    //    this one starts (the runner self-gates on them). Both NULL = undeclared.
+    sql: `
+      ALTER TABLE agents ADD COLUMN activity TEXT;
+      ALTER TABLE agents ADD COLUMN activity_at TEXT;
+      ALTER TABLE agents ADD COLUMN error TEXT;
+      ALTER TABLE agents ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE agents ADD COLUMN touches TEXT;
+      ALTER TABLE agents ADD COLUMN depends_on TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

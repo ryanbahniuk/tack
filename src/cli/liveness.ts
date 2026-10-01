@@ -18,6 +18,11 @@ export function agentLive(a: AgentRow): boolean {
  * flag toggles per plan iteration, and unread work clears once the human views the
  * session (`stampSessionSeen`). `finished_at`/`last_seen_at` are ISO-UTC, so a plain
  * string compare orders them correctly.
+ *
+ * Pending amendments are deliberately NOT a "needs input" signal: the SYSTEM
+ * orchestrates their resolution (the supervisor is surfaced them through
+ * `wait_for_agents` and adjudicates with `resolve_amendment`), so they're surfaced
+ * in the dashboard for visibility but never flagged as awaiting the human.
  */
 export function sessionNeedsInput(s: SessionRow, agents: AgentRow[]): boolean {
   if (s.awaiting_input_at) return true;

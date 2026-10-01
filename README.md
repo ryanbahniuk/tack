@@ -123,8 +123,16 @@ Seed the `models` block from the catalog instead of hand-authoring entries —
 already configured:
 
 ```bash
-tack models refresh  # add catalog models for the connected runtimes
+tack models refresh       # add catalog models for the connected runtimes
+tack models sync-pricing  # fill codex model pricing from models.dev (public GET)
 ```
+
+Codex reports tokens only, so its models need a `pricing` table to report a cost.
+Rather than hand-maintain USD rates that go stale, `tack models sync-pricing` fetches
+them from [models.dev](https://models.dev) (a read-only network call, made only when
+you run this; nothing of yours is sent) and fills any codex model missing pricing —
+`--all` refreshes them all. Claude models don't need it (the CLI reports cost
+directly).
 
 Manage the runtime CLIs from the command line instead of hand-editing the config:
 
@@ -158,6 +166,8 @@ tack stable
 
 # Inspect and manage sessions.
 tack session list                  # list sessions and cost
+tack session show <session>        # agents, PRs, cost, and pending amendments
+tack session context <session>     # the shared contract + version history (--all for bodies)
 tack session stop <session>        # stop a session and its agents
 tack session archive <session>     # hide from the default view
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows

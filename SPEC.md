@@ -25,15 +25,18 @@ theirs.
   has no opinion about *what* the agents work on. The user is still the
   orchestrator: you open N terminals and tell each agent what to do.
 - **Tack is a *supervisor* — a brain.** A persistent planning agent investigates,
-  decomposes the work, and *delegates* units to agents, then stitches the results
-  back together. The user describes an outcome; Tack decides how to fan it out.
+  decomposes the work, and *delegates* units to agents, then reconciles their
+  results into a set of **reviewable pull requests — one per unit of work**. The
+  user describes an outcome; Tack decides how to fan it out. The deliverable is N
+  PRs a human reviews and merges, not an auto-merged mega-change.
 
 **The wedge is orchestration intelligence, not process persistence.** We compete
 on the layer *above* the runtime, and deliberately cede the plumbing layer:
 
 - **Lean into:**
   - **The planning / decomposition layer as the headline.** "Describe the outcome,
-    I fan it out and merge it back," not "I keep your N agents alive."
+    I fan it out into N reviewable PRs," not "I keep your N agents alive." Tack
+    decomposes and coordinates; a human still reviews and merges each PR.
   - **Cross-runtime *context sharing*.** A runtime wraps CLIs as opaque processes
     that can at most coordinate over a socket. Tack shares *context* between a
     Claude agent and a Codex agent working the same problem — pick the best model
@@ -54,8 +57,8 @@ on the layer *above* the runtime, and deliberately cede the plumbing layer:
   - Breadth of supported CLIs. Depth on two (Claude + Codex) with real
     context-sharing beats shallow support for twenty.
 
-A runtime keeps the herd alive; Tack decides what the herd works on and merges the
-results. That one-sentence distinction is something a runtime cannot claim without
+A runtime keeps the herd alive; Tack decides what the herd works on and turns the
+results into reviewable PRs. That one-sentence distinction is something a runtime cannot claim without
 rebuilding its whole architecture — and it is the reason every design decision
 below favors the supervisor's intelligence over reimplementing the agent loop.
 
@@ -168,9 +171,12 @@ untouched** — they belong to the repo. Tack layers its own context separately.
 
 The supervisor has a *second* MCP server (`tack __supervisor-mcp <sessionId>`) with
 the coordination tools it needs: `list_projects`, `set_shared_context`,
-`spawn_agent`, `check_agents`, `wait_for_agents` (blocks server-side so the planner
-doesn't burn tokens polling), `read_agent_output`, `list_amendments`,
-`resolve_amendment`.
+`spawn_agent` (with `touches`/`dependsOn`), `check_agents`, `wait_for_agents` (blocks
+server-side so the planner doesn't burn tokens polling, and returns early with any
+`pendingAmendments` so the system routes an agent's proposal back to the supervisor
+to adjudicate), `check_conflicts`, `read_agent_output`, `list_amendments`,
+`resolve_amendment`. Amendment resolution is therefore orchestrated by the system,
+not by the human — `tack stable` only surfaces pending amendments read-only.
 
 ---
 
@@ -332,9 +338,27 @@ stdout/stderr to the log, and yields parsed JSON lines.
    coordination server, runs its runtime autonomously, and persists usage/cost/refs
    as events stream; on completion it captures the worktree diff.
 4. The supervisor `wait_for_agents`, `read_agent_output`, adjudicates amendments,
-   optionally spawns follow-ups, and finishes with a summary. Agents open their own
-   PRs on `tack/pr/<sessionId>/<slug>` branches.
+   runs `check_conflicts`, optionally spawns follow-ups, and finishes with a
+   summary. It then opens **one PR per unit of work** (the deliverable — N reviewable
+   PRs, see Positioning) on `tack/pr/<sessionId>/<slug>` branches, after the human
+   approves; agents only commit to their worktree.
 5. The `tack stable` dashboard discovers PRs via `gh`.
+
+**Coordinating parallel work (the correctness layer).** `spawn_agent` takes an
+optional `touches` (the files/dirs a unit will modify) and `dependsOn` (sibling
+agent ids that must finish first). Overlapping touch-sets are reported back as a
+warning so the supervisor can serialize clashing units; a dependent agent's detached
+runner **self-gates** on its prerequisites (polling the shared DB) before it starts,
+so no separate scheduler is needed. `check_conflicts` reports files more than one
+agent actually changed in the same project — a cross-branch merge collision to
+resolve before opening PRs. This is the "conflict prediction + dependency ordering"
+ceiling from Positioning; isolated worktrees remain the floor underneath it.
+
+**Resilience.** A failed agent whose error looks transient (rate limit, overload,
+network) is re-run by its runner with exponential backoff (`attempt` counts the
+retries); non-transient failures are left failed with the reason recorded for the
+dashboard. The agent's live `activity` (its latest tool call) is stamped as events
+stream, so `tack stable` shows what each running agent is doing now.
 
 `tack agent <project> "<task>"` runs a single agent inline (no supervisor) — the
 quickest way to validate the runtime pipeline.
@@ -382,6 +406,14 @@ name**; loading fails loudly if a role names an undefined model.
   override base instructions; revisit if codex agents behave oddly.
 - **Bedrock** becomes a third runtime once approved (open-weight models); the
   model→runtime abstraction already anticipates it.
-- No automated test suite yet; no crash-restart supervision (a killed agent is
-  marked dead via liveness, not auto-respawned).
+- No automated test suite yet. The runner retries a failed *run* whose error looks
+  transient (§9 Resilience), but a hard-*killed* agent process (SIGKILL, OOM) is
+  still only marked dead via liveness, not auto-respawned. Retry re-runs in the
+  worktree with a fresh runtime session, so it loses prior conversation context;
+  resume-on-retry is future work.
+- Overlap detection compares declared `touches` by exact/directory-prefix match, not
+  full globs. Amendments are adjudicated by the supervisor (the system routes them to
+  it via `wait_for_agents`); `tack stable` surfaces them read-only.
+- Pricing can be synced from models.dev (`tack models sync-pricing`) instead of
+  hand-maintained; it's the one network call Tack makes and only on demand.
 - The interactive `claude attach` escape hatch is unimplemented.

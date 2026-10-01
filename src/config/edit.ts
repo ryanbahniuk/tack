@@ -308,3 +308,26 @@ export async function addModelsToConfig(configPath: string, entries: Model[]): P
   writeModelsBlock(configPath, [...parsed.models, ...added]);
   return added;
 }
+
+/**
+ * Sets `pricing` on the configured models named in `pricingByKey` (keyed by model
+ * `key`), rewriting the `models:` array in place and preserving the rest of the
+ * file. Only models present in both the config and the map are touched. Returns the
+ * keys actually updated.
+ */
+export async function setModelsPricingInConfig(
+  configPath: string,
+  pricingByKey: Map<string, Pricing>,
+): Promise<string[]> {
+  const parsed = await loadParsedConfig(configPath);
+  const updated: string[] = [];
+  const next = parsed.models.map((m) => {
+    const pricing = pricingByKey.get(m.key);
+    if (!pricing) return m;
+    updated.push(m.key);
+    return { ...m, pricing };
+  });
+  if (updated.length === 0) return [];
+  writeModelsBlock(configPath, next);
+  return updated;
+}

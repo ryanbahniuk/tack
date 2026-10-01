@@ -60,6 +60,23 @@ export interface AgentRow {
    * pending/running. Backs the "unread completed work" check against a session's
    * `last_seen_at`. */
   finished_at: string | null;
+  /** Short human label for what the agent is doing right now (its last tool call),
+   * surfaced live in the dashboard; null until the first tool call. */
+  activity: string | null;
+  /** When `activity` was last stamped (ISO-UTC), for the dashboard's "… Ns ago". */
+  activity_at: string | null;
+  /** Last error message when the agent failed, shown inline in the dashboard so a
+   * failure is legible without opening the output file; null when it didn't fail. */
+  error: string | null;
+  /** How many times the runner has restarted this agent after a transient failure
+   * (0 = first run). */
+  attempt: number;
+  /** JSON array of files/globs the supervisor declared this agent will modify, for
+   * pre-dispatch overlap detection; null when undeclared. See `agentTouches`. */
+  touches: string | null;
+  /** JSON array of sibling agent ids that must reach a terminal state before this
+   * agent starts; the runner self-gates on them. Null when undeclared. */
+  depends_on: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -232,13 +249,17 @@ export function createAgent(input: {
   model?: string | null;
   runtime?: RuntimeKind | null;
   promptRef?: string | null;
+  /** Declared files/globs this agent will touch (for overlap detection). */
+  touches?: string[] | null;
+  /** Sibling agent ids that must finish before this agent starts. */
+  dependsOn?: string[] | null;
 }): AgentRow {
   const db = getDb();
   const now = nowIso();
   const id = shortId("agt");
   db.prepare(
-    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.sessionId,
@@ -246,10 +267,32 @@ export function createAgent(input: {
     input.model ?? null,
     input.runtime ?? null,
     input.promptRef ?? null,
+    input.touches && input.touches.length ? JSON.stringify(input.touches) : null,
+    input.dependsOn && input.dependsOn.length ? JSON.stringify(input.dependsOn) : null,
     now,
     now,
   );
   return getAgent(id)!;
+}
+
+/** Parses an agent's declared touch-set (JSON array), empty when undeclared. */
+export function agentTouches(a: AgentRow): string[] {
+  return parseJsonArray(a.touches);
+}
+
+/** Parses an agent's declared dependencies (JSON array), empty when undeclared. */
+export function agentDependsOn(a: AgentRow): string[] {
+  return parseJsonArray(a.depends_on);
+}
+
+function parseJsonArray(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export function getAgent(id: string): AgentRow | null {
@@ -317,6 +360,32 @@ export function setAgentRefs(
     .run(refs.outputRef ?? cur.output_ref, refs.diffRef ?? cur.diff_ref, nowIso(), id);
 }
 
+/** Records what the agent is doing right now (its latest tool call), for the live
+ * dashboard. Stamps `activity_at` so the dashboard can show how stale it is. */
+export function setAgentActivity(id: string, activity: string): void {
+  const now = nowIso();
+  getDb()
+    .prepare(`UPDATE agents SET activity = ?, activity_at = ?, updated_at = ? WHERE id = ?`)
+    .run(activity.slice(0, 200), now, now, id);
+}
+
+/** Records (or clears) the agent's last error message, shown inline on failure. */
+export function setAgentError(id: string, message: string | null): void {
+  getDb()
+    .prepare(`UPDATE agents SET error = ?, updated_at = ? WHERE id = ?`)
+    .run(message ? message.slice(0, 500) : null, nowIso(), id);
+}
+
+/** Bumps the retry counter and clears the previous error, as the runner restarts a
+ * transiently-failed agent. Returns the new attempt number. */
+export function bumpAgentAttempt(id: string): number {
+  const now = nowIso();
+  getDb()
+    .prepare(`UPDATE agents SET attempt = attempt + 1, error = NULL, updated_at = ? WHERE id = ?`)
+    .run(now, id);
+  return getAgent(id)?.attempt ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Shared context (versioned contract, body on disk)
 // ---------------------------------------------------------------------------
@@ -344,6 +413,13 @@ export function latestSharedContext(sessionId: string): SharedContextRow | null 
       .prepare(`SELECT * FROM shared_context WHERE session_id = ? ORDER BY version DESC LIMIT 1`)
       .get(sessionId) as SharedContextRow) ?? null
   );
+}
+
+/** Every version of a session's shared contract, oldest first (for `session context`). */
+export function listSharedContext(sessionId: string): SharedContextRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM shared_context WHERE session_id = ? ORDER BY version ASC`)
+    .all(sessionId) as SharedContextRow[];
 }
 
 // ---------------------------------------------------------------------------

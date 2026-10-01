@@ -5,6 +5,7 @@ import { loadConfig, resolveModel } from "../config/load";
 import { getSession } from "../db";
 import {
   addSharedContext,
+  agentTouches,
   getAgent,
   latestSharedContext,
   listAgents,
@@ -13,6 +14,7 @@ import {
   upsertSessionPr,
   type AgentStatus,
 } from "../db";
+import { overlapWithSiblings, sessionFileCollisions } from "../supervisor/conflicts";
 import {
   readArtifact,
   writeAmendmentArtifact,
@@ -107,14 +109,26 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description:
         "Delegate a task to a new agent in the given project. The agent runs autonomously in its own " +
-        "worktree; this returns immediately with the agent id. Use wait_for_agents to await completion.",
+        "worktree; this returns immediately with the agent id. Use wait_for_agents to await completion.\n\n" +
+        "Declare `touches` (the files/dirs this unit will modify) and `dependsOn` (agent ids that must finish " +
+        "first) so Tack can coordinate parallel work: overlapping touch-sets are reported back as a warning so " +
+        "you can serialize the clashing units with `dependsOn`, and a dependent agent self-gates until its " +
+        "prerequisites finish. You can fan out every agent at once with dependencies declared — they order themselves.",
       inputSchema: {
         project: z.string().describe("Project name from list_projects"),
         prompt: z.string().describe("The task for the agent, self-contained"),
         model: z.string().optional().describe("Model name; defaults to the configured agent model"),
+        touches: z
+          .array(z.string())
+          .optional()
+          .describe("Files/dirs this agent will modify (repo-relative), e.g. ['src/auth/', 'README.md']"),
+        dependsOn: z
+          .array(z.string())
+          .optional()
+          .describe("Agent ids that must reach a terminal state before this agent starts"),
       },
     },
-    async ({ project, prompt, model }) => {
+    async ({ project, prompt, model, touches, dependsOn }) => {
       const session = requireSession();
       // Plan-gate: agents only run once the human has approved the plan (attended
       // sessions flip this via the ExitPlanMode hook; background sessions are
@@ -128,9 +142,43 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
       const m = resolveModel(config, model ?? config.roles.agent);
-      const agent = prepareAgent({ session, project: proj, model: m, prompt });
+
+      const siblings = listAgents(session.id);
+      // Validate declared dependencies point at real agents in this session.
+      const unknownDeps = (dependsOn ?? []).filter((id) => !siblings.some((s) => s.id === id));
+      if (unknownDeps.length > 0)
+        throw new Error(`Unknown dependsOn agent id(s): ${unknownDeps.join(", ")}`);
+
+      // Warn (don't block) when this unit's declared touch-set overlaps a sibling in
+      // the same project that hasn't finished — the supervisor can then re-issue with
+      // `dependsOn` to serialize them. Only non-terminal siblings matter: a finished
+      // agent's work is already captured and won't be edited concurrently.
+      const overlap = touches?.length
+        ? overlapWithSiblings(
+            touches,
+            siblings
+              .filter((s) => s.project_name === project && !TERMINAL.includes(s.status))
+              .map((s) => ({ id: s.id, touches: agentTouches(s) })),
+          )
+        : [];
+
+      const agent = prepareAgent({ session, project: proj, model: m, prompt, touches, dependsOn });
       spawnAgentRunner(session.id, agent.id);
-      return text({ agentId: agent.id, project, model: m.name, runtime: m.runtime });
+      return text({
+        agentId: agent.id,
+        project,
+        model: m.name,
+        runtime: m.runtime,
+        dependsOn: dependsOn ?? [],
+        ...(overlap.length
+          ? {
+              warning:
+                "Declared touch-set overlaps unfinished sibling agent(s) in this project — they may collide. " +
+                "Consider re-issuing with `dependsOn` to serialize, or narrow the touch-sets.",
+              overlaps: overlap,
+            }
+          : {}),
+      });
     },
   );
 
@@ -197,7 +245,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description:
         "Block until the given agents (or all agents) reach a terminal state (done/failed/stopped), or the " +
-        "timeout elapses. Returns their final status. Prefer this over polling check_agents.",
+        "timeout elapses. Returns their final status. Prefer this over polling check_agents.\n\n" +
+        "This is also how the system routes amendments to you: if an agent proposes an amendment to the shared " +
+        "contract while you wait, this returns early with `pendingAmendments` set (and done=false). Adjudicate " +
+        "each with resolve_amendment (updating the shared context if you accept), then call wait_for_agents " +
+        "again to keep waiting. Agents continue under the current contract meanwhile.",
       inputSchema: {
         agentIds: z.array(z.string()).optional().describe("Specific agents to await; omit for all"),
         timeoutSeconds: z.number().optional().describe("Max wait (default 1800)"),
@@ -206,6 +258,27 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     async ({ agentIds, timeoutSeconds }) => {
       const deadline = Date.now() + (timeoutSeconds ?? 1800) * 1000;
       while (Date.now() < deadline) {
+        // Surface amendments first so a proposal is never missed: an agent that
+        // proposes one keeps working under the current contract, so without this the
+        // supervisor wouldn't see it until every agent finished. Returning early makes
+        // the coordination loop itself drive resolution (the system orchestrates it).
+        const pending = listPendingAmendments(sessionId);
+        if (pending.length > 0) {
+          return text({
+            done: false,
+            pendingAmendments: pending.map((am) => ({
+              id: am.id,
+              proposedBy: am.proposed_by,
+              proposal: readArtifact(am.proposal_ref),
+            })),
+            agents: listAgents(sessionId)
+              .filter((a) => !agentIds || agentIds.includes(a.id))
+              .map(agentSummary),
+            note:
+              "An agent proposed an amendment to the shared contract. Adjudicate each with resolve_amendment " +
+              "(revise the shared context if you accept), then call wait_for_agents again to keep waiting.",
+          });
+        }
         const agents = listAgents(sessionId).filter((a) => !agentIds || agentIds.includes(a.id));
         if (agents.length > 0 && agents.every((a) => TERMINAL.includes(a.status))) {
           return text({ done: true, agents: agents.map(agentSummary) });
@@ -233,6 +306,25 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         branch: a.branch,
         output: output || "(no textual output captured)",
         diffPreview: diff ? diff.split("\n").slice(0, 200).join("\n") : "(no diff)",
+      });
+    },
+  );
+
+  server.registerTool(
+    "check_conflicts",
+    {
+      description:
+        "Check for collisions across the session's agents BEFORE opening PRs: files that more than one agent " +
+        "changed in the same project (a merge conflict waiting to happen across the N branches). Run this once " +
+        "agents finish; if it reports collisions, resolve them (e.g. a follow-up agent to reconcile) before " +
+        "opening pull requests. Empty means the branches touch disjoint files and should merge cleanly.",
+      inputSchema: {},
+    },
+    async () => {
+      const collisions = sessionFileCollisions(listAgents(sessionId), config);
+      return text({
+        clean: collisions.length === 0,
+        collisions,
       });
     },
   );

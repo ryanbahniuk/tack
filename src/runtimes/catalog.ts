@@ -14,7 +14,8 @@ import type { Model, Pricing, RuntimeKind } from "../config/schema";
  * `opus` is Opus 4.8, not 5), which would defeat a version-pinned key.
  *
  * Codex reports tokens only, so its entries MUST carry `pricing` (USD per 1M
- * tokens) to yield a cost (SPEC §5). Claude headless reports `total_cost_usd`
+ * tokens) to yield a cost (SPEC §5) — `tack models sync-pricing` can fill these from
+ * models.dev instead of hand-maintaining them. Claude headless reports `total_cost_usd`
  * directly, so pricing is not needed there — but interactive claude sessions emit
  * no cost, so we carry ESTIMATED pricing here purely as the fallback used to
  * recover an interactive session's cost from its transcript tokens. Edit these to

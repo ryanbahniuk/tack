@@ -12,6 +12,7 @@ import {
   addProjectsToConfig,
   pinRuntimeInConfig,
   removeProjectFromConfig,
+  setModelsPricingInConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
 import {
@@ -19,11 +20,14 @@ import {
   createSession,
   getSession,
   listAgents,
+  listPendingAmendments,
   listSessionPrs,
   listSessions,
+  listSharedContext,
   sessionTotalCost,
   setSessionAwaitingInput,
 } from "../src/db";
+import { readArtifact } from "../src/artifacts/store";
 import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
@@ -48,7 +52,17 @@ import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor, openInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
-import { ensureRuntimeInstalled, resolveRuntime, runtimeAuth, MODEL_CATALOG, type EnsureResult } from "../src/runtimes";
+import {
+  ensureRuntimeInstalled,
+  fetchPricingCatalog,
+  pricingForModel,
+  resolveRuntime,
+  runtimeAuth,
+  MODEL_CATALOG,
+  MODELS_DEV_URL,
+  type EnsureResult,
+} from "../src/runtimes";
+import type { Pricing } from "../src/config/schema";
 import type { RuntimeKind, TackConfig } from "../src/config/schema";
 
 const usd = (n: number) => pc.green(`$${n.toFixed(4)}`);
@@ -490,11 +504,68 @@ const modelsRefresh = defineCommand({
   },
 });
 
+const modelsSyncPricing = defineCommand({
+  meta: {
+    name: "sync-pricing",
+    description:
+      "Fill model pricing from models.dev (a public, read-only network fetch). Codex models need pricing to report a cost; this replaces hand-maintaining the USD table.",
+  },
+  args: {
+    all: { type: "boolean", description: "Refresh pricing for every codex model, not just those missing it" },
+  },
+  async run({ args }) {
+    const config = await requireConfig();
+    // Only codex models need this: claude reports `total_cost_usd` directly. By
+    // default we fill the ones missing pricing; `--all` refreshes them all.
+    const targets = config.models.filter((m) => m.runtime === "codex" && (args.all || !m.pricing));
+    if (targets.length === 0) {
+      console.log(
+        pc.dim("No codex models need pricing. (Claude reports cost directly; pass --all to refresh anyway.)"),
+      );
+      return;
+    }
+
+    console.log(pc.dim(`Fetching pricing from ${MODELS_DEV_URL} …`));
+    let catalog: Map<string, Pricing>;
+    try {
+      catalog = await fetchPricingCatalog();
+    } catch (err) {
+      console.error(pc.red(`Could not fetch pricing: ${(err as Error).message}`));
+      return process.exit(1);
+    }
+
+    const updates = new Map<string, Pricing>();
+    const misses: string[] = [];
+    for (const m of targets) {
+      const p = pricingForModel(m, catalog);
+      if (p) updates.set(m.key, p);
+      else misses.push(`${m.key} (${m.id})`);
+    }
+
+    if (updates.size === 0) {
+      console.log(pc.yellow(`No pricing found on models.dev for: ${misses.join(", ")}.`));
+      console.log(pc.dim("Set pricing by hand in the config, or check the model id."));
+      return;
+    }
+
+    const applied = await setModelsPricingInConfig(CONFIG_PATH, updates);
+    console.log(`\nUpdated pricing for ${pc.bold(String(applied.length))} model(s) in ${pc.dim(CONFIG_PATH)}:`);
+    for (const key of applied) {
+      const p = updates.get(key)!;
+      const fmt = (n: number | undefined) => (n === undefined ? "–" : String(n));
+      console.log(
+        `  ${pc.cyan(key)}  ${pc.dim(`in ${fmt(p.inputPer1M)} · out ${fmt(p.outputPer1M)} · cacheR ${fmt(p.cacheReadPer1M)} (USD per 1M)`)}`,
+      );
+    }
+    if (misses.length) console.log(pc.dim(`\nNo match on models.dev for: ${misses.join(", ")} — set those by hand.`));
+  },
+});
+
 // `default: "list"` makes bare `tack models` run the list subcommand without
 // double-printing (see the note on `projects`).
 const models = defineCommand({
   meta: { name: "models", alias: "model", description: "List configured models and role pins; refresh from connected runtimes" },
-  subCommands: { list: modelsList, refresh: modelsRefresh },
+  subCommands: { list: modelsList, refresh: modelsRefresh, "sync-pricing": modelsSyncPricing },
   default: "list",
 });
 
@@ -811,6 +882,66 @@ const sessionShow = defineCommand({
     for (const pr of prs) {
       console.log(`  ${pr.number ? `#${pr.number}` : "?"}  ${prStateLabel(pr.state)}  ${pc.dim(pr.url)}`);
     }
+
+    const pending = listPendingAmendments(id);
+    if (pending.length > 0) {
+      console.log(pc.bold(`\nPending amendments (${pending.length})`) + pc.dim("  — awaiting adjudication"));
+      for (const am of pending) {
+        console.log(`  ${pc.yellow(am.id)}  ${pc.dim(`by ${am.proposed_by}`)}`);
+        console.log(`    ${firstLine(readArtifact(am.proposal_ref))}`);
+      }
+    }
+  },
+});
+
+/** The first non-empty line of a body, truncated — a one-line preview for lists. */
+function firstLine(body: string, max = 120): string {
+  const line = body.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+const sessionContext = defineCommand({
+  meta: {
+    name: "context",
+    description: "Show a session's shared contract (the cross-agent coordination context) and its version history",
+  },
+  args: {
+    session: { type: "positional", description: "Session id" },
+    all: { type: "boolean", description: "Print the body of every version, not just the latest" },
+  },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const versions = listSharedContext(id);
+    if (versions.length === 0) {
+      console.log(pc.dim("No shared context authored yet."));
+    } else {
+      console.log(pc.bold(`Shared contract for ${id}`) + pc.dim(`  · ${versions.length} version(s)`));
+      if (args.all) {
+        for (const v of versions) {
+          console.log(pc.bold(`\n── v${v.version}`) + pc.dim(`  by ${v.authored_by} · ${v.created_at}`));
+          console.log(readArtifact(v.body_ref).trimEnd());
+        }
+      } else {
+        const latest = versions[versions.length - 1]!;
+        console.log(pc.dim(`v${latest.version} · by ${latest.authored_by} · ${latest.created_at}  (--all for history)\n`));
+        console.log(readArtifact(latest.body_ref).trimEnd());
+        const older = versions.slice(0, -1);
+        if (older.length > 0) {
+          console.log(pc.dim(`\nEarlier: ${older.map((v) => `v${v.version} (${v.authored_by})`).join(", ")}`));
+        }
+      }
+    }
+
+    const pending = listPendingAmendments(id);
+    if (pending.length > 0) {
+      console.log(pc.bold(`\nPending amendments (${pending.length})`));
+      for (const am of pending) {
+        console.log(`  ${pc.yellow(am.id)}  ${pc.dim(`by ${am.proposed_by}`)}`);
+        console.log(`    ${firstLine(readArtifact(am.proposal_ref))}`);
+      }
+      console.log(pc.dim(`\nThe supervisor adjudicates these automatically (surfaced to it via wait_for_agents).`));
+    }
   },
 });
 
@@ -821,9 +952,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, list, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, list: sessionsList, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

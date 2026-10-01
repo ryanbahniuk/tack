@@ -34,10 +34,10 @@ collisions (SPEC §7).
 bin/tack.ts              CLI entry (citty) + hidden __mcp / __supervisor-mcp / __run-agent
 src/config/              schema, load, starter template
 src/db/                  connection, migrate (schema), repositories, index
-src/runtimes/            types (Runtime/AgentEvent), claude.ts, codex.ts, proc.ts, pricing.ts, resolve.ts, install.ts
-src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor)
-src/agent/               execute.ts (prepare/run), detached.ts (background runner)
-src/supervisor/          supervise.ts (runner), context.ts (system context)
+src/runtimes/            types (Runtime/AgentEvent), claude.ts, codex.ts, proc.ts, pricing.ts, pricing-sync.ts (models.dev), resolve.ts, install.ts
+src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor: spawn/touches/dependsOn, check_conflicts)
+src/agent/               execute.ts (prepare/run + activity/error), detached.ts (background runner, dependency self-gate + retry)
+src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery), summarize.ts (auto-describe a repo)

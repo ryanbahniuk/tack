@@ -144,3 +144,20 @@ export function worktreeDiff(wt: Worktree): string {
   const r = spawnSync("git", ["diff", wt.base], { cwd: wt.path, encoding: "utf8" });
   return r.status === 0 ? (r.stdout ?? "") : "";
 }
+
+/**
+ * The repo-relative paths an agent's branch changed since it forked — the basis for
+ * cross-agent conflict prediction (a file two sibling agents both touch is a merge
+ * collision waiting to happen). Taken against the recorded fork point so it reflects
+ * committed work, matching `worktreeDiff`. Empty when the worktree or base is gone.
+ */
+export function changedFiles(repo: string, branch: string, worktreePath: string): string[] {
+  const base = readBaseRef(repo, branch);
+  if (!base || !existsSync(worktreePath)) return [];
+  const r = spawnSync("git", ["diff", "--name-only", base], { cwd: worktreePath, encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return (r.stdout ?? "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}

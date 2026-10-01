@@ -3,19 +3,22 @@ import { existsSync } from "node:fs";
 import { Box, Text, render, useApp, useInput } from "ink";
 import {
   listAgents,
+  listPendingAmendments,
   listSessionPrs,
   listSessions,
   sessionTotalCost,
   type AgentRow,
+  type AmendmentRow,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
 import { agentLive, sessionLive, sessionNeedsInput } from "./liveness";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { selfCommand } from "../process/self";
-import { agentArtifactPath } from "../artifacts/store";
+import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
 import { loadConfig } from "../config/load";
+import { sessionFileCollisions, type FileCollision } from "../supervisor/conflicts";
 import type { TackConfig } from "../config/schema";
 
 interface View {
@@ -25,6 +28,10 @@ interface View {
   cost: number;
   live: boolean;
   needsInput: boolean;
+  /** Pending amendment proposals awaiting the human's adjudication. */
+  amendments: AmendmentRow[];
+  /** Files more than one agent changed in the same project (cross-branch collisions). */
+  conflicts: FileCollision[];
 }
 
 /** Sort weight: sessions waiting on the human float to the top, then live ones, so
@@ -34,7 +41,7 @@ function rank(v: View): number {
   return (v.needsInput ? 2 : 0) + (v.live ? 1 : 0);
 }
 
-function snapshot(showArchived: boolean): View[] {
+function snapshot(showArchived: boolean, config: TackConfig | null): View[] {
   return listSessions(showArchived)
     .map((session) => {
       const agents = listAgents(session.id);
@@ -44,8 +51,13 @@ function snapshot(showArchived: boolean): View[] {
         prs: listSessionPrs(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
-        // Waiting on the human: a plan to approve, or unread completed agent work.
+        // Waiting on the human: a plan to approve, a pending amendment, or unread
+        // completed agent work.
         needsInput: sessionNeedsInput(session, agents),
+        amendments: listPendingAmendments(session.id),
+        // Cross-agent file collisions; cached in `conflicts.ts` so this is cheap on
+        // the 1s poll. Needs project paths, so only when config loaded.
+        conflicts: config ? sessionFileCollisions(agents, config) : [],
       };
     })
     .sort((a, b) => rank(b) - rank(a));
@@ -57,8 +69,10 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:` +
-        v.agents.map((a) => `${a.id}/${a.status}/${a.cost}`).join(",") +
+        `${v.session.id}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:${v.conflicts.length}:` +
+        v.agents
+          .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
+          .join(",") +
         ";" +
         v.prs.map((p) => `${p.number}/${p.state}`).join(","),
     )
@@ -104,14 +118,15 @@ type Confirm = { action: "delete" | "stop"; id: string };
 function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
   const [showArchived, setShowArchived] = useState(false);
-  const [rows, setRows] = useState<View[]>(() => snapshot(false));
+  const [rows, setRows] = useState<View[]>(() => snapshot(false, config));
   // Selection is pinned to a session *id*, not a row index, so re-sorting (sessions
   // float as they start needing input) and deletions never move the highlight onto
   // the wrong session under the human's cursor.
   const [cursorId, setCursorId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"list" | "agents">("list");
+  const [mode, setMode] = useState<"list" | "agents" | "amendments">("list");
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [agentCursor, setAgentCursor] = useState(0);
+  const [amendmentCursor, setAmendmentCursor] = useState(0);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [notice, setNotice] = useState("");
   const [ghMissing, setGhMissing] = useState(false);
@@ -122,7 +137,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
 
   const sigRef = useRef("");
   const refresh = () => {
-    const next = snapshot(showArchived);
+    const next = snapshot(showArchived, config);
     sigRef.current = signature(next);
     setRows(next);
   };
@@ -134,7 +149,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
   // changes, so an idle board doesn't repaint 60×/minute.
   useEffect(() => {
     const tick = () => {
-      const next = snapshot(showArchived);
+      const next = snapshot(showArchived, config);
       const sig = signature(next);
       if (sig !== sigRef.current) {
         sigRef.current = sig;
@@ -144,7 +159,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
     tick();
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [showArchived]);
+  }, [showArchived, config]);
 
   // Kept fresh so the refresh effect below (which only fires on mount + every 60s,
   // not on every 1s snapshot) always sees the sessions currently on screen.
@@ -198,6 +213,18 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
         setNotice("cancelled");
       }
       setConfirm(null);
+      return;
+    }
+
+    // Amendments panel: read-only. Adjudication is the supervisor's job — it's
+    // surfaced the pending amendment through `wait_for_agents` and resolves it with
+    // `resolve_amendment`. The dashboard only lets you SEE what was proposed.
+    if (mode === "amendments") {
+      const pending = pickerView?.amendments ?? [];
+      if (input === "q" || key.escape || !pickerView) return setMode("list");
+      if (key.downArrow || input === "j")
+        return setAmendmentCursor((c) => Math.min(c + 1, Math.max(0, pending.length - 1)));
+      if (key.upArrow || input === "k") return setAmendmentCursor((c) => Math.max(c - 1, 0));
       return;
     }
 
@@ -262,6 +289,14 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
       setPickerId(selected.session.id);
       setAgentCursor(0);
       setMode("agents");
+    } else if (input === "m") {
+      if (selected.amendments.length === 0) {
+        setNotice(`${selected.session.id} has no pending amendments`);
+        return;
+      }
+      setPickerId(selected.session.id);
+      setAmendmentCursor(0);
+      setMode("amendments");
     } else if (input === "O") {
       if (selected.prs.length === 0) {
         setNotice(`${selected.session.id} has no PRs yet`);
@@ -282,6 +317,16 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
 
   if (mode === "agents" && pickerView) {
     return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} />;
+  }
+
+  if (mode === "amendments" && pickerView) {
+    return (
+      <AmendmentsPanel
+        view={pickerView}
+        cursor={Math.min(amendmentCursor, Math.max(0, pickerView.amendments.length - 1))}
+        notice={notice}
+      />
+    );
   }
 
   const totalCost = rows.reduce((sum, v) => sum + v.cost, 0);
@@ -306,21 +351,60 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
             <Text dimColor> {v.session.status} </Text>
             <Text color="green">{usd(v.cost)}</Text>
             {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
+            {v.amendments.length > 0 ? (
+              <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
+            ) : null}
+            {v.conflicts.length > 0 ? (
+              <Text color="red"> ⚠ {v.conflicts.length} conflict{v.conflicts.length === 1 ? "" : "s"}</Text>
+            ) : null}
             {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
             <Text dimColor> {v.session.title ?? ""}</Text>
           </Text>
           {i === cursor &&
-            v.agents.map((a) => (
-              <Text key={a.id}>
-                {"    ├─ Agent "}
-                <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
-                <Text dimColor>
-                  {" "}
-                  {a.runtime}:{a.model}
-                </Text>
-                <Text color="green"> {usd(a.cost)}</Text>
-              </Text>
-            ))}
+            v.agents.map((a) => {
+              const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
+              return (
+                <Box key={a.id} flexDirection="column">
+                  <Text>
+                    {"    ├─ Agent "}
+                    <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
+                    <Text dimColor>
+                      {" "}
+                      {a.runtime}:{a.model}
+                    </Text>
+                    <Text color="green"> {usd(a.cost)}</Text>
+                    {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
+                  </Text>
+                  {/* Live "what it's doing now" for a non-terminal agent (#4). */}
+                  {!terminal && a.activity ? (
+                    <Text dimColor>
+                      {"    │    ↳ "}
+                      {a.activity}
+                      {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
+                    </Text>
+                  ) : null}
+                  {/* Why it failed, inline, without opening the output file (#8). */}
+                  {a.status === "failed" && a.error ? (
+                    <Text color="red">
+                      {"    │    ✖ "}
+                      {oneLine(a.error, 100)}
+                    </Text>
+                  ) : null}
+                </Box>
+              );
+            })}
+          {i === cursor &&
+            v.conflicts.length > 0 && (
+              <Box flexDirection="column">
+                {v.conflicts.map((c) => (
+                  <Text key={`${c.project}:${c.file}`} color="red">
+                    {"    ⚠ "}
+                    <Text dimColor>{c.project}/</Text>
+                    {c.file} <Text dimColor>— {c.agents.join(", ")}</Text>
+                  </Text>
+                ))}
+              </Box>
+            )}
           {i === cursor &&
             v.prs.map((pr) => {
               const { glyph, color, label } = prStateDisplay(pr.state);
@@ -349,7 +433,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
             {notice ? <Text dimColor>{notice}</Text> : null}
             {ghMissing ? <Text dimColor>gh not found — PR status not updating</Text> : null}
             <Text dimColor>
-              j/k move · enter/o open · v view output · n next needing input · O open PR · c new · x stop · a archive · d delete · z archived · q quit
+              j/k move · enter/o open · v output · m amendments · n next needing · O open PR · c new · x stop · a archive · d delete · z archived · q quit
             </Text>
           </>
         )}
@@ -389,6 +473,53 @@ function AgentsPanel({ view, cursor, notice }: { view: View; cursor: number; not
       </Box>
     </Box>
   );
+}
+
+/** The pending-amendments panel for one session: read each proposal, accept/reject. */
+function AmendmentsPanel({ view, cursor, notice }: { view: View; cursor: number; notice: string }) {
+  const selected = view.amendments[cursor];
+  return (
+    <Box flexDirection="column">
+      <Text bold>
+        Amendments of {view.session.id} <Text dimColor>{view.session.title ?? ""}</Text>
+      </Text>
+      {view.amendments.length === 0 && <Text dimColor>No pending amendments.</Text>}
+      {view.amendments.map((am, i) => (
+        <Text key={am.id}>
+          <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
+          <Text bold>{am.id}</Text>
+          <Text dimColor> by {am.proposed_by}</Text>
+        </Text>
+      ))}
+      {selected ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>Proposal {selected.id}:</Text>
+          <Text>{readArtifact(selected.proposal_ref).trim() || "(empty proposal)"}</Text>
+        </Box>
+      ) : null}
+      <Box marginTop={1} flexDirection="column">
+        {notice ? <Text dimColor>{notice}</Text> : null}
+        <Text dimColor>the supervisor adjudicates these · j/k move · esc/q back</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** A coarse "N ago" from an ISO-UTC timestamp, for the live activity line. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.round(mins / 60)}h ago`;
+}
+
+/** First non-empty line of a string, truncated with an ellipsis. */
+function oneLine(s: string, max: number): string {
+  const line = s.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 function agentStatusColor(status: string): string | undefined {
