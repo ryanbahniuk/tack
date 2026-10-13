@@ -1,15 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import pc from "picocolors";
 import { TACK_HOME } from "../paths";
-import type { RuntimeKind, TackConfig } from "../config/schema";
+import type { RuntimeKind, TackConfig, VersionPolicy } from "../config/schema";
 
 export interface ResolvedRuntime {
   kind: RuntimeKind;
   bin: string;
   version: string;
   pinned?: string;
+  /** Effective policy applied to the pin (defaults to "warn" when unset). */
+  policy: VersionPolicy;
+  /** True when there's no pin, or the installed version satisfies it. */
+  satisfied: boolean;
 }
+
+/** Default when a runtime doesn't set `versionPolicy`: advisory, never fatal, so a
+ * self-updating CLI doesn't brick every run the moment it bumps itself. */
+export const DEFAULT_VERSION_POLICY: VersionPolicy = "warn";
 
 /** Cache `<bin> --version` so we don't re-spawn it for every agent. */
 const versionCache = new Map<string, string>();
@@ -55,21 +64,44 @@ export function runtimeVersion(bin: string): string {
   return version;
 }
 
+/** Remember which (kind, installed, pinned) mismatches we've already warned about,
+ * so a session spinning up many agents prints the drift notice once, not per-agent. */
+const warnedMismatches = new Set<string>();
+
+/** Human-readable, color-free description of a pin drift and how to resolve it. */
+function mismatchMessage(kind: RuntimeKind, bin: string, version: string, pinned: string): string {
+  return (
+    `${kind} runtime version drift: config pins "${pinned}" but "${bin} --version" reports "${version}". ` +
+    `Re-pin with \`tack runtimes sync\` (adopt what's installed) or \`tack runtimes pin ${kind} <version>\`.`
+  );
+}
+
 /**
- * Resolves a runtime's binary and verifies it against any pinned version before
- * it's used. The pin is matched as a substring of `--version` output (whose format
- * differs per CLI), so `version: "2.1.261"` or `"0.147.0"` both work. A mismatch
- * throws — an unexpected CLI upgrade should stop the run, not silently change it.
+ * Resolves a runtime's binary and checks it against any pinned version before it's
+ * used. The pin is matched as a substring of `--version` output (whose format differs
+ * per CLI), so `version: "2.1.261"` or `"0.147.0"` both work. How a mismatch is
+ * handled is governed by the runtime's `versionPolicy` (default `"warn"`):
+ *  - `"warn"`: log once to stderr and continue — the pin is advisory.
+ *  - `"strict"`: throw, stopping the run (reproducible setups).
+ *  - `"off"`: skip the check entirely.
+ * stderr is used (never stdout) so this stays safe inside the MCP servers.
  */
 export function resolveRuntime(config: TackConfig, kind: RuntimeKind): ResolvedRuntime {
   const bin = runtimeBin(config, kind);
   const version = runtimeVersion(bin);
   const pinned = config.runtimes[kind]?.version;
-  if (pinned && !version.includes(pinned)) {
-    throw new Error(
-      `${kind} runtime version mismatch: config pins "${pinned}" but "${bin} --version" reports "${version}". ` +
-        `Update the pin or install the pinned version.`,
-    );
+  const policy = config.runtimes[kind]?.versionPolicy ?? DEFAULT_VERSION_POLICY;
+  const satisfied = !pinned || version.includes(pinned);
+
+  if (pinned && !satisfied && policy !== "off") {
+    const message = mismatchMessage(kind, bin, version, pinned);
+    if (policy === "strict") throw new Error(message);
+    const seen = `${kind}\u0000${version}\u0000${pinned}`;
+    if (!warnedMismatches.has(seen)) {
+      warnedMismatches.add(seen);
+      console.warn(pc.yellow(`! ${message}`));
+    }
   }
-  return { kind, bin, version, pinned };
+
+  return { kind, bin, version, pinned, policy, satisfied };
 }

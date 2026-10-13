@@ -80,13 +80,14 @@ function serializeRuntimeSettings(s: RuntimeSettings): string {
   const parts: string[] = [];
   if (s.bin) parts.push(`bin: ${JSON.stringify(s.bin)}`);
   if (s.version) parts.push(`version: ${JSON.stringify(s.version)}`);
+  if (s.versionPolicy) parts.push(`versionPolicy: ${JSON.stringify(s.versionPolicy)}`);
   return `{ ${parts.join(", ")} }`;
 }
 
 /** Serializes the whole `runtimes:` block at the given base indentation. */
 function serializeRuntimes(runtimes: Record<string, RuntimeSettings | undefined>, indent: string): string {
   const entries = Object.entries(runtimes).filter(
-    (e): e is [string, RuntimeSettings] => Boolean(e[1] && (e[1].bin || e[1].version)),
+    (e): e is [string, RuntimeSettings] => Boolean(e[1] && (e[1].bin || e[1].version || e[1].versionPolicy)),
   );
   if (entries.length === 0) return "runtimes: {}";
   const inner = indent + "  ";
@@ -120,6 +121,40 @@ export async function pinRuntimeInConfig(configPath: string, kind: RuntimeKind, 
 
   const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
   writeFileSync(configPath, next, "utf8");
+}
+
+/**
+ * Re-pins several runtimes at once, merging each new `version` into that runtime's
+ * existing settings (keeping any `bin`/`versionPolicy`) and rewriting the `runtimes:`
+ * block in place. Used by `tack runtimes sync` to adopt the versions currently
+ * installed. Only entries present in `versionByKind` are touched. Returns the kinds
+ * whose pin actually changed.
+ */
+export async function setRuntimeVersionsInConfig(
+  configPath: string,
+  versionByKind: Map<RuntimeKind, string>,
+): Promise<RuntimeKind[]> {
+  const parsed = await loadParsedConfig(configPath);
+  const runtimes: Record<string, RuntimeSettings | undefined> = { ...parsed.runtimes };
+  const changed: RuntimeKind[] = [];
+  for (const [kind, version] of versionByKind) {
+    if (runtimes[kind]?.version === version) continue;
+    runtimes[kind] = { ...runtimes[kind], version };
+    changed.push(kind);
+  }
+  if (changed.length === 0) return [];
+
+  const src = readFileSync(configPath, "utf8");
+  const masked = maskNonCode(src);
+  const m = /(^|\n)([^\S\n]*)runtimes[^\S\n]*:[^\S\n]*\{/.exec(masked);
+  if (!m) throw new Error(`Could not find a \`runtimes:\` block in ${configPath}.`);
+  const start = m.index + m[1]!.length + m[2]!.length;
+  const open = m.index + m[0].length - 1;
+  const close = matchBrace(masked, open);
+  if (close < 0) throw new Error(`Unbalanced braces in the \`runtimes:\` block in ${configPath}.`);
+  const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
+  writeFileSync(configPath, next, "utf8");
+  return changed;
 }
 
 /** Serializes a project's tech-stack metadata to a single-line object literal. */

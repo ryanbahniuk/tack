@@ -32,14 +32,17 @@ export default ({
   },
 
   // Pin the CLI runtimes. \`bin\` points at a specific executable (defaults to the
-  // runtime name on PATH); \`version\` is verified against \`<bin> --version\` before
-  // any run, so an unexpected CLI upgrade fails loudly. Pin from the CLI with
-  // \`tack runtimes pin <runtime> <version>\`; when a pinned version isn't installed,
-  // \`tack init\` / \`tack runtimes install\` fetch it into ~/.tack/runtimes/.
-  // \`tack runtimes doctor\` reports resolution without changing anything.
+  // runtime name on PATH); \`version\` is checked against \`<bin> --version\` before any
+  // run. \`versionPolicy\` decides what a mismatch does: "warn" (default) logs once and
+  // continues — so a self-updating CLI like claude never blocks a run; "strict" turns
+  // it back into a hard failure for reproducible setups; "off" skips the check.
+  // Pin with \`tack runtimes pin <runtime> <version>\`; \`tack runtimes sync\` re-pins to
+  // whatever's installed now. A pinned-but-missing version is fetched into
+  // ~/.tack/runtimes/ by \`tack init\` / \`tack runtimes install\`; \`tack runtimes doctor\`
+  // reports resolution and drift without changing anything.
   runtimes: {
-    // claude: { version: "2.1.261" },
-    // codex: { bin: "~/.local/bin/codex", version: "0.147.0" },
+    // claude: { version: "2.1.261" },                                  // advisory pin (warn on drift)
+    // codex: { bin: "~/.local/bin/codex", version: "0.147.0", versionPolicy: "strict" },
   },
 
   readAllowlist: [],

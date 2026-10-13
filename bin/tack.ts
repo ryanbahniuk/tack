@@ -13,6 +13,7 @@ import {
   pinRuntimeInConfig,
   removeProjectFromConfig,
   setModelsPricingInConfig,
+  setRuntimeVersionsInConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
 import {
@@ -58,6 +59,7 @@ import {
   pricingForModel,
   resolveRuntime,
   runtimeAuth,
+  DEFAULT_VERSION_POLICY,
   MODEL_CATALOG,
   MODELS_DEV_URL,
   type EnsureResult,
@@ -195,18 +197,65 @@ const runtimePin = defineCommand({
   },
 });
 
+const runtimeSync = defineCommand({
+  meta: {
+    name: "sync",
+    description: "Re-pin runtimes to the versions currently installed (adopt drift)",
+  },
+  args: {
+    runtime: { type: "positional", required: false, description: "Runtime to sync (defaults to all)" },
+  },
+  async run({ args }) {
+    const config = await requireConfig();
+    const kinds = args.runtime ? [asRuntimeKind(String(args.runtime))] : RUNTIME_KINDS;
+
+    // Only re-pin runtimes that are actually pinned — syncing is about reconciling an
+    // existing pin with reality, not minting one for an unpinned runtime.
+    const versionByKind = new Map<RuntimeKind, string>();
+    for (const kind of kinds) {
+      if (!config.runtimes[kind]?.version) {
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.dim("unpinned — nothing to sync")}`);
+        continue;
+      }
+      try {
+        const r = resolveRuntime(config, kind);
+        versionByKind.set(kind, r.version);
+      } catch (err) {
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.red("unavailable")}  ${pc.dim((err as Error).message)}`);
+      }
+    }
+
+    const changed = await setRuntimeVersionsInConfig(CONFIG_PATH, versionByKind);
+    for (const [kind, version] of versionByKind) {
+      const label = changed.includes(kind) ? pc.green(`pinned → ${version}`) : pc.dim(`already ${version}`);
+      console.log(`${pc.cyan(kind.padEnd(7))} ${label}`);
+    }
+    if (changed.length > 0) console.log(pc.dim(`\nUpdated ${CONFIG_PATH}`));
+  },
+});
+
+/** `pin X (policy)` / `unpinned`, the shared pin descriptor for list & doctor. */
+function pinLabelFor(config: TackConfig, kind: RuntimeKind): string {
+  const pin = config.runtimes[kind]?.version;
+  if (!pin) return pc.dim("unpinned");
+  const policy = config.runtimes[kind]?.versionPolicy ?? DEFAULT_VERSION_POLICY;
+  return pc.dim(`pin ${pin} (${policy})`);
+}
+
 const runtimeList = defineCommand({
   meta: { name: "list", description: "List all runtimes and their status" },
   async run() {
     const config = await loadConfig();
     for (const kind of RUNTIME_KINDS) {
-      const pin = config.runtimes[kind]?.version;
-      const pinLabel = pin ? pc.dim(`pin ${pin}`) : pc.dim("unpinned");
+      const pinLabel = pinLabelFor(config, kind);
       try {
         const r = resolveRuntime(config, kind);
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("ready")}     ${pinLabel}  ${pc.bold(r.bin)} ${pc.dim(r.version)}`);
+        // A pin can be present-but-unsatisfied now that drift is advisory (warn/off);
+        // call that out distinctly from a clean "ready".
+        const status = r.satisfied ? pc.green("ready")  : pc.yellow("drifted");
+        console.log(`${pc.cyan(kind.padEnd(7))} ${status}   ${pinLabel}  ${pc.bold(r.bin)} ${pc.dim(r.version)}`);
       } catch (err) {
-        const status = pin ? pc.red("unavailable") : pc.yellow("not found");
+        const status = config.runtimes[kind]?.version ? pc.red("unavailable") : pc.yellow("not found");
         console.log(`${pc.cyan(kind.padEnd(7))} ${status}  ${pinLabel}  ${pc.dim((err as Error).message)}`);
       }
     }
@@ -221,7 +270,11 @@ const doctor = defineCommand({
       const pin = config.runtimes[kind]?.version;
       try {
         const r = resolveRuntime(config, kind);
-        const ok = pin ? pc.green(`pinned ${pin} ✓`) : pc.dim("unpinned");
+        const ok = !pin
+          ? pc.dim("unpinned")
+          : r.satisfied
+            ? pc.green(`pinned ${pin} ✓`)
+            : pc.yellow(`drifted from ${pin} (policy: ${r.policy}) — \`tack runtimes sync\` to adopt ${r.version}`);
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.bold(r.bin)}  ${pc.dim(r.version)}  ${ok}`);
         // Resolving only proves the binary runs at the pinned version — not that it's
         // logged in. A quick credential-presence check turns a confusing mid-run auth
@@ -241,8 +294,8 @@ const doctor = defineCommand({
 // double-printing (see the note on `projects`). `alias: "runtime"` accepts the
 // singular spelling.
 const runtimes = defineCommand({
-  meta: { name: "runtimes", alias: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin)" },
-  subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin },
+  meta: { name: "runtimes", alias: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin, sync)" },
+  subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin, sync: runtimeSync },
   default: "list",
 });
 

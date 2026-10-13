@@ -78,14 +78,28 @@ export const RolesSchema = z.object({
 export type Roles = z.infer<typeof RolesSchema>;
 
 /**
+ * How Tack reacts when a runtime's installed `--version` doesn't satisfy its
+ * `version` pin. Self-updating CLIs (claude updates itself in the background) drift
+ * from an exact pin constantly, so a hard failure is hostile by default:
+ *  - `"warn"` (default): log one notice and keep going — the pin is advisory.
+ *  - `"strict"`: a mismatch throws, stopping the run. For reproducible setups where
+ *    an unexpected CLI upgrade must not silently change behavior.
+ *  - `"off"`: don't check the version at all.
+ * Lives here (not in code) so the choice is per-runtime and every runtime inherits it.
+ */
+export const VersionPolicy = z.enum(["warn", "strict", "off"]);
+export type VersionPolicy = z.infer<typeof VersionPolicy>;
+
+/**
  * Per-runtime binary + version pin. `bin` points Tack at a specific CLI
- * executable (defaults to the runtime name on PATH); `version` is verified against
- * the binary's `--version` before any run, so an unexpected CLI upgrade fails
- * loudly instead of silently changing behavior mid-project.
+ * executable (defaults to the runtime name on PATH); `version` is checked against
+ * the binary's `--version` before any run, with `versionPolicy` deciding how a
+ * mismatch is handled (default `"warn"` — advisory, not fatal).
  */
 export const RuntimeSettingsSchema = z.object({
   bin: z.string().min(1).optional(),
   version: z.string().min(1).optional(),
+  versionPolicy: VersionPolicy.optional(),
 });
 export type RuntimeSettings = z.infer<typeof RuntimeSettingsSchema>;
 

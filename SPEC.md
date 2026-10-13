@@ -201,17 +201,28 @@ Each runtime can be pinned in config:
 
 ```ts
 runtimes: {
-  claude: { version: "2.1.261" },
-  codex:  { bin: "~/.local/bin/codex", version: "0.147.0" },
+  claude: { version: "2.1.261" },                                  // advisory pin (warn on drift)
+  codex:  { bin: "~/.local/bin/codex", version: "0.147.0", versionPolicy: "strict" },
 }
 ```
 
 **Resolution** (`src/runtimes/resolve.ts`) picks a binary in priority order: an
 explicit `bin` override; else a Tack-managed install of the pinned version; else the
-runtime name on PATH. The pinned `version` is verified against `<bin> --version`
-(substring match, since formats differ) **before any run** — a mismatch throws, so
-an unexpected CLI upgrade stops the run rather than silently changing behavior.
-Verification is cached per binary.
+runtime name on PATH. The pinned `version` is checked against `<bin> --version`
+(substring match, since formats differ) **before any run**. How a mismatch is handled
+is governed by the runtime's `versionPolicy`:
+
+- **`"warn"` (default)** — log one drift notice to stderr and continue. The pin is
+  advisory, so a self-updating CLI (claude updates itself in the background) never
+  bricks a run the moment it bumps. `tack runtimes sync` re-pins to what's installed.
+- **`"strict"`** — a mismatch throws, stopping the run. For reproducible setups where
+  an unexpected CLI upgrade must not silently change behavior.
+- **`"off"`** — skip the check entirely.
+
+Verification is cached per binary, and the warn notice is deduped per process so a
+session spinning up many agents prints it once. The default is runtime-agnostic:
+`versionPolicy` lives in the shared runtime settings, so every runtime (and any future
+one, e.g. Bedrock) inherits the same behavior with no runtime-specific code.
 
 **Transparent installs** (`src/runtimes/install.ts`). `tack init` and `tack install`
 ensure the pinned versions are present. If a pinned version isn't already installed
@@ -221,8 +232,9 @@ ensure the pinned versions are present. If a pinned version isn't already instal
 installer, and never over a global/system install. An explicit `bin` override is
 verified only (Tack never installs over a user-managed path); an unpinned runtime is
 reported present if on PATH, otherwise left to the user. `tack runtimes doctor`
-reports resolution and pin status without changing anything, and `tack runtimes list`
-gives a status overview.
+reports resolution, drift, and pin status without changing anything; `tack runtimes
+list` gives a status overview; and `tack runtimes sync` re-pins each runtime to the
+version currently installed (the one-command fix after a background CLI upgrade).
 
 ---
 

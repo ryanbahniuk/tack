@@ -13,6 +13,7 @@ export {
   runtimeVersion,
   managedRuntimeBin,
   managedRuntimeDir,
+  DEFAULT_VERSION_POLICY,
   type ResolvedRuntime,
 } from "./resolve";
 export { ensureRuntimeInstalled, type EnsureResult, type EnsureAction } from "./install";
