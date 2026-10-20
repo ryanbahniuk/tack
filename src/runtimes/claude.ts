@@ -189,9 +189,11 @@ export class ClaudeRuntime implements Runtime {
     if (postToolUse.length) hooks.PostToolUse = postToolUse;
     if (Object.keys(hooks).length > 0) settings.hooks = hooks;
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
-    const mcpServers: Record<string, { command: string; args: string[] }> = {};
-    for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
-    args.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
+    args.push(
+      "--mcp-config",
+      JSON.stringify({ mcpServers: mcpConfig(opts) }),
+      "--strict-mcp-config",
+    );
     // A non-empty prompt seeds the first turn; an empty one drops the user straight
     // into an idle TUI to type their own opener.
     if (opts.prompt.trim()) args.push(opts.prompt);
@@ -290,9 +292,7 @@ export class ClaudeRuntime implements Runtime {
     // config from the filesystem. Otherwise a bare read-only run (e.g. project
     // summarization) picks up whatever third-party servers — datadog, slack — the
     // user has configured and wanders into them.
-    const mcpServers: Record<string, { command: string; args: string[] }> = {};
-    for (const s of opts.mcpServers ?? []) mcpServers[s.name] = { command: s.command, args: s.args };
-    cmd.push("--mcp-config", JSON.stringify({ mcpServers }), "--strict-mcp-config");
+    cmd.push("--mcp-config", JSON.stringify({ mcpServers: mcpConfig(opts) }), "--strict-mcp-config");
     // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }
@@ -313,6 +313,23 @@ function readOnlyDisallowed(opts: RunOptions): string {
   const base = ["Task", "Agent"];
   if (opts.disallowShell) base.push("Bash");
   return base.join(",");
+}
+
+/**
+ * The `mcpServers` map for claude's `--mcp-config` JSON, keyed by server name. We
+ * emit `env` only when a server carries one so the common Tack-owned servers (which
+ * don't) produce the same minimal `{command,args}` shape as before. Paired with
+ * `--strict-mcp-config`, this is the complete set of servers a run sees — exactly
+ * Tack's own plus whatever the user explicitly mounted (never the filesystem's).
+ */
+function mcpConfig(
+  opts: RunOptions,
+): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
+  const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> =
+    {};
+  for (const s of opts.mcpServers ?? [])
+    servers[s.name] = { command: s.command, args: s.args, ...(s.env ? { env: s.env } : {}) };
+  return servers;
 }
 
 /** Joins a command + args into a single shell string (hook commands run via `sh

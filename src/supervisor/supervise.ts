@@ -148,7 +148,11 @@ async function* runSupervisor(opts: {
     resume,
     sessionRef,
     contextFile,
-    mcpServers: [{ name: "tack-supervisor", command: supervisorMcp.command, args: supervisorMcp.args }],
+    mcpServers: [
+      { name: "tack-supervisor", command: supervisorMcp.command, args: supervisorMcp.args },
+      // Extra user-configured servers (e.g. JIRA) the supervisor reads to plan.
+      ...config.supervisorMcpServers,
+    ],
     logPath,
   })) {
     if (ev.type === "session") setSessionResumeRef(session.id, ev.ref);
@@ -242,7 +246,12 @@ export async function superviseInteractive(opts: {
     resume,
     sessionRef,
     contextFile,
-    mcpServers: [{ name: SUPERVISOR_MCP_NAME, command: supervisorMcp.command, args: supervisorMcp.args }],
+    mcpServers: [
+      { name: SUPERVISOR_MCP_NAME, command: supervisorMcp.command, args: supervisorMcp.args },
+      // Extra user-configured servers (e.g. JIRA); auto-allowed like the Tack server
+      // so their read calls don't each raise a prompt (see interactiveCommand).
+      ...config.supervisorMcpServers,
+    ],
     onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
     // Keep opening a PR behind an explicit per-call human ok even after plan approval.

@@ -46,6 +46,32 @@ export default ({
   },
 
   readAllowlist: [],
+
+  // Extra MCP servers mounted for the SUPERVISOR only, on top of Tack's own tools.
+  // The supervisor inherits none of your global/plugin MCP config, so add a server
+  // here when it must read an external source to plan — e.g. a JIRA/Atlassian server
+  // so it can open a ticket named in the problem. Copy the block verbatim from the
+  // tool's own .mcp.json. Mounted tools are auto-allowed under the read-only posture,
+  // so only add servers you're fine with it calling (including any write tools).
+  //
+  // AUTH: Tack launches these servers as subprocesses that inherit your environment
+  // ($HOME, $PATH, …) — it passes no tokens. A server that caches its own credentials
+  // in a user-global file therefore authenticates identically no matter who launches
+  // it. The example below mirrors Chime's chime-atlassian plugin: the proxy caches
+  // OAuth tokens at ~/.cache/chime-atlassian-mcp/atlassian-mcp-tokens.json and
+  // auto-refreshes them, so the supervisor rides the SAME cache as your normal Claude
+  // session. Seed it once from an interactive client (the plugin, or an interactive
+  // tack supervisor, which can answer the OAuth elicitation prompt); headless
+  // supervisor runs then reuse the cached refresh token. Requires uvx on PATH (brew
+  // install uv).
+  supervisorMcpServers: [
+    // {
+    //   name: "Atlassian",
+    //   command: "uvx",
+    //   args: ["--refresh", "--from", "git+ssh://git@github.com/1debit/chime-atlassian-mcp@main", "chime-atlassian-mcp"],
+    //   env: { CONFLUENCE_CLOUD_ID: "a40b7113-0103-4597-b693-76b66e0a4614", CONFLUENCE_SITE_URL: "https://chime.atlassian.net" },
+    // },
+  ],
 });
 `;
 

@@ -37,6 +37,12 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       codex: expandBin(parsed.runtimes.codex),
     },
     readAllowlist: parsed.readAllowlist.map(expandHome),
+    // Home-expand each server's command so a `~/bin/...` launcher resolves; args
+    // are left verbatim (they're the server's own flags, not Tack-owned paths).
+    supervisorMcpServers: parsed.supervisorMcpServers.map((s) => ({
+      ...s,
+      command: expandHome(s.command),
+    })),
   };
 }
 

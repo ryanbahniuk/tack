@@ -26,11 +26,18 @@ export interface RunOptions {
    */
   contextFile?: string;
   /**
-   * MCP servers to mount for this run (each a `tack __…` subcommand). Agents get
-   * the coordination server; the supervisor gets its own tool server. Each adapter
-   * wires them the way its CLI expects.
+   * MCP servers to mount for this run. Agents get the coordination server; the
+   * supervisor gets its own tool server (both `tack __…` subcommands) plus any
+   * extra servers the user mounts via config (e.g. a JIRA/Atlassian server so the
+   * supervisor can read a ticket). `env` passes credentials/settings through to the
+   * server process. Each adapter wires them the way its CLI expects.
    */
-  mcpServers?: Array<{ name: string; command: string; args: string[] }>;
+  mcpServers?: Array<{
+    name: string;
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  }>;
   /**
    * Read-only posture — for the supervisor, which only investigates and delegates,
    * never edits. Adapters translate to their CLI's read-only sandbox/permissions.

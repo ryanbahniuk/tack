@@ -111,6 +111,25 @@ export const RuntimesSchema = z
   .default({});
 export type Runtimes = z.infer<typeof RuntimesSchema>;
 
+/**
+ * An extra MCP server to mount for the supervisor, beyond Tack's own tool server.
+ * The supervisor runs with `--strict-mcp-config`, so it sees ONLY Tack's servers
+ * plus whatever is listed here — it never inherits the user's global or plugin MCP
+ * config from the filesystem. Use this to give the supervisor read access to an
+ * external source it must reason over (e.g. a JIRA/Atlassian MCP server so it can
+ * open a ticket named in the problem). `env` passes credentials/settings through to
+ * the server process. NOTE: a mounted server's tools are auto-allowed under the
+ * supervisor's read-only posture, so only mount servers whose use you accept —
+ * including any write tools they expose.
+ */
+export const McpServerSchema = z.object({
+  name: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).optional(),
+});
+export type McpServer = z.infer<typeof McpServerSchema>;
+
 export const ConfigSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
   models: z.array(ModelSchema).default([]),
@@ -119,6 +138,8 @@ export const ConfigSchema = z.object({
   runtimes: RuntimesSchema,
   /** Extra read-only paths the supervisor may investigate beyond project roots. */
   readAllowlist: z.array(z.string()).default([]),
+  /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
+  supervisorMcpServers: z.array(McpServerSchema).default([]),
 });
 
 /** Shape accepted from a user's config file. */
@@ -131,6 +152,7 @@ export interface TackConfig {
   roles: Roles;
   runtimes: Runtimes;
   readAllowlist: string[];
+  supervisorMcpServers: McpServer[];
 }
 
 /** Identity helper for config authoring: `export default defineConfig({...})`. */

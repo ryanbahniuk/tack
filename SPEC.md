@@ -390,8 +390,29 @@ export default ({
   roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
+  supervisorMcpServers: [{ name, command, args: [], env: {} }],
 });
 ```
+
+`supervisorMcpServers` mounts extra MCP servers for the **supervisor only**, on top
+of its `tack-supervisor` tools. Runs are `--strict-mcp-config`, so the supervisor
+otherwise inherits none of the user's global/plugin MCP config — this is the opt-in
+seam for giving it read access to an external source it must plan over (e.g. a
+JIRA/Atlassian server so it can open a ticket named in the problem). A mounted
+server's tools are auto-allowed under the read-only posture, so only servers the
+user accepts (writes included) should be listed; agents do not receive them.
+
+**Auth is inherited, not passed.** Tack spawns the runtime with the full parent
+environment (`{ ...process.env, ...env }`), and the runtime spawns each MCP server
+inheriting that in turn — so a mounted server sees the same `$HOME`/`$PATH` as the
+user's own shell, and Tack never handles a token. Servers that cache their own
+credentials in a user-global file therefore authenticate identically no matter who
+launches them. This is how the Atlassian example works: the `chime-atlassian-mcp`
+stdio proxy keeps OAuth tokens at `~/.cache/chime-atlassian-mcp/atlassian-mcp-tokens.json`
+and auto-refreshes them, so the supervisor rides the *same* cache as the user's
+normal Claude session. First-run OAuth uses an MCP elicitation prompt, which needs an
+interactive client to answer — so the cache is seeded once (via the plugin or an
+interactive `tack` supervisor), after which headless runs reuse the refresh token.
 
 Every functional role (supervisor / agent / summary) is **pinned to a model by
 name**; loading fails loudly if a role names an undefined model.

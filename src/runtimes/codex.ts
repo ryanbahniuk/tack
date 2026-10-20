@@ -137,6 +137,8 @@ export class CodexRuntime implements Runtime {
     for (const s of opts.mcpServers ?? []) {
       flags.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
       flags.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+      for (const [k, v] of Object.entries(s.env ?? {}))
+        flags.push("-c", `mcp_servers.${s.name}.env.${k}=${quote(v)}`);
     }
     const prompt = opts.prompt.trim() ? [opts.prompt] : [];
     // `codex resume <id>` continues a prior session; a fresh run omits it. Codex
@@ -221,6 +223,8 @@ export class CodexRuntime implements Runtime {
     for (const s of opts.mcpServers ?? []) {
       cmd.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
       cmd.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+      for (const [k, v] of Object.entries(s.env ?? {}))
+        cmd.push("-c", `mcp_servers.${s.name}.env.${k}=${quote(v)}`);
     }
     // `codex exec resume <id>` is the continuation form; flags follow the subcommand.
     if (opts.resume && opts.sessionRef) {
