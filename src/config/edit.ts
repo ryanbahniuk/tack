@@ -6,6 +6,7 @@ import {
   type Pricing,
   type Project,
   type ProjectMetadata,
+  type Roles,
   type RuntimeKind,
   type RuntimeSettings,
 } from "./schema";
@@ -155,6 +156,41 @@ export async function setRuntimeVersionsInConfig(
   const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
   writeFileSync(configPath, next, "utf8");
   return changed;
+}
+
+/** Serializes the whole `roles:` block at the given base indentation, one role per
+ * line in the object's existing key order. */
+function serializeRoles(roles: Roles, indent: string): string {
+  const inner = indent + "  ";
+  const lines = (Object.keys(roles) as (keyof Roles)[]).map((k) => `${inner}${k}: ${JSON.stringify(roles[k])},`);
+  return `roles: {\n${lines.join("\n")}\n${indent}}`;
+}
+
+/**
+ * Pins `role` to the model `key` in the config file, preserving the rest of the file
+ * (comments, other blocks, indentation). The current roles are read back from the
+ * parsed config and the one role is swapped, so untouched roles keep their pins; only
+ * the `roles:` block is rewritten in place. Returns the role's previous key (equal to
+ * `key` when nothing changed). Validation that `role`/`key` are legal lives with the
+ * caller, which has the loaded config to check the model exists.
+ */
+export async function setRoleInConfig(configPath: string, role: keyof Roles, key: string): Promise<string> {
+  const parsed = await loadParsedConfig(configPath);
+  const previous = parsed.roles[role];
+  const next: Roles = { ...parsed.roles, [role]: key };
+
+  const src = readFileSync(configPath, "utf8");
+  const masked = maskNonCode(src);
+  const m = /(^|\n)([^\S\n]*)roles[^\S\n]*:[^\S\n]*\{/.exec(masked);
+  if (!m) throw new Error(`Could not find a \`roles:\` block in ${configPath}.`);
+  const start = m.index + m[1]!.length + m[2]!.length; // start of the `roles` keyword
+  const open = m.index + m[0].length - 1; // index of the opening `{`
+  const close = matchBrace(masked, open);
+  if (close < 0) throw new Error(`Unbalanced braces in the \`roles:\` block in ${configPath}.`);
+
+  const out = src.slice(0, start) + serializeRoles(next, m[2]!) + src.slice(close + 1);
+  writeFileSync(configPath, out, "utf8");
+  return previous;
 }
 
 /** Serializes a project's tech-stack metadata to a single-line object literal. */

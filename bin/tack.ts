@@ -13,6 +13,7 @@ import {
   pinRuntimeInConfig,
   removeProjectFromConfig,
   setModelsPricingInConfig,
+  setRoleInConfig,
   setRuntimeVersionsInConfig,
   updateProjectInConfig,
 } from "../src/config/edit";
@@ -46,7 +47,8 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import type { Model, Project } from "../src/config/schema";
+import { RolesSchema } from "../src/config/schema";
+import type { Model, Project, Roles } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
 import { startSpinner } from "../src/cli/spinner";
 import { renderStreamEvent, type Pending } from "../src/cli/render";
@@ -509,6 +511,18 @@ const projects = defineCommand({
   default: "list",
 });
 
+/** The functional roles, in schema order — the set `tack roles set` accepts. */
+const ROLE_KEYS = Object.keys(RolesSchema.shape) as (keyof Roles)[];
+
+/** Prints the `Roles` section: each role → its pinned model key. Shared by
+ * `tack models list` and `tack roles list` so the two stay in lockstep. */
+function printRoles(roles: Roles): void {
+  console.log(pc.bold("Roles"));
+  for (const [role, key] of Object.entries(roles)) {
+    console.log(`  ${role.padEnd(11)} → ${pc.cyan(key)}`);
+  }
+}
+
 const modelsList = defineCommand({
   meta: { name: "list", description: "List configured models and role pins" },
   async run() {
@@ -518,11 +532,50 @@ const modelsList = defineCommand({
       const price = m.pricing ? pc.dim(" (priced)") : m.runtime === "codex" ? pc.red(" (no pricing!)") : "";
       console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}${m.effort ? pc.dim(` @${m.effort}`) : ""}${price}`);
     }
-    console.log(pc.bold("Roles"));
-    for (const [role, key] of Object.entries(config.roles)) {
-      console.log(`  ${role.padEnd(11)} → ${pc.cyan(key)}`);
+    printRoles(config.roles);
+  },
+});
+
+const rolesList = defineCommand({
+  meta: { name: "list", description: "List role pins (which model each role uses)" },
+  async run() {
+    const config = await loadConfig();
+    printRoles(config.roles);
+  },
+});
+
+const rolesSet = defineCommand({
+  meta: { name: "set", description: "Pin a role to a model in the config file" },
+  args: {
+    role: { type: "positional", required: true, description: `Role to pin (${ROLE_KEYS.join(" | ")})` },
+    model: { type: "positional", required: true, description: "Model key from config" },
+  },
+  async run({ args }) {
+    const role = String(args.role);
+    const model = String(args.model);
+    if (!ROLE_KEYS.includes(role as keyof Roles)) {
+      console.error(pc.red(`Unknown role "${role}".`) + pc.dim(` Known roles: ${ROLE_KEYS.join(", ")}.`));
+      process.exit(1);
+    }
+    const config = await loadConfig();
+    if (!config.models.some((m) => m.key === model)) {
+      const keys = config.models.map((m) => m.key).join(", ");
+      console.error(pc.red(`Unknown model "${model}".`) + pc.dim(` Configured models: ${keys || "none"}.`));
+      process.exit(1);
+    }
+    const previous = await setRoleInConfig(CONFIG_PATH, role as keyof Roles, model);
+    if (previous === model) {
+      console.log(pc.dim(`${role} already → ${model}`));
+    } else {
+      console.log(`${role.padEnd(11)} ${pc.dim(previous)} → ${pc.cyan(model)}`);
     }
   },
+});
+
+const roles = defineCommand({
+  meta: { name: "roles", alias: "role", description: "List role pins; pin a role to a model" },
+  subCommands: { list: rolesList, set: rolesSet },
+  default: "list",
 });
 
 /**
@@ -1105,6 +1158,7 @@ const main = defineCommand({
     runtimes,
     projects,
     models,
+    roles,
     config,
     session,
     create: sessionCreateDefault,
