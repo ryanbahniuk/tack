@@ -447,6 +447,6 @@ name**; loading fails loudly if a role names an undefined model.
 - Overlap detection compares declared `touches` by exact/directory-prefix match, not
   full globs. Amendments are adjudicated by the supervisor (the system routes them to
   it via `wait_for_agents`); `tack stable` surfaces them read-only.
-- Pricing can be synced from models.dev (`tack models sync-pricing`) instead of
+- Pricing can be synced from models.dev (folded into `tack models sync`) instead of
   hand-maintained; it's the one network call Tack makes and only on demand.
 - The interactive `claude attach` escape hatch is unimplemented.

@@ -70,9 +70,10 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
   provider, name, version, runtime, id, optional effort/pricing) and pin roles to
-  it. No code change. To make a model discoverable via `tack models refresh`, also
-  add it to `MODEL_CATALOG` (`src/runtimes/catalog.ts`) — refresh adds catalog
-  models for whichever runtimes resolve to a working binary.
+  it. No code change. To make a model discoverable via `tack models sync`, also
+  add it to `MODEL_CATALOG` (`src/runtimes/catalog.ts`) — sync adds catalog
+  models for whichever runtimes resolve to a working binary (and then fills codex
+  pricing from models.dev).
 - **Add a runtime (e.g. Bedrock):** add the kind to `RuntimeKind`
   (`src/config/schema.ts`), implement `Runtime` in `src/runtimes/`, wire it in
   `selectRuntime` (`src/runtimes/index.ts`), handle its `bin`/version in

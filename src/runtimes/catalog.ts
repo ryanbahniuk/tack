@@ -2,7 +2,7 @@ import type { Model, Pricing, RuntimeKind } from "../config/schema";
 
 /**
  * The models each runtime CLI offers, keyed by runtime. Neither CLI exposes a
- * machine-readable "list models" command, so `tack models refresh` seeds the
+ * machine-readable "list models" command, so `tack models sync` seeds the
  * config from this curated catalog — adding entries for whichever runtimes are
  * actually connected (resolve to a working binary). Keep it current as the CLIs
  * gain models; a model here is just a starting point the user can edit in place.
@@ -14,7 +14,7 @@ import type { Model, Pricing, RuntimeKind } from "../config/schema";
  * `opus` is Opus 4.8, not 5), which would defeat a version-pinned key.
  *
  * Codex reports tokens only, so its entries MUST carry `pricing` (USD per 1M
- * tokens) to yield a cost (SPEC §5) — `tack models sync-pricing` can fill these from
+ * tokens) to yield a cost (SPEC §5) — `tack models sync` can fill these from
  * models.dev instead of hand-maintaining them. Claude headless reports `total_cost_usd`
  * directly, so pricing is not needed there — but interactive claude sessions emit
  * no cost, so we carry ESTIMATED pricing here purely as the fallback used to
@@ -23,6 +23,7 @@ import type { Model, Pricing, RuntimeKind } from "../config/schema";
  */
 export const MODEL_CATALOG: Record<RuntimeKind, Model[]> = {
   claude: [
+    { key: "opus-5.5", provider: "anthropic", name: "Opus", version: "5.5", runtime: "claude", id: "claude-opus-5-5", effort: "high", pricing: { inputPer1M: 15, outputPer1M: 75, cacheReadPer1M: 1.5, cacheWritePer1M: 18.75 } },
     { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high", pricing: { inputPer1M: 15, outputPer1M: 75, cacheReadPer1M: 1.5, cacheWritePer1M: 18.75 } },
     { key: "opus-4.8", provider: "anthropic", name: "Opus", version: "4.8", runtime: "claude", id: "claude-opus-4-8", effort: "high", pricing: { inputPer1M: 15, outputPer1M: 75, cacheReadPer1M: 1.5, cacheWritePer1M: 18.75 } },
     { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5", pricing: { inputPer1M: 3, outputPer1M: 15, cacheReadPer1M: 0.3, cacheWritePer1M: 3.75 } },
@@ -68,7 +69,7 @@ export const MODEL_CATALOG: Record<RuntimeKind, Model[]> = {
 /**
  * Pricing for a model, preferring what the user configured and falling back to the
  * catalog entry (matched by runtime + id). Used to cost interactive sessions from
- * recovered tokens even when a model row (e.g. an older `tack models refresh` that
+ * recovered tokens even when a model row (e.g. an older `tack models sync` that
  * predates claude pricing) carries none.
  */
 export function pricingFor(model: Model): Pricing | undefined {

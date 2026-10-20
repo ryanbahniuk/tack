@@ -7,7 +7,7 @@ import type { Model, Pricing } from "../config/schema";
  * by provider → model, each with a `cost` object in USD per MILLION tokens — exactly
  * Tack's `Pricing` shape. This is the ONLY network call Tack makes, it's read-only
  * (a public GET, no credentials, nothing of the user's sent), and it only fires when
- * the user runs `tack models sync-pricing`. Pricing otherwise stays vendored/offline
+ * the user runs `tack models sync`. Pricing otherwise stays vendored/offline
  * in the catalog.
  */
 

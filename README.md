@@ -119,19 +119,18 @@ tack models         # list models and role pins
 ```
 
 Seed the `models` block from the catalog instead of hand-authoring entries —
-`refresh` adds every model offered by a connected runtime CLI, skipping ones
-already configured:
+`sync` adds every model offered by a connected runtime CLI (skipping ones already
+configured) and then fills codex pricing from models.dev in one step:
 
 ```bash
-tack models refresh       # add catalog models for the connected runtimes
-tack models sync-pricing  # fill codex model pricing from models.dev (public GET)
+tack models sync          # add catalog models for the connected runtimes + fill codex pricing
 ```
 
 Codex reports tokens only, so its models need a `pricing` table to report a cost.
-Rather than hand-maintain USD rates that go stale, `tack models sync-pricing` fetches
-them from [models.dev](https://models.dev) (a read-only network call, made only when
-you run this; nothing of yours is sent) and fills any codex model missing pricing —
-`--all` refreshes them all. Claude models don't need it (the CLI reports cost
+Rather than hand-maintain USD rates that go stale, `tack models sync` fetches them
+from [models.dev](https://models.dev) (a read-only network call, made only when you
+run this; nothing of yours is sent) and fills any codex model missing pricing —
+`--all` re-fetches them all. Claude models don't need it (the CLI reports cost
 directly).
 
 Manage the runtime CLIs from the command line instead of hand-editing the config:
