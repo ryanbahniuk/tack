@@ -72,6 +72,11 @@ export default ({
     //   env: { CONFLUENCE_CLOUD_ID: "a40b7113-0103-4597-b693-76b66e0a4614", CONFLUENCE_SITE_URL: "https://chime.atlassian.net" },
     // },
   ],
+
+  // When the work is done, the supervisor commits and opens one PR per unit of work
+  // in every affected repo without asking (you still review and merge each). Set to
+  // false to have it ask first and confirm each PR before it's opened.
+  autoOpenPrs: true,
 });
 `;
 

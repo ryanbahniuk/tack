@@ -140,6 +140,14 @@ export const ConfigSchema = z.object({
   readAllowlist: z.array(z.string()).default([]),
   /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
   supervisorMcpServers: z.array(McpServerSchema).default([]),
+  /**
+   * When the session's work is done, the supervisor commits and opens one PR per
+   * unit of work in every affected repo on its own (default) — the N reviewable PRs
+   * are the deliverable, and a human still reviews and merges each. Set `false` to
+   * put PR opening back behind the human: the supervisor asks first, and each
+   * `open_pr` call raises a per-call confirmation in attended sessions.
+   */
+  autoOpenPrs: z.boolean().default(true),
 });
 
 /** Shape accepted from a user's config file. */
@@ -153,6 +161,7 @@ export interface TackConfig {
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
+  autoOpenPrs: boolean;
 }
 
 /** Identity helper for config authoring: `export default defineConfig({...})`. */

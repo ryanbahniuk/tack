@@ -33,9 +33,10 @@ export const SUPERVISOR_MCP_NAME = "tack-supervisor";
 
 /**
  * Supervisor tools that must prompt the human on every call rather than riding the
- * server-wide auto-allow — opening a PR is outward-facing, so it stays behind an
- * explicit per-call human ok even after the plan is approved. The attended
- * launcher hands these to the runtime as `approvalTools`.
+ * server-wide auto-allow. Only used when `autoOpenPrs` is off: opening a PR is
+ * outward-facing, so that mode keeps it behind an explicit per-call human ok even
+ * after the plan is approved. The attended launcher hands these to the runtime as
+ * `approvalTools`.
  */
 export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`];
 
@@ -110,10 +111,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Delegate a task to a new agent in the given project. The agent runs autonomously in its own " +
         "worktree; this returns immediately with the agent id. Use wait_for_agents to await completion.\n\n" +
+        "Each agent becomes one PR, so default to ONE agent per project. Every agent branches from the " +
+        "project's HEAD, not a sibling's branch, so work that must happen in order within a project belongs " +
+        "to a single agent.\n\n" +
         "Declare `touches` (the files/dirs this unit will modify) and `dependsOn` (agent ids that must finish " +
-        "first) so Tack can coordinate parallel work: overlapping touch-sets are reported back as a warning so " +
-        "you can serialize the clashing units with `dependsOn`, and a dependent agent self-gates until its " +
-        "prerequisites finish. You can fan out every agent at once with dependencies declared — they order themselves.",
+        "first) so Tack can coordinate parallel work: overlapping touch-sets in the same project are reported " +
+        "back as a warning so you can fold the clashing units into one agent, and a dependent agent self-gates " +
+        "until its prerequisites finish (use this to order work across projects). You can fan out every agent " +
+        "at once with dependencies declared — they order themselves.",
       inputSchema: {
         project: z.string().describe("Project name from list_projects"),
         prompt: z.string().describe("The task for the agent, self-contained"),
@@ -150,8 +155,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         throw new Error(`Unknown dependsOn agent id(s): ${unknownDeps.join(", ")}`);
 
       // Warn (don't block) when this unit's declared touch-set overlaps a sibling in
-      // the same project that hasn't finished — the supervisor can then re-issue with
-      // `dependsOn` to serialize them. Only non-terminal siblings matter: a finished
+      // the same project that hasn't finished — that work belongs to one agent, and the
+      // supervisor must reconcile the pair before PRs. `dependsOn` wouldn't fix it:
+      // every worktree forks from the project's HEAD, so the later agent wouldn't see
+      // the earlier one's changes and the two PRs would still collide. Only non-terminal siblings matter: a finished
       // agent's work is already captured and won't be edited concurrently.
       const overlap = touches?.length
         ? overlapWithSiblings(
@@ -173,8 +180,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         ...(overlap.length
           ? {
               warning:
-                "Declared touch-set overlaps unfinished sibling agent(s) in this project — they may collide. " +
-                "Consider re-issuing with `dependsOn` to serialize, or narrow the touch-sets.",
+                "Declared touch-set overlaps unfinished sibling agent(s) in this project — their PRs will " +
+                "likely collide. Overlapping work in one project belongs to a single agent; don't spawn more " +
+                "like this. For these, run check_conflicts once they finish and reconcile any collision with a " +
+                "follow-up agent before opening PRs. `dependsOn` won't help: every agent branches from the " +
+                "project's HEAD, not a sibling's branch.",
               overlaps: overlap,
             }
           : {}),
@@ -187,9 +197,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description:
         "Open a pull request for a finished agent's committed work. YOU own PRs — agents no longer open their " +
-        "own. Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
-        "explicitly approved opening PRs. Pushes the agent's worktree branch under the tack/pr/<session>/<slug> " +
-        "nomenclature and runs `gh pr create`; returns the PR url.",
+        "own. " +
+        (config.autoOpenPrs
+          ? "Call this on your own (don't ask the human) once the agents finish and check_conflicts is clean, " +
+            "once per unit of work that produced changes. "
+          : "Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
+            "explicitly approved opening PRs. ") +
+        "Commits anything the agent left uncommitted, pushes its worktree branch under the " +
+        "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),
@@ -206,6 +221,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
       if (!a.branch || !a.worktree_path)
         throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
+      // The diff is captured (against the fork point) when the agent finishes, so no
+      // diff means there's nothing to push — fail legibly rather than letting `gh`
+      // reject an empty branch, which matters most when PRs open unattended.
+      if (!a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
       const proj = config.projects.find((p) => p.name === a.project_name);
       if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
       // Safety net: fold any changes the agent left uncommitted into its branch so

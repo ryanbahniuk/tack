@@ -352,16 +352,25 @@ stdout/stderr to the log, and yields parsed JSON lines.
 4. The supervisor `wait_for_agents`, `read_agent_output`, adjudicates amendments,
    runs `check_conflicts`, optionally spawns follow-ups, and finishes with a
    summary. It then opens **one PR per unit of work** (the deliverable — N reviewable
-   PRs, see Positioning) on `tack/pr/<sessionId>/<slug>` branches, after the human
-   approves; agents only commit to their worktree.
+   PRs, see Positioning) in every affected repo, on `tack/pr/<sessionId>/<slug>`
+   branches; agents only commit to their worktree, and `open_pr` folds in anything
+   they left uncommitted. By default (`autoOpenPrs: true`) the supervisor opens them
+   on its own once `check_conflicts` is clean — the human gate is review/merge of
+   each PR, not permission to open it. With `autoOpenPrs: false` it asks first, and
+   an attended claude session also forces a per-call confirmation on `open_pr`.
 5. The `tack stable` dashboard discovers PRs via `gh`.
 
-**Coordinating parallel work (the correctness layer).** `spawn_agent` takes an
-optional `touches` (the files/dirs a unit will modify) and `dependsOn` (sibling
-agent ids that must finish first). Overlapping touch-sets are reported back as a
-warning so the supervisor can serialize clashing units; a dependent agent's detached
-runner **self-gates** on its prerequisites (polling the shared DB) before it starts,
-so no separate scheduler is needed. `check_conflicts` reports files more than one
+**Coordinating parallel work (the correctness layer).** The supervisor defaults to
+**one agent per affected project** (so one PR per repo), splitting a project only
+into genuinely independent units that each merit their own PR. Every worktree
+forks from the project's HEAD — not from a sibling's branch — so ordered work within
+one project must go to a single agent; a same-project `dependsOn` would wait but
+never see its prerequisite's changes. `spawn_agent` takes an optional `touches`
+(the files/dirs a unit will modify) and `dependsOn` (sibling agent ids that must
+finish first, for ordering across projects). An overlapping touch-set in the same
+project is reported back as a warning — a sign the split was wrong; a dependent
+agent's detached runner **self-gates** on its prerequisites (polling the shared DB)
+before it starts, so no separate scheduler is needed. `check_conflicts` reports files more than one
 agent actually changed in the same project — a cross-branch merge collision to
 resolve before opening PRs. This is the "conflict prediction + dependency ordering"
 ceiling from Positioning; isolated worktrees remain the floor underneath it.
@@ -391,8 +400,13 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
+  autoOpenPrs: true,
 });
 ```
+
+`autoOpenPrs` (default `true`) lets the supervisor commit and open the session's
+PRs without asking once the work is done; `false` restores the ask-first flow with
+a per-call `open_pr` confirmation (§9).
 
 `supervisorMcpServers` mounts extra MCP servers for the **supervisor only**, on top
 of its `tack-supervisor` tools. Runs are `--strict-mcp-config`, so the supervisor

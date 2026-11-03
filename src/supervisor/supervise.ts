@@ -254,9 +254,11 @@ export async function superviseInteractive(opts: {
     ],
     onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
-    // Keep opening a PR behind an explicit per-call human ok even after plan approval.
-    approvalTools: SUPERVISOR_APPROVAL_TOOLS,
-    approvalPrompt: SUPERVISOR_APPROVAL_PROMPT,
+    // With auto-open off, keep opening a PR behind an explicit per-call human ok even
+    // after plan approval. With it on (default), open_pr rides the server-wide allow.
+    ...(config.autoOpenPrs
+      ? {}
+      : { approvalTools: SUPERVISOR_APPROVAL_TOOLS, approvalPrompt: SUPERVISOR_APPROVAL_PROMPT }),
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
   });
 
