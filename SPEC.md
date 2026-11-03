@@ -157,8 +157,10 @@ untouched** — they belong to the repo. Tack layers its own context separately.
 
 1. **Static / spawn-time.** The supervisor materializes a single **session-scoped
    context file per agent** (under `~/.tack/context/<sessionId>/`) and injects it
-   **by path** — `claude --append-system-prompt-file`, `codex -c
-   experimental_instructions_file=…`. Long context never goes on the command line.
+   **by path** — `claude --append-system-prompt-file`; for codex, a short `-c
+   developer_instructions=…` directive to read the file first (codex's
+   `model_instructions_file` would *replace* its base prompt, not add to it). Long
+   context never goes on the command line.
 2. **Live shared state.** Every agent's CLI mounts the **Tack coordination MCP
    server** (`tack __mcp <sessionId> <agentId>`), a standalone stdio MCP server
    backed by the shared SQLite DB. Tools: `read_shared_context`, `list_agents`,
@@ -449,8 +451,11 @@ name**; loading fails loudly if a role names an undefined model.
 
 - **Codex event parsing** is defensive against an internal build's `--json` schema;
   re-verify against the Codex version you pin.
-- **Codex context injection** uses `experimental_instructions_file`, which may
-  override base instructions; revisit if codex agents behave oddly.
+- **Codex context injection** is a `developer_instructions` directive to read the
+  context file, so it relies on the agent actually reading it. The file-based
+  alternative (`model_instructions_file`, née `experimental_instructions_file` —
+  ignored as of codex 0.16x) replaces codex's whole base prompt, so don't switch
+  back to it.
 - **Bedrock** becomes a third runtime once approved (open-weight models); the
   model→runtime abstraction already anticipates it.
 - No automated test suite yet. The runner retries a failed *run* whose error looks

@@ -1,16 +1,18 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { CONFIG_PATH, expandHome } from "../paths";
 import { ConfigSchema, type Model, type TackConfig } from "./schema";
 
 /**
  * Loads and validates the user's config. The config file is a `.ts` module that
- * `export default`s a config object (Bun imports it natively).
+ * `export default`s a config object (Bun imports it natively). The import is keyed
+ * by mtime because Bun caches modules by specifier: a command that edits the config
+ * and then reloads it (e.g. `models sync`) would otherwise get the stale copy.
  */
 export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
   if (!existsSync(path)) {
     throw new Error(`No config found at ${path}. Run \`tack init\` to create one.`);
   }
-  const mod = (await import(path)) as { default?: unknown; config?: unknown };
+  const mod = (await import(`${path}?v=${statSync(path).mtimeMs}`)) as { default?: unknown; config?: unknown };
   const raw = mod.default ?? mod.config;
   if (raw === undefined) {
     throw new Error(`Config at ${path} must \`export default\` a config object.`);

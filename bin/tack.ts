@@ -11,6 +11,7 @@ import {
   addModelsToConfig,
   addProjectsToConfig,
   pinRuntimeInConfig,
+  removeModelsFromConfig,
   removeProjectFromConfig,
   setModelsPricingInConfig,
   setRoleInConfig,
@@ -64,6 +65,8 @@ import {
   DEFAULT_VERSION_POLICY,
   MODEL_CATALOG,
   MODELS_DEV_URL,
+  pickReplacement,
+  selectRuntime,
   type EnsureResult,
 } from "../src/runtimes";
 import type { Pricing } from "../src/config/schema";
@@ -631,7 +634,8 @@ const modelsSync = defineCommand({
     // and scripts don't break, but `sync` is the one we surface — it matches
     // `runtimes sync` and now also folds in the pricing step.
     alias: "refresh",
-    description: "Add catalog models offered by the connected runtime CLIs, then fill codex pricing from models.dev",
+    description:
+      "Reconcile models with what the connected runtime CLIs offer (adding new ones, pruning ones the login can't use and re-pinning their roles), then fill codex pricing from models.dev",
   },
   args: {
     all: { type: "boolean", description: "Also re-fetch pricing for codex models that already have it" },
@@ -639,29 +643,95 @@ const modelsSync = defineCommand({
   async run({ args }) {
     const config = await requireConfig();
 
-    // 1) Seed catalog models from the runtimes that actually resolve to a working
-    // binary (honoring any version pin) — an unavailable CLI contributes no models.
-    // This is what "the models the connected CLIs allow" means.
+    // 1) Gather the models each runtime that resolves to a working binary (honoring
+    // any version pin) offers — an unavailable CLI contributes no models. A runtime
+    // that can list models for the signed-in account is authoritative: that live
+    // list is what "the models the connected CLIs allow" means, borrowing curated
+    // catalog fields for ids the catalog knows. Otherwise fall back to the catalog.
     const candidates: Model[] = [];
+    const offered = new Map<RuntimeKind, Model[]>();
     for (const kind of RUNTIME_KINDS) {
+      let version: string;
+      let bin: string;
       try {
-        const r = resolveRuntime(config, kind);
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(r.version)}`);
-        candidates.push(...MODEL_CATALOG[kind]);
+        ({ version, bin } = resolveRuntime(config, kind));
       } catch (err) {
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.yellow("not connected")} ${pc.dim((err as Error).message)}`);
+        continue;
+      }
+      const live = selectRuntime(kind).listModels?.(bin) ?? null;
+      if (live) {
+        const merged = live.map((m) => MODEL_CATALOG[kind].find((c) => c.id === m.id) ?? m);
+        offered.set(kind, merged);
+        candidates.push(...merged);
+        console.log(
+          `${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · ${merged.length} model(s) offered to this login`)}`,
+        );
+      } else {
+        candidates.push(...MODEL_CATALOG[kind]);
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · using Tack's catalog`)}`);
       }
     }
 
-    const added = await addModelsToConfig(CONFIG_PATH, candidates);
+    // Skip candidates whose id is already configured under another key (e.g. a
+    // hand-added `gpt-6.1-sol-high`) so sync doesn't duplicate them.
+    const configuredIds = new Set(config.models.map((m) => `${m.runtime}:${m.id}`));
+    const added = await addModelsToConfig(
+      CONFIG_PATH,
+      candidates.filter((c) => !configuredIds.has(`${c.runtime}:${c.id}`)),
+    );
     if (added.length === 0) {
-      console.log(pc.dim("\nNo new models to add — every catalog model is already configured."));
+      console.log(pc.dim("\nNo new models to add — every offered model is already configured."));
     } else {
       console.log(`\nAdded ${pc.bold(String(added.length))} model(s) to ${pc.dim(CONFIG_PATH)}:`);
       for (const m of added) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
     }
 
-    // 2) Fill codex pricing. Reload first so models just added above are considered.
+    // 2) Prune configured models an authoritative runtime no longer offers — the
+    // login would reject them at run time (`model_not_found`). Any role pinned to one
+    // is re-pinned first (the config must stay loadable between writes) to the best
+    // replacement from the same provider; if there is none, the model is kept and
+    // the user is told to re-pin by hand rather than leaving the role dangling.
+    let current = await requireConfig();
+    const stale = current.models.filter(
+      (m) => offered.has(m.runtime) && !offered.get(m.runtime)!.some((o) => o.id === m.id),
+    );
+    const staleKeys = new Set(stale.map((m) => m.key));
+    for (const role of ROLE_KEYS) {
+      const pinned = stale.find((m) => m.key === current.roles[role]);
+      if (!pinned) continue;
+      // Rank the runtime's own offering (best-first) ahead of other configured models.
+      const rank = (m: Model) => {
+        const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
+        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      const pool = current.models
+        .filter((m) => !staleKeys.has(m.key) && m.provider === pinned.provider)
+        .sort((a, b) => rank(a) - rank(b));
+      const replacement = pickReplacement(pinned, pool);
+      if (!replacement) {
+        staleKeys.delete(pinned.key);
+        console.log(
+          pc.red(`\n! roles.${role} is pinned to ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
+            pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
+        );
+        continue;
+      }
+      await setRoleInConfig(CONFIG_PATH, role, replacement.key);
+      current = await requireConfig();
+      console.log(
+        pc.yellow(`\n! roles.${role} was pinned to ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
+          `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
+          pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
+      );
+    }
+    const removed = await removeModelsFromConfig(CONFIG_PATH, staleKeys);
+    if (removed.length > 0) {
+      console.log(`\nRemoved ${pc.bold(String(removed.length))} model(s) no longer offered:`);
+      for (const m of removed) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
+    }
+
+    // 3) Fill codex pricing. Reload first so models added above are considered.
     const fresh = await requireConfig();
     try {
       await fillCodexPricing(fresh, Boolean(args.all));

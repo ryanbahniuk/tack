@@ -118,12 +118,18 @@ tack projects       # list configured projects
 tack models         # list models and role pins
 ```
 
-Seed the `models` block from the catalog instead of hand-authoring entries —
-`sync` adds every model offered by a connected runtime CLI (skipping ones already
-configured) and then fills codex pricing from models.dev in one step:
+Seed the `models` block instead of hand-authoring entries — `sync` adds every model
+offered by a connected runtime CLI (skipping ones already configured) and then fills
+codex pricing from models.dev in one step. For codex, "offered" means what your
+signed-in account can actually use (`codex debug models`; a ChatGPT login and an API
+key see different sets), so sync also **removes** configured codex models the login
+can't run. A role pinned to a removed model is re-pinned — with a warning — to the
+newest model of the same family from the same provider (e.g. `gpt-5.6-sol` →
+`gpt-6.1-sol`), else that provider's top-ranked model. Claude has no such listing,
+so claude models come from Tack's catalog and are never removed.
 
 ```bash
-tack models sync          # add catalog models for the connected runtimes + fill codex pricing
+tack models sync          # reconcile models with the connected runtimes + fill codex pricing
 ```
 
 Codex reports tokens only, so its models need a `pricing` table to report a cost.
