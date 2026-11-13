@@ -415,7 +415,9 @@ interactive client to answer — so the cache is seeded once (via the plugin or 
 interactive `tack` supervisor), after which headless runs reuse the refresh token.
 
 Every functional role (supervisor / agent / summary) is **pinned to a model by
-name**; loading fails loudly if a role names an undefined model.
+name**; loading fails loudly if a role names an undefined model. Besides describing
+projects, the summary model auto-generates session titles (from the first shared
+contract, or the seed prompt) into `sessions.title`, best-effort and in the background.
 
 ---
 

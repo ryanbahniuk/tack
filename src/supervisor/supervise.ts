@@ -48,7 +48,10 @@ import {
 export function createSupervisorSession(problem: string, config: TackConfig): SessionRow {
   const model = modelForRole(config, "supervisor");
   return createSession({
-    title: problem.slice(0, 80),
+    // The truncated prompt is only a stand-in until the summary model's title lands
+    // (`src/session/title.ts`); with no seed there's nothing worth showing, so leave
+    // it null rather than storing a placeholder.
+    title: problem.trim() ? problem.slice(0, 80) : null,
     supervisorModel: model.key,
     runtime: model.runtime,
   });

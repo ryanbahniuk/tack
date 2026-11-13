@@ -22,6 +22,7 @@ import {
 } from "../artifacts/store";
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
+import { spawnSessionTitler } from "../session/title";
 import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
 import { openSessionPr } from "../projects/prs";
 
@@ -100,6 +101,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const version = ((latestVersion(sessionId) ?? 0) + 1);
       const ref = writeSharedContext(sessionId, version, body);
       addSharedContext({ sessionId, bodyRef: ref, authoredBy: "supervisor" });
+      // The first contract is the best summary of what the session is about — title
+      // (or retitle, if it came from the seed prompt) from it. Detached and silent,
+      // so it neither blocks this tool call nor touches the MCP stdout.
+      if (version === 1) spawnSessionTitler(sessionId);
       return text({ ok: true, version });
     },
   );
