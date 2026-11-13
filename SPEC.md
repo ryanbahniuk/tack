@@ -282,6 +282,10 @@ amendments(id, session_id→sessions, proposed_by→agents, proposal_ref,
 
 session_prs(id, session_id→sessions, agent_id, project_name, number, url, title,
             state, head_branch, created_at, updated_at, UNIQUE(session_id, url))
+
+session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, status,
+                     status_category[new|indeterminate|done], created_at,
+                     updated_at, UNIQUE(session_id, key))
 ```
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
@@ -403,6 +407,7 @@ export default ({
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
   autoOpenPrs: true,
+  jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
 ```
 
@@ -430,6 +435,18 @@ normal Claude session. First-run OAuth uses an MCP elicitation prompt, which nee
 interactive client to answer — so the cache is seeded once (via the plugin or an
 interactive `tack` supervisor), after which headless runs reuse the refresh token.
 
+`jira` (optional) turns on **session ticket tracking — track only**: Tack never
+creates, edits, or transitions a ticket. The supervisor links the keys a session
+works on (`link_jira_ticket`, local state in `session_jira_tickets`), and Tack
+refreshes their title/status by acting as an MCP *client* of the
+`supervisorMcpServers` entry named by `mcpServer` — spawned with the same inherited
+environment as above, so it rides that server's cached auth and handles no tokens.
+`siteUrl` builds browse links (`<siteUrl>/browse/<KEY>`); `cloudId` falls back to
+the server's `env.CONFLUENCE_CLOUD_ID`, then to `getAccessibleAtlassianResources`.
+Refresh is best-effort: an unconfigured, unreachable, or not-yet-authenticated
+server just leaves statuses stale (the dashboard says "jira unavailable"). Loading
+fails if `mcpServer` doesn't name a configured server.
+
 Every functional role (supervisor / agent / summary) is **pinned to a model by
 name**; loading fails loudly if a role names an undefined model.
 
@@ -440,7 +457,13 @@ name**; loading fails loudly if a role names an undefined model.
 - **`tack stable`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
-  branches, upserted into `session_prs`.
+  branches, upserted into `session_prs`. `O` opens the selected session's PRs.
+- **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
+  stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
+  roll-up + per-ticket rows colored by status category) in `tack stable` and in
+  `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
+  Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
+  Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
   cascade DB rows).

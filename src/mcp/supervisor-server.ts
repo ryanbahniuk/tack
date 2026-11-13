@@ -11,6 +11,8 @@ import {
   listAgents,
   listPendingAmendments,
   resolveAmendment,
+  unlinkSessionJiraTicket,
+  upsertSessionJiraTicket,
   upsertSessionPr,
   type AgentStatus,
 } from "../db";
@@ -24,6 +26,7 @@ import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
 import { openSessionPr } from "../projects/prs";
+import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -250,6 +253,58 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         headBranch: pr.headBranch,
       });
       return text({ ok: true, url: pr.url, number: pr.number, branch: pr.headBranch });
+    },
+  );
+
+  // Ticket tracking is local bookkeeping (a row in `session_jira_tickets`), never a
+  // write to Jira — so unlike `open_pr` these ride the server-wide auto-allow and are
+  // deliberately absent from SUPERVISOR_APPROVAL_TOOLS.
+  server.registerTool(
+    "link_jira_ticket",
+    {
+      description:
+        "Link a JIRA ticket this session is working on (e.g. one named in the problem, or one you found via " +
+        "the Atlassian MCP) so the human sees it beside the session's agents and PRs, with its live status. " +
+        "Local tracking only — this NEVER creates, edits, comments on, or transitions anything in Jira. " +
+        "Idempotent: re-linking updates the existing entry.",
+      inputSchema: {
+        key: z.string().describe("Ticket key, e.g. ABC-123"),
+        agentId: z.string().optional().describe("The agent in this session working the ticket, if any"),
+        title: z.string().optional().describe("Ticket summary, if you already know it (refreshed from Jira anyway)"),
+        status: z.string().optional().describe("Ticket status name, if you already know it (refreshed from Jira anyway)"),
+      },
+    },
+    async ({ key, agentId, title, status }) => {
+      requireSession();
+      const k = key.trim().toUpperCase();
+      if (!JIRA_KEY_RE.test(k)) throw new Error(`"${key}" isn't a JIRA ticket key (expected e.g. ABC-123)`);
+      if (agentId) {
+        const a = getAgent(agentId);
+        if (!a || a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
+      }
+      const row = upsertSessionJiraTicket({
+        sessionId,
+        key: k,
+        agentId,
+        url: jiraTicketUrl(config, k),
+        title,
+        status,
+      });
+      return text({ ok: true, key: row.key, url: row.url });
+    },
+  );
+
+  server.registerTool(
+    "unlink_jira_ticket",
+    {
+      description:
+        "Stop tracking a JIRA ticket on this session (e.g. linked by mistake). Local only — Jira is untouched.",
+      inputSchema: { key: z.string().describe("Ticket key, e.g. ABC-123") },
+    },
+    async ({ key }) => {
+      requireSession();
+      const k = key.trim().toUpperCase();
+      return text({ ok: true, key: k, removed: unlinkSessionJiraTicket(sessionId, k) });
     },
   );
 

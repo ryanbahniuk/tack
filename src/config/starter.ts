@@ -77,6 +77,14 @@ export default ({
   // in every affected repo without asking (you still review and merge each). Set to
   // false to have it ask first and confirm each PR before it's opened.
   autoOpenPrs: true,
+
+  // Optional session JIRA ticket tracking (track-only — Tack never creates, edits,
+  // or transitions tickets). The supervisor links the tickets a session works on;
+  // \`tack stable\` refreshes their status read-only through the server named by
+  // \`mcpServer\` (one of supervisorMcpServers above, reusing its cached auth), and
+  // \`siteUrl\` builds the browse links. \`cloudId\` is optional: it falls back to
+  // that server's CONFLUENCE_CLOUD_ID env, then to asking the server.
+  // jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 });
 `;
 

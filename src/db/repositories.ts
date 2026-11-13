@@ -114,6 +114,23 @@ export interface SessionPrRow {
   updated_at: string;
 }
 
+/** A JIRA ticket a session is tracking (see migration v5). Track-only: everything
+ * but `key` is a cached, best-effort mirror of Jira refreshed via the Atlassian MCP
+ * server, so any of it may be null until the first successful refresh. */
+export interface SessionJiraTicketRow {
+  id: string;
+  session_id: string;
+  agent_id: string | null;
+  key: string;
+  url: string | null;
+  title: string | null;
+  status: string | null;
+  /** Jira's stable status bucket: new | indeterminate | done (null = unknown). */
+  status_category: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -223,7 +240,7 @@ export function stampSessionHeartbeat(id: string, pid: number): void {
 }
 
 export function deleteSession(id: string): void {
-  // agents/context/amendments/prs cascade via FK.
+  // agents/context/amendments/prs/jira tickets cascade via FK.
   getDb().prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
 }
 
@@ -513,4 +530,70 @@ export function listSessionPrs(sessionId: string): SessionPrRow[] {
   return getDb()
     .prepare(`SELECT * FROM session_prs WHERE session_id = ? ORDER BY created_at ASC`)
     .all(sessionId) as SessionPrRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Session JIRA tickets
+// ---------------------------------------------------------------------------
+
+/**
+ * Links (or refreshes) a ticket on a session. Two writers share this: the
+ * supervisor's `link_jira_ticket` (key, maybe a guessed title/status) and the
+ * dashboard's background refresh (authoritative title/status from Jira). Every
+ * optional field is COALESCEd so a writer that doesn't know a value passes null and
+ * never clobbers one another writer already recorded — e.g. a refresh that can't
+ * attribute an agent leaves the supervisor's `agent_id` intact.
+ */
+export function upsertSessionJiraTicket(input: {
+  sessionId: string;
+  key: string;
+  agentId?: string | null;
+  url?: string | null;
+  title?: string | null;
+  status?: string | null;
+  statusCategory?: string | null;
+}): SessionJiraTicketRow {
+  const db = getDb();
+  const now = nowIso();
+  db.prepare(
+    `INSERT INTO session_jira_tickets
+       (id, session_id, agent_id, key, url, title, status, status_category, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (session_id, key) DO UPDATE SET
+       agent_id        = COALESCE(excluded.agent_id, agent_id),
+       url             = COALESCE(excluded.url, url),
+       title           = COALESCE(excluded.title, title),
+       status          = COALESCE(excluded.status, status),
+       status_category = COALESCE(excluded.status_category, status_category),
+       updated_at      = excluded.updated_at`,
+  ).run(
+    shortId("jira"),
+    input.sessionId,
+    input.agentId ?? null,
+    input.key,
+    input.url ?? null,
+    input.title ?? null,
+    input.status ?? null,
+    input.statusCategory ?? null,
+    now,
+    now,
+  );
+  return db
+    .prepare(`SELECT * FROM session_jira_tickets WHERE session_id = ? AND key = ?`)
+    .get(input.sessionId, input.key) as SessionJiraTicketRow;
+}
+
+export function listSessionJiraTickets(sessionId: string): SessionJiraTicketRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM session_jira_tickets WHERE session_id = ? ORDER BY created_at ASC, key ASC`)
+    .all(sessionId) as SessionJiraTicketRow[];
+}
+
+/** Stops tracking a ticket on a session. Local only — Jira is never touched.
+ * Returns whether a row was actually removed. */
+export function unlinkSessionJiraTicket(sessionId: string, key: string): boolean {
+  const res = getDb()
+    .prepare(`DELETE FROM session_jira_tickets WHERE session_id = ? AND key = ?`)
+    .run(sessionId, key);
+  return res.changes > 0;
 }

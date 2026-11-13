@@ -24,6 +24,7 @@ import {
   getSession,
   listAgents,
   listPendingAmendments,
+  listSessionJiraTickets,
   listSessionPrs,
   listSessions,
   listSharedContext,
@@ -1045,10 +1046,26 @@ function prStateLabel(state: string | null): string {
   }
 }
 
+/** A ticket's status, colored by Jira's status category (stable across projects'
+ * differing workflow names) — same vocabulary as the dashboard's ticket rows. */
+function ticketStatusLabel(status: string | null, category: string | null): string {
+  const label = status ?? "?";
+  switch (category) {
+    case "done":
+      return pc.magenta(`✔ ${label}`);
+    case "indeterminate":
+      return pc.yellow(`● ${label}`);
+    case "new":
+      return pc.gray(`○ ${label}`);
+    default:
+      return pc.gray(`· ${label}`);
+  }
+}
+
 const sessionShow = defineCommand({
   meta: {
     name: "show",
-    description: "Show one session's agents, PRs, and cost (a scriptable, non-interactive view)",
+    description: "Show one session's agents, PRs, JIRA tickets, and cost (a scriptable, non-interactive view)",
   },
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
@@ -1057,6 +1074,7 @@ const sessionShow = defineCommand({
     const s = getSession(id)!;
     const agents = listAgents(id);
     const prs = listSessionPrs(id);
+    const tickets = listSessionJiraTickets(id);
     const cost = sessionTotalCost(id);
 
     const live = sessionLive(s) ? pc.green("● live") : pc.gray("○ idle");
@@ -1085,6 +1103,17 @@ const sessionShow = defineCommand({
     if (prs.length === 0) console.log(pc.dim("  none discovered"));
     for (const pr of prs) {
       console.log(`  ${pr.number ? `#${pr.number}` : "?"}  ${prStateLabel(pr.state)}  ${pc.dim(pr.url)}`);
+    }
+
+    // Shown as last refreshed by `tack stable` — this view is a cheap DB read and
+    // deliberately doesn't spin up the Atlassian MCP server just to print.
+    console.log(pc.bold(`\nTickets (${tickets.length})`));
+    if (tickets.length === 0) console.log(pc.dim("  none linked"));
+    for (const t of tickets) {
+      const parts = [pc.cyan(t.key), ticketStatusLabel(t.status, t.status_category)];
+      if (t.title) parts.push(firstLine(t.title, 80));
+      if (t.url) parts.push(pc.dim(t.url));
+      console.log(`  ${parts.join("  ")}`);
     }
 
     const pending = listPendingAmendments(id);
