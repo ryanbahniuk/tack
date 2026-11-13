@@ -11,6 +11,7 @@ import {
   addModelsToConfig,
   addProjectsToConfig,
   pinRuntimeInConfig,
+  removeModelsFromConfig,
   removeProjectFromConfig,
   setModelsPricingInConfig,
   setRoleInConfig,
@@ -23,6 +24,7 @@ import {
   getSession,
   listAgents,
   listPendingAmendments,
+  listSessionJiraTickets,
   listSessionPrs,
   listSessions,
   listSharedContext,
@@ -47,6 +49,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
+import { generateSessionTitle, spawnSessionTitler } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
@@ -64,6 +67,8 @@ import {
   DEFAULT_VERSION_POLICY,
   MODEL_CATALOG,
   MODELS_DEV_URL,
+  pickReplacement,
+  selectRuntime,
   type EnsureResult,
 } from "../src/runtimes";
 import type { Pricing } from "../src/config/schema";
@@ -631,7 +636,8 @@ const modelsSync = defineCommand({
     // and scripts don't break, but `sync` is the one we surface — it matches
     // `runtimes sync` and now also folds in the pricing step.
     alias: "refresh",
-    description: "Add catalog models offered by the connected runtime CLIs, then fill codex pricing from models.dev",
+    description:
+      "Reconcile models with what the connected runtime CLIs offer (adding new ones, pruning ones the login can't use and re-pinning their roles), then fill codex pricing from models.dev",
   },
   args: {
     all: { type: "boolean", description: "Also re-fetch pricing for codex models that already have it" },
@@ -639,29 +645,95 @@ const modelsSync = defineCommand({
   async run({ args }) {
     const config = await requireConfig();
 
-    // 1) Seed catalog models from the runtimes that actually resolve to a working
-    // binary (honoring any version pin) — an unavailable CLI contributes no models.
-    // This is what "the models the connected CLIs allow" means.
+    // 1) Gather the models each runtime that resolves to a working binary (honoring
+    // any version pin) offers — an unavailable CLI contributes no models. A runtime
+    // that can list models for the signed-in account is authoritative: that live
+    // list is what "the models the connected CLIs allow" means, borrowing curated
+    // catalog fields for ids the catalog knows. Otherwise fall back to the catalog.
     const candidates: Model[] = [];
+    const offered = new Map<RuntimeKind, Model[]>();
     for (const kind of RUNTIME_KINDS) {
+      let version: string;
+      let bin: string;
       try {
-        const r = resolveRuntime(config, kind);
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(r.version)}`);
-        candidates.push(...MODEL_CATALOG[kind]);
+        ({ version, bin } = resolveRuntime(config, kind));
       } catch (err) {
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.yellow("not connected")} ${pc.dim((err as Error).message)}`);
+        continue;
+      }
+      const live = selectRuntime(kind).listModels?.(bin) ?? null;
+      if (live) {
+        const merged = live.map((m) => MODEL_CATALOG[kind].find((c) => c.id === m.id) ?? m);
+        offered.set(kind, merged);
+        candidates.push(...merged);
+        console.log(
+          `${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · ${merged.length} model(s) offered to this login`)}`,
+        );
+      } else {
+        candidates.push(...MODEL_CATALOG[kind]);
+        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · using Tack's catalog`)}`);
       }
     }
 
-    const added = await addModelsToConfig(CONFIG_PATH, candidates);
+    // Skip candidates whose id is already configured under another key (e.g. a
+    // hand-added `gpt-6.1-sol-high`) so sync doesn't duplicate them.
+    const configuredIds = new Set(config.models.map((m) => `${m.runtime}:${m.id}`));
+    const added = await addModelsToConfig(
+      CONFIG_PATH,
+      candidates.filter((c) => !configuredIds.has(`${c.runtime}:${c.id}`)),
+    );
     if (added.length === 0) {
-      console.log(pc.dim("\nNo new models to add — every catalog model is already configured."));
+      console.log(pc.dim("\nNo new models to add — every offered model is already configured."));
     } else {
       console.log(`\nAdded ${pc.bold(String(added.length))} model(s) to ${pc.dim(CONFIG_PATH)}:`);
       for (const m of added) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
     }
 
-    // 2) Fill codex pricing. Reload first so models just added above are considered.
+    // 2) Prune configured models an authoritative runtime no longer offers — the
+    // login would reject them at run time (`model_not_found`). Any role pinned to one
+    // is re-pinned first (the config must stay loadable between writes) to the best
+    // replacement from the same provider; if there is none, the model is kept and
+    // the user is told to re-pin by hand rather than leaving the role dangling.
+    let current = await requireConfig();
+    const stale = current.models.filter(
+      (m) => offered.has(m.runtime) && !offered.get(m.runtime)!.some((o) => o.id === m.id),
+    );
+    const staleKeys = new Set(stale.map((m) => m.key));
+    for (const role of ROLE_KEYS) {
+      const pinned = stale.find((m) => m.key === current.roles[role]);
+      if (!pinned) continue;
+      // Rank the runtime's own offering (best-first) ahead of other configured models.
+      const rank = (m: Model) => {
+        const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
+        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      const pool = current.models
+        .filter((m) => !staleKeys.has(m.key) && m.provider === pinned.provider)
+        .sort((a, b) => rank(a) - rank(b));
+      const replacement = pickReplacement(pinned, pool);
+      if (!replacement) {
+        staleKeys.delete(pinned.key);
+        console.log(
+          pc.red(`\n! roles.${role} is pinned to ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
+            pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
+        );
+        continue;
+      }
+      await setRoleInConfig(CONFIG_PATH, role, replacement.key);
+      current = await requireConfig();
+      console.log(
+        pc.yellow(`\n! roles.${role} was pinned to ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
+          `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
+          pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
+      );
+    }
+    const removed = await removeModelsFromConfig(CONFIG_PATH, staleKeys);
+    if (removed.length > 0) {
+      console.log(`\nRemoved ${pc.bold(String(removed.length))} model(s) no longer offered:`);
+      for (const m of removed) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
+    }
+
+    // 3) Fill codex pricing. Reload first so models added above are considered.
     const fresh = await requireConfig();
     try {
       await fillCodexPricing(fresh, Boolean(args.all));
@@ -783,6 +855,9 @@ const agent = defineCommand({
     }
     const model = args.model ? resolveModel(config, args.model) : modelForRole(config, "agent");
     const session = createSession({ title: String(args.prompt).slice(0, 80) });
+    // Stash the prompt so the background titler can replace the truncated title.
+    writeSupervisorPrompt(session.id, String(args.prompt));
+    spawnSessionTitler(session.id);
     console.log(`${pc.dim("session")} ${pc.bold(session.id)}  ${pc.dim(`${model.runtime}:${model.id}`)}`);
 
     const run = executeAgent({ session, project, model, prompt: String(args.prompt), config });
@@ -829,8 +904,14 @@ const sessionCreate = defineCommand({
     // land in an idle TUI and type it yourself.
     const prompt = message ?? "";
     const model = modelForRole(config, "supervisor");
-    const session = createSupervisorSession(prompt || "(interactive session)", config);
+    const session = createSupervisorSession(prompt, config);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
+    // Title from the seed now — before superviseInteractive blocks on the TUI. With
+    // no seed, the first shared contract titles it instead (see set_shared_context).
+    if (prompt) {
+      writeSupervisorPrompt(session.id, prompt);
+      spawnSessionTitler(session.id);
+    }
 
     const { detached } = await superviseInteractive({ session, prompt, resume: false, config });
     reportInteractiveOutcome(session.id, detached);
@@ -948,6 +1029,7 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
   // Headless: no human to approve the plan, so open the gate up front.
   approveSessionPlan(session.id);
   writeSupervisorPrompt(session.id, problem);
+  spawnSessionTitler(session.id);
   const pid = spawnSupervisorRunner(session.id, "fresh");
   return printBackgroundHandoff(session.id, pid);
 }
@@ -975,10 +1057,26 @@ function prStateLabel(state: string | null): string {
   }
 }
 
+/** A ticket's status, colored by Jira's status category (stable across projects'
+ * differing workflow names) — same vocabulary as the dashboard's ticket rows. */
+function ticketStatusLabel(status: string | null, category: string | null): string {
+  const label = status ?? "?";
+  switch (category) {
+    case "done":
+      return pc.magenta(`✔ ${label}`);
+    case "indeterminate":
+      return pc.yellow(`● ${label}`);
+    case "new":
+      return pc.gray(`○ ${label}`);
+    default:
+      return pc.gray(`· ${label}`);
+  }
+}
+
 const sessionShow = defineCommand({
   meta: {
     name: "show",
-    description: "Show one session's agents, PRs, and cost (a scriptable, non-interactive view)",
+    description: "Show one session's agents, PRs, JIRA tickets, and cost (a scriptable, non-interactive view)",
   },
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
@@ -987,6 +1085,7 @@ const sessionShow = defineCommand({
     const s = getSession(id)!;
     const agents = listAgents(id);
     const prs = listSessionPrs(id);
+    const tickets = listSessionJiraTickets(id);
     const cost = sessionTotalCost(id);
 
     const live = sessionLive(s) ? pc.green("● live") : pc.gray("○ idle");
@@ -1015,6 +1114,17 @@ const sessionShow = defineCommand({
     if (prs.length === 0) console.log(pc.dim("  none discovered"));
     for (const pr of prs) {
       console.log(`  ${pr.number ? `#${pr.number}` : "?"}  ${prStateLabel(pr.state)}  ${pc.dim(pr.url)}`);
+    }
+
+    // Shown as last refreshed by `tack stable` — this view is a cheap DB read and
+    // deliberately doesn't spin up the Atlassian MCP server just to print.
+    console.log(pc.bold(`\nTickets (${tickets.length})`));
+    if (tickets.length === 0) console.log(pc.dim("  none linked"));
+    for (const t of tickets) {
+      const parts = [pc.cyan(t.key), ticketStatusLabel(t.status, t.status_category)];
+      if (t.title) parts.push(firstLine(t.title, 80));
+      if (t.url) parts.push(pc.dim(t.url));
+      console.log(`  ${parts.join("  ")}`);
     }
 
     const pending = listPendingAmendments(id);
@@ -1079,6 +1189,29 @@ const sessionContext = defineCommand({
   },
 });
 
+const sessionRetitle = defineCommand({
+  meta: {
+    name: "retitle",
+    description: "Regenerate a session's title with the summary model (from its shared contract or seed prompt)",
+  },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const config = await loadConfig();
+    const spin = startSpinner(`Titling ${id}`);
+    try {
+      const title = await generateSessionTitle(config, id);
+      spin.succeed("done");
+      console.log(`  ${title}`);
+    } catch (err) {
+      spin.fail("failed");
+      console.error(pc.red((err as Error).message));
+      process.exit(1);
+    }
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -1086,9 +1219,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, retitle, list, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1186,6 +1319,16 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__title-session") {
+  // Detached auto-titler (spawnSessionTitler). Best-effort: stdio is title.runner.log,
+  // so a failure is logged there and never surfaces to the session.
+  const [, , , sessionId] = process.argv;
+  try {
+    const config = await loadConfig();
+    await generateSessionTitle(config, sessionId!);
+  } catch (err) {
+    console.error(`title-session ${sessionId}: ${(err as Error).message}`);
+  }
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse/ExitPlanMode hook when a plan is
   // presented for approval. Two jobs: (1) mark the session as awaiting the human's

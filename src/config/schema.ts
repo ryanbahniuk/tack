@@ -130,6 +130,23 @@ export const McpServerSchema = z.object({
 });
 export type McpServer = z.infer<typeof McpServerSchema>;
 
+/**
+ * Session-scoped JIRA ticket tracking (track-only: Tack never writes to Jira). Tack
+ * reads ticket title/status by acting as an MCP *client* of one of the
+ * `supervisorMcpServers` — `mcpServer` names that entry — so it reuses whatever auth
+ * that server already caches and never handles a token itself. `siteUrl` builds the
+ * browse links (`<siteUrl>/browse/<KEY>`). `cloudId` is the Atlassian site id the
+ * server's tools need; when omitted it falls back to the server's
+ * `env.CONFLUENCE_CLOUD_ID`, then to asking the server
+ * (`getAccessibleAtlassianResources`).
+ */
+export const JiraConfigSchema = z.object({
+  mcpServer: z.string().min(1),
+  siteUrl: z.string().min(1),
+  cloudId: z.string().min(1).optional(),
+});
+export type JiraConfig = z.infer<typeof JiraConfigSchema>;
+
 export const ConfigSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
   models: z.array(ModelSchema).default([]),
@@ -140,6 +157,16 @@ export const ConfigSchema = z.object({
   readAllowlist: z.array(z.string()).default([]),
   /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
   supervisorMcpServers: z.array(McpServerSchema).default([]),
+  /**
+   * When the session's work is done, the supervisor commits and opens one PR per
+   * unit of work in every affected repo on its own (default) — the N reviewable PRs
+   * are the deliverable, and a human still reviews and merges each. Set `false` to
+   * put PR opening back behind the human: the supervisor asks first, and each
+   * `open_pr` call raises a per-call confirmation in attended sessions.
+   */
+  autoOpenPrs: z.boolean().default(true),
+  /** Optional JIRA ticket tracking via one of `supervisorMcpServers` (see `JiraConfigSchema`). */
+  jira: JiraConfigSchema.optional(),
 });
 
 /** Shape accepted from a user's config file. */
@@ -153,6 +180,8 @@ export interface TackConfig {
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
+  autoOpenPrs: boolean;
+  jira?: JiraConfig;
 }
 
 /** Identity helper for config authoring: `export default defineConfig({...})`. */

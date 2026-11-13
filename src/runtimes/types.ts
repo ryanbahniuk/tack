@@ -20,8 +20,9 @@ export interface RunOptions {
   /**
    * A single session-scoped context file, injected BY PATH (never inline). The
    * supervisor merges all guidance into one file per agent; each adapter wires it
-   * the way its CLI supports (claude `--append-system-prompt-file`, codex
-   * `experimental_instructions_file`). Repo-checked-in CLAUDE.md/AGENTS.md are
+   * the way its CLI supports (claude `--append-system-prompt-file`; codex, which has
+   * no append-a-file hook, a short `developer_instructions` directive to read the
+   * file — see `contextFlags` in codex.ts). Repo-checked-in CLAUDE.md/AGENTS.md are
    * left untouched — this is separate, Tack-owned context.
    */
   contextFile?: string;
@@ -161,4 +162,12 @@ export interface Runtime {
    * when no transcript can be located.
    */
   recoverUsage(opts: RecoverOptions): RecoveredUsage | null;
+  /**
+   * The models this runtime's CLI says the signed-in account can use right now,
+   * best-first. `tack models sync` treats this as authoritative: configured models
+   * of this runtime missing from it are pruned (and roles re-pinned). Omit it, or
+   * return null when the listing can't be read, and sync falls back to the static
+   * catalog without pruning — an empty list would read as "nothing is available".
+   */
+  listModels?(bin: string): Model[] | null;
 }

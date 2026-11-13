@@ -157,8 +157,10 @@ untouched** — they belong to the repo. Tack layers its own context separately.
 
 1. **Static / spawn-time.** The supervisor materializes a single **session-scoped
    context file per agent** (under `~/.tack/context/<sessionId>/`) and injects it
-   **by path** — `claude --append-system-prompt-file`, `codex -c
-   experimental_instructions_file=…`. Long context never goes on the command line.
+   **by path** — `claude --append-system-prompt-file`; for codex, a short `-c
+   developer_instructions=…` directive to read the file first (codex's
+   `model_instructions_file` would *replace* its base prompt, not add to it). Long
+   context never goes on the command line.
 2. **Live shared state.** Every agent's CLI mounts the **Tack coordination MCP
    server** (`tack __mcp <sessionId> <agentId>`), a standalone stdio MCP server
    backed by the shared SQLite DB. Tools: `read_shared_context`, `list_agents`,
@@ -280,6 +282,10 @@ amendments(id, session_id→sessions, proposed_by→agents, proposal_ref,
 
 session_prs(id, session_id→sessions, agent_id, project_name, number, url, title,
             state, head_branch, created_at, updated_at, UNIQUE(session_id, url))
+
+session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, status,
+                     status_category[new|indeterminate|done], created_at,
+                     updated_at, UNIQUE(session_id, key))
 ```
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
@@ -352,16 +358,25 @@ stdout/stderr to the log, and yields parsed JSON lines.
 4. The supervisor `wait_for_agents`, `read_agent_output`, adjudicates amendments,
    runs `check_conflicts`, optionally spawns follow-ups, and finishes with a
    summary. It then opens **one PR per unit of work** (the deliverable — N reviewable
-   PRs, see Positioning) on `tack/pr/<sessionId>/<slug>` branches, after the human
-   approves; agents only commit to their worktree.
+   PRs, see Positioning) in every affected repo, on `tack/pr/<sessionId>/<slug>`
+   branches; agents only commit to their worktree, and `open_pr` folds in anything
+   they left uncommitted. By default (`autoOpenPrs: true`) the supervisor opens them
+   on its own once `check_conflicts` is clean — the human gate is review/merge of
+   each PR, not permission to open it. With `autoOpenPrs: false` it asks first, and
+   an attended claude session also forces a per-call confirmation on `open_pr`.
 5. The `tack stable` dashboard discovers PRs via `gh`.
 
-**Coordinating parallel work (the correctness layer).** `spawn_agent` takes an
-optional `touches` (the files/dirs a unit will modify) and `dependsOn` (sibling
-agent ids that must finish first). Overlapping touch-sets are reported back as a
-warning so the supervisor can serialize clashing units; a dependent agent's detached
-runner **self-gates** on its prerequisites (polling the shared DB) before it starts,
-so no separate scheduler is needed. `check_conflicts` reports files more than one
+**Coordinating parallel work (the correctness layer).** The supervisor defaults to
+**one agent per affected project** (so one PR per repo), splitting a project only
+into genuinely independent units that each merit their own PR. Every worktree
+forks from the project's HEAD — not from a sibling's branch — so ordered work within
+one project must go to a single agent; a same-project `dependsOn` would wait but
+never see its prerequisite's changes. `spawn_agent` takes an optional `touches`
+(the files/dirs a unit will modify) and `dependsOn` (sibling agent ids that must
+finish first, for ordering across projects). An overlapping touch-set in the same
+project is reported back as a warning — a sign the split was wrong; a dependent
+agent's detached runner **self-gates** on its prerequisites (polling the shared DB)
+before it starts, so no separate scheduler is needed. `check_conflicts` reports files more than one
 agent actually changed in the same project — a cross-branch merge collision to
 resolve before opening PRs. This is the "conflict prediction + dependency ordering"
 ceiling from Positioning; isolated worktrees remain the floor underneath it.
@@ -391,8 +406,14 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
+  autoOpenPrs: true,
+  jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
 ```
+
+`autoOpenPrs` (default `true`) lets the supervisor commit and open the session's
+PRs without asking once the work is done; `false` restores the ask-first flow with
+a per-call `open_pr` confirmation (§9).
 
 `supervisorMcpServers` mounts extra MCP servers for the **supervisor only**, on top
 of its `tack-supervisor` tools. Runs are `--strict-mcp-config`, so the supervisor
@@ -414,8 +435,22 @@ normal Claude session. First-run OAuth uses an MCP elicitation prompt, which nee
 interactive client to answer — so the cache is seeded once (via the plugin or an
 interactive `tack` supervisor), after which headless runs reuse the refresh token.
 
+`jira` (optional) turns on **session ticket tracking — track only**: Tack never
+creates, edits, or transitions a ticket. The supervisor links the keys a session
+works on (`link_jira_ticket`, local state in `session_jira_tickets`), and Tack
+refreshes their title/status by acting as an MCP *client* of the
+`supervisorMcpServers` entry named by `mcpServer` — spawned with the same inherited
+environment as above, so it rides that server's cached auth and handles no tokens.
+`siteUrl` builds browse links (`<siteUrl>/browse/<KEY>`); `cloudId` falls back to
+the server's `env.CONFLUENCE_CLOUD_ID`, then to `getAccessibleAtlassianResources`.
+Refresh is best-effort: an unconfigured, unreachable, or not-yet-authenticated
+server just leaves statuses stale (the dashboard says "jira unavailable"). Loading
+fails if `mcpServer` doesn't name a configured server.
+
 Every functional role (supervisor / agent / summary) is **pinned to a model by
-name**; loading fails loudly if a role names an undefined model.
+name**; loading fails loudly if a role names an undefined model. Besides describing
+projects, the summary model auto-generates session titles (from the first shared
+contract, or the seed prompt) into `sessions.title`, best-effort and in the background.
 
 ---
 
@@ -424,7 +459,13 @@ name**; loading fails loudly if a role names an undefined model.
 - **`tack stable`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
-  branches, upserted into `session_prs`.
+  branches, upserted into `session_prs`. `O` opens the selected session's PRs.
+- **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
+  stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
+  roll-up + per-ticket rows colored by status category) in `tack stable` and in
+  `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
+  Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
+  Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
   cascade DB rows).
@@ -435,8 +476,11 @@ name**; loading fails loudly if a role names an undefined model.
 
 - **Codex event parsing** is defensive against an internal build's `--json` schema;
   re-verify against the Codex version you pin.
-- **Codex context injection** uses `experimental_instructions_file`, which may
-  override base instructions; revisit if codex agents behave oddly.
+- **Codex context injection** is a `developer_instructions` directive to read the
+  context file, so it relies on the agent actually reading it. The file-based
+  alternative (`model_instructions_file`, née `experimental_instructions_file` —
+  ignored as of codex 0.16x) replaces codex's whole base prompt, so don't switch
+  back to it.
 - **Bedrock** becomes a third runtime once approved (open-weight models); the
   model→runtime abstraction already anticipates it.
 - No automated test suite yet. The runner retries a failed *run* whose error looks

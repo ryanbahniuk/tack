@@ -1,6 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ModelSchema, type Model } from "../config/schema";
+import { versionFromId } from "./catalog";
 import type {
   AgentEvent,
   InteractiveSpec,
@@ -106,9 +109,12 @@ export class CodexRuntime implements Runtime {
     // non-zero exit is an outright failure, and a run that produced zero parseable
     // events almost always means the codex build's `--json` shape drifted from our
     // extractors (see the class doc-comment) or the process never really started.
+    // The generic exit-code message is only a fallback: callers keep the LATEST
+    // error, so emitting it after codex already said why (e.g. `model_not_found`)
+    // would bury the real reason behind "exited with code 1".
     if (exitCode !== 0) {
+      if (!sawError) yield { type: "error", message: `codex exited with code ${exitCode}` };
       sawError = true;
-      yield { type: "error", message: `codex exited with code ${exitCode}` };
     } else if (!sawActivity) {
       sawError = true;
       yield {
@@ -133,7 +139,7 @@ export class CodexRuntime implements Runtime {
     const flags = ["-m", m.id, "-s", opts.readOnly ? "read-only" : "workspace-write"];
     if (m.effort) flags.push("-c", `model_reasoning_effort=${m.effort}`);
     for (const dir of opts.addDirs ?? []) flags.push("--add-dir", dir);
-    if (opts.contextFile) flags.push("-c", `experimental_instructions_file=${quote(opts.contextFile)}`);
+    flags.push(...contextFlags(opts.contextFile));
     for (const s of opts.mcpServers ?? []) {
       flags.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
       flags.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
@@ -181,6 +187,45 @@ export class CodexRuntime implements Runtime {
     return usage;
   }
 
+  /**
+   * The models this codex login can use, via `codex debug models`. That command
+   * refreshes the catalog against the signed-in account — a ChatGPT login is offered
+   * a different set than an API key (e.g. no `gpt-5.6-sol`) — which is exactly what
+   * Tack's static catalog can't know. Only `visibility: "list"` entries are kept
+   * (the rest are internal, like the auto-review model), ordered by codex's
+   * `priority` so the picker's default comes first. It's a debug subcommand with an
+   * unversioned shape, so any failure or surprise returns null (unknown) rather than
+   * a partial list that would prune real models.
+   */
+  listModels(bin: string): Model[] | null {
+    const r = spawnSync(bin, ["debug", "models"], { encoding: "utf8", timeout: 30_000 });
+    if (r.error || r.status !== 0) return null;
+    let entries: unknown;
+    try {
+      entries = JSON.parse(r.stdout)?.models;
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(entries)) return null;
+    const rank = (e: any) => (typeof e.priority === "number" ? e.priority : Number.MAX_SAFE_INTEGER);
+    const models = entries
+      .filter((e: any) => typeof e?.slug === "string" && e.slug && e.visibility === "list")
+      .sort((a: any, b: any) => rank(a) - rank(b))
+      .map((e: any): Model => {
+        const effort = ModelSchema.shape.effort.safeParse(e.default_reasoning_level);
+        return {
+          key: e.slug,
+          provider: "openai",
+          name: typeof e.display_name === "string" && e.display_name ? e.display_name : e.slug,
+          version: versionFromId(e.slug),
+          runtime: "codex",
+          id: e.slug,
+          effort: effort.success ? effort.data : undefined,
+        };
+      });
+    return models.length > 0 ? models : null;
+  }
+
   /** The rollout file whose name contains `sessionRef`, or the newest one. */
   private findRollout(sessionRef?: string): string | null {
     const root = join(homedir(), ".codex", "sessions");
@@ -217,9 +262,7 @@ export class CodexRuntime implements Runtime {
     const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, ...posture];
     if (m.effort) cmd.push("-c", `model_reasoning_effort=${m.effort}`);
     for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
-    // Codex has no per-run system-prompt flag; the one file-based hook is the
-    // experimental instructions override (kept separate from the repo's AGENTS.md).
-    if (opts.contextFile) cmd.push("-c", `experimental_instructions_file=${quote(opts.contextFile)}`);
+    cmd.push(...contextFlags(opts.contextFile));
     for (const s of opts.mcpServers ?? []) {
       cmd.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
       cmd.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
@@ -237,6 +280,24 @@ export class CodexRuntime implements Runtime {
 
 function quote(s: string): string {
   return `"${s.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * The `-c` flags that hand codex Tack's context file (kept separate from the repo's
+ * AGENTS.md). Codex has no append-a-file hook: `model_instructions_file` — the
+ * successor to the `experimental_instructions_file` this used to pass, which 0.16x
+ * silently ignores — REPLACES codex's ~20KB base prompt (tool use, sandbox, editing
+ * workflow), so pointing it at our file would gut the agent. `developer_instructions`
+ * instead layers a developer message on top of the base prompt. The context itself
+ * stays on disk (SPEC §4: long context never goes on the command line); we pass only
+ * a short directive to read it first.
+ */
+function contextFlags(contextFile: string | undefined): string[] {
+  if (!contextFile) return [];
+  const directive =
+    `Tack, the supervisor coordinating this run, wrote your operating context to ${contextFile}. ` +
+    "Before doing anything else, read that file in full and follow it for the rest of the session.";
+  return ["-c", `developer_instructions=${quote(directive)}`];
 }
 
 // --- Defensive field extraction across Codex event shapes -------------------
@@ -264,24 +325,47 @@ function findUsage(ev: any): TokenUsage | null {
   };
 }
 
+/** An item's type with case and underscores folded, so the PascalCase item types of
+ * older builds (`AgentMessage`) and the snake_case of 0.16x (`agent_message`) match. */
+function itemType(item: any): string {
+  return String(item?.type ?? "").replace(/_/g, "").toLowerCase();
+}
+
 function findAgentText(ev: any): string | null {
   if (ev?.msg?.type === "agent_message" && ev.msg.message) return String(ev.msg.message);
   const item = ev?.item ?? ev?.msg?.item;
-  if (item?.type === "AgentMessage" && item.text) return String(item.text);
+  if (itemType(item) === "agentmessage" && item.text) return String(item.text);
   return null;
 }
 
 function findToolCall(ev: any): { name: string; input?: unknown } | null {
   const item = ev?.item ?? ev?.msg?.item;
-  if (item?.type === "CommandExecution") return { name: "shell", input: item.command };
+  if (itemType(item) === "commandexecution") return { name: "shell", input: item.command };
   if (ev?.msg?.type === "exec_command_begin") return { name: "shell", input: ev.msg.command };
   return null;
 }
 
+// `turn.failed` carries the fatal reason under `error.message`. Note `item.completed`
+// items of type "error" are deliberately NOT errors: codex uses them for non-fatal
+// warnings (e.g. "ignoring unrecognized configuration setting").
 function isError(ev: any): boolean {
-  return ev?.type === "error" || ev?.msg?.type === "error";
+  return ev?.type === "error" || ev?.type === "turn.failed" || ev?.msg?.type === "error";
 }
 
+/**
+ * The human-readable reason from an error event. API failures arrive as the raw
+ * response body JSON-encoded into `message`
+ * (`{"type":"error","status":400,"error":{"message":"The 'x' model is not supported…"}}`),
+ * so unwrap that to its inner message when it parses.
+ */
 function errorMessage(ev: any): string {
-  return String(ev?.message ?? ev?.msg?.message ?? "codex error");
+  const raw = String(ev?.message ?? ev?.error?.message ?? ev?.msg?.message ?? "codex error");
+  try {
+    const body = JSON.parse(raw);
+    const inner = body?.error?.message ?? body?.message;
+    if (typeof inner === "string" && inner) return inner;
+  } catch {
+    // Not JSON — already a plain message.
+  }
+  return raw;
 }

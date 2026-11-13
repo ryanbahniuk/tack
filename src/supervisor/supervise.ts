@@ -48,7 +48,10 @@ import {
 export function createSupervisorSession(problem: string, config: TackConfig): SessionRow {
   const model = modelForRole(config, "supervisor");
   return createSession({
-    title: problem.slice(0, 80),
+    // The truncated prompt is only a stand-in until the summary model's title lands
+    // (`src/session/title.ts`); with no seed there's nothing worth showing, so leave
+    // it null rather than storing a placeholder.
+    title: problem.trim() ? problem.slice(0, 80) : null,
     supervisorModel: model.key,
     runtime: model.runtime,
   });
@@ -254,9 +257,11 @@ export async function superviseInteractive(opts: {
     ],
     onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
-    // Keep opening a PR behind an explicit per-call human ok even after plan approval.
-    approvalTools: SUPERVISOR_APPROVAL_TOOLS,
-    approvalPrompt: SUPERVISOR_APPROVAL_PROMPT,
+    // With auto-open off, keep opening a PR behind an explicit per-call human ok even
+    // after plan approval. With it on (default), open_pr rides the server-wide allow.
+    ...(config.autoOpenPrs
+      ? {}
+      : { approvalTools: SUPERVISOR_APPROVAL_TOOLS, approvalPrompt: SUPERVISOR_APPROVAL_PROMPT }),
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
   });
 
