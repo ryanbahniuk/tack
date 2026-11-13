@@ -2,7 +2,9 @@ import type { Model, Pricing, RuntimeKind } from "../config/schema";
 
 /**
  * The models each runtime CLI offers, keyed by runtime. Neither CLI exposes a
- * machine-readable "list models" command, so `tack models sync` seeds the
+ * machine-readable list of the models an account can actually use (codex's
+ * `codex debug models` dumps a bundled catalog that includes models a ChatGPT
+ * account is refused), so `tack models sync` seeds the
  * config from this curated catalog — adding entries for whichever runtimes are
  * actually connected (resolve to a working binary). Keep it current as the CLIs
  * gain models; a model here is just a starting point the user can edit in place.
@@ -31,37 +33,21 @@ export const MODEL_CATALOG: Record<RuntimeKind, Model[]> = {
     { key: "fable-5", provider: "anthropic", name: "Fable", version: "5", runtime: "claude", id: "claude-fable-5", pricing: { inputPer1M: 3, outputPer1M: 15, cacheReadPer1M: 0.3, cacheWritePer1M: 3.75 } },
   ],
   codex: [
+    // Only IDs confirmed usable are listed. `codex debug models` (codex-cli 0.163.0)
+    // shows the binary's bundled catalog, but being listed there doesn't mean a
+    // ChatGPT account can use the model: `gpt-5.6-sol` is in it and was rejected
+    // with `model_not_found`. `gpt-6.1-sol` is the model a ChatGPT-account
+    // `codex exec` actually defaults to.
     {
-      key: "gpt-5.6-sol",
+      key: "gpt-6.1-sol",
       provider: "openai",
-      name: "GPT-5.6 Sol",
-      version: "5.6",
+      name: "GPT-6.1 Sol",
+      version: "6.1",
       runtime: "codex",
-      id: "gpt-5.6-sol",
+      id: "gpt-6.1-sol",
       effort: "medium",
-      // Short-context Standard rates; Tack's single-tier pricing can't express the
-      // separate long-context tier the vendor also lists.
+      // UNVERIFIED placeholder rates — run `tack models sync` to fill from models.dev
       pricing: { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.4, cacheWritePer1M: 5 },
-    },
-    {
-      key: "gpt-5.6-terra",
-      provider: "openai",
-      name: "GPT-5.6 Terra",
-      version: "5.6",
-      runtime: "codex",
-      id: "gpt-5.6-terra",
-      effort: "medium",
-      pricing: { inputPer1M: 2, outputPer1M: 12, cacheReadPer1M: 0.2, cacheWritePer1M: 2.5 },
-    },
-    {
-      key: "gpt-5.6-luna",
-      provider: "openai",
-      name: "GPT-5.6 Luna",
-      version: "5.6",
-      runtime: "codex",
-      id: "gpt-5.6-luna",
-      effort: "medium",
-      pricing: { inputPer1M: 0.2, outputPer1M: 1.2, cacheReadPer1M: 0.02, cacheWritePer1M: 0.25 },
     },
   ],
 };

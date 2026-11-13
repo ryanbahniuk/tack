@@ -14,20 +14,21 @@ export default ({
     { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
     { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },
     {
-      key: "gpt-5.6-sol",
+      key: "gpt-6.1-sol",
       provider: "openai",
-      name: "GPT-5.6 Sol",
-      version: "5.6",
+      name: "GPT-6.1 Sol",
+      version: "6.1",
       runtime: "codex",
-      id: "gpt-5.6-sol",
+      id: "gpt-6.1-sol",
       effort: "medium",
+      // UNVERIFIED placeholder rates — run \`tack models sync\` to fill from models.dev
       pricing: { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.4, cacheWritePer1M: 5 },
     },
   ],
 
   roles: {
     supervisor: "opus-5",
-    agent: "gpt-5.6-sol",
+    agent: "gpt-6.1-sol",
     summary: "sonnet-5",
   },
 
