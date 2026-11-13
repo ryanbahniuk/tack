@@ -433,10 +433,31 @@ name**; loading fails loudly if a role names an undefined model.
 
 ## 12. Known risks & future work
 
-- **Codex event parsing** is defensive against an internal build's `--json` schema;
-  re-verify against the Codex version you pin.
-- **Codex context injection** uses `experimental_instructions_file`, which may
-  override base instructions; revisit if codex agents behave oddly.
+- **Codex event parsing** targets codex-cli 0.163's `exec --json` schema
+  (`thread.started{thread_id}`, `item.started|completed{item:{type:"agent_message"|
+  "command_execution"|"file_change"|"mcp_tool_call"|…}}`, `turn.completed{usage}`,
+  `turn.failed{error}`, `error{message}`) and still accepts the older `msg`-wrapped /
+  PascalCase / `total_token_usage` shapes; re-verify when you bump codex. Not every
+  `error` is fatal: `error{"Reconnecting... n/5"}` is a transient retry and
+  `item{type:"error"}` is a warning (e.g. an ignored config key). A run fails on
+  `turn.failed`, any other `error`, or a non-zero exit, whose error reads
+  `codex exited with code N: <stderr tail>` (`streamJson` keeps a ~2KB stderr tail).
+  Codex's `input_tokens` includes cached tokens, so the cached share is moved to
+  `cacheRead` rather than billed twice.
+- **Codex approval posture.** `exec` forces `approval_policy=never`, which managed
+  (MDM) devices can forbid ("`Never` is not in the allowed set [UnlessTrusted,
+  OnRequest]"). Without a usable policy, every command and edit is rejected. Write
+  runs use `--approve-for-me` (workspace-write sandbox plus Codex's automatic
+  approval reviewer). Read-only runs use `-s read-only -c approval_policy="on-request"
+  -c approvals_reviewer="auto_review"` (`on-request` alone is still forced to
+  `never`). Never `--dangerously-bypass-approvals-and-sandbox`. `exec resume` rejects
+  `--approve-for-me`/`-s`/`--add-dir`, so those flags precede the `resume` subcommand.
+- **Codex context injection** uses `-c model_instructions_file=<path>`. The old
+  `experimental_instructions_file` is silently ignored by 0.163, so the context never
+  reached the model. The new key REPLACES Codex's built-in model instructions instead of
+  appending. If codex agents behave oddly, switch to `developer_instructions`
+  (appended as a developer message), which takes inline text only, so it would put
+  the context on the command line (§4).
 - **Bedrock** becomes a third runtime once approved (open-weight models); the
   model→runtime abstraction already anticipates it.
 - No automated test suite yet. The runner retries a failed *run* whose error looks
