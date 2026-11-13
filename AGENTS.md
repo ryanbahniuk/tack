@@ -40,7 +40,7 @@ src/agent/               execute.ts (prepare/run + activity/error), detached.ts 
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees + PR branch nomenclature
-src/projects/            prs.ts (gh-based PR discovery), summarize.ts (auto-describe a repo)
+src/projects/            prs.ts (gh-based PR discovery), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/session/lifecycle.ts stop / archive / delete
 src/cli/                 stable.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
