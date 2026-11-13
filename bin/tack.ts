@@ -49,6 +49,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
+import { generateSessionTitle, spawnSessionTitler } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
@@ -854,6 +855,9 @@ const agent = defineCommand({
     }
     const model = args.model ? resolveModel(config, args.model) : modelForRole(config, "agent");
     const session = createSession({ title: String(args.prompt).slice(0, 80) });
+    // Stash the prompt so the background titler can replace the truncated title.
+    writeSupervisorPrompt(session.id, String(args.prompt));
+    spawnSessionTitler(session.id);
     console.log(`${pc.dim("session")} ${pc.bold(session.id)}  ${pc.dim(`${model.runtime}:${model.id}`)}`);
 
     const run = executeAgent({ session, project, model, prompt: String(args.prompt), config });
@@ -900,8 +904,14 @@ const sessionCreate = defineCommand({
     // land in an idle TUI and type it yourself.
     const prompt = message ?? "";
     const model = modelForRole(config, "supervisor");
-    const session = createSupervisorSession(prompt || "(interactive session)", config);
+    const session = createSupervisorSession(prompt, config);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
+    // Title from the seed now — before superviseInteractive blocks on the TUI. With
+    // no seed, the first shared contract titles it instead (see set_shared_context).
+    if (prompt) {
+      writeSupervisorPrompt(session.id, prompt);
+      spawnSessionTitler(session.id);
+    }
 
     const { detached } = await superviseInteractive({ session, prompt, resume: false, config });
     reportInteractiveOutcome(session.id, detached);
@@ -1019,6 +1029,7 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
   // Headless: no human to approve the plan, so open the gate up front.
   approveSessionPlan(session.id);
   writeSupervisorPrompt(session.id, problem);
+  spawnSessionTitler(session.id);
   const pid = spawnSupervisorRunner(session.id, "fresh");
   return printBackgroundHandoff(session.id, pid);
 }
@@ -1178,6 +1189,29 @@ const sessionContext = defineCommand({
   },
 });
 
+const sessionRetitle = defineCommand({
+  meta: {
+    name: "retitle",
+    description: "Regenerate a session's title with the summary model (from its shared contract or seed prompt)",
+  },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const config = await loadConfig();
+    const spin = startSpinner(`Titling ${id}`);
+    try {
+      const title = await generateSessionTitle(config, id);
+      spin.succeed("done");
+      console.log(`  ${title}`);
+    } catch (err) {
+      spin.fail("failed");
+      console.error(pc.red((err as Error).message));
+      process.exit(1);
+    }
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -1185,9 +1219,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, retitle, list, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1285,6 +1319,16 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__title-session") {
+  // Detached auto-titler (spawnSessionTitler). Best-effort: stdio is title.runner.log,
+  // so a failure is logged there and never surfaces to the session.
+  const [, , , sessionId] = process.argv;
+  try {
+    const config = await loadConfig();
+    await generateSessionTitle(config, sessionId!);
+  } catch (err) {
+    console.error(`title-session ${sessionId}: ${(err as Error).message}`);
+  }
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse/ExitPlanMode hook when a plan is
   // presented for approval. Two jobs: (1) mark the session as awaiting the human's

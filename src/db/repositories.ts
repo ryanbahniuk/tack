@@ -167,6 +167,11 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
     .run(status, nowIso(), id);
 }
 
+/** Replaces the session's display title (set by the auto-titler, `src/session/title.ts`). */
+export function setSessionTitle(id: string, title: string): void {
+  getDb().prepare(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`).run(title, nowIso(), id);
+}
+
 export function setSessionResumeRef(id: string, ref: string): void {
   getDb()
     .prepare(`UPDATE sessions SET resume_ref = ?, updated_at = ? WHERE id = ?`)

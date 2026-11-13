@@ -83,6 +83,7 @@ export default ({
   ],
 
   // Every role is pinned to a model by name; loading fails loudly on an unknown name.
+  // The summary model also auto-generates session titles (`tack session retitle <id>` to redo one).
   roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
 
   // Pin runtime CLI versions for reproducibility (verified before every run).

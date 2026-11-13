@@ -448,7 +448,9 @@ server just leaves statuses stale (the dashboard says "jira unavailable"). Loadi
 fails if `mcpServer` doesn't name a configured server.
 
 Every functional role (supervisor / agent / summary) is **pinned to a model by
-name**; loading fails loudly if a role names an undefined model.
+name**; loading fails loudly if a role names an undefined model. Besides describing
+projects, the summary model auto-generates session titles (from the first shared
+contract, or the seed prompt) into `sessions.title`, best-effort and in the background.
 
 ---
 
