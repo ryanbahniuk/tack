@@ -1,6 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ModelSchema, type Model } from "../config/schema";
+import { versionFromId } from "./catalog";
 import type {
   AgentEvent,
   InteractiveSpec,
@@ -129,14 +132,15 @@ export class CodexRuntime implements Runtime {
     if (usd !== null) yield { type: "cost", usd, source: "pricing" };
 
     // Surface silent failures rather than reporting a no-op run as success: a
-    // non-zero exit is an outright failure (and carries codex's own explanation — a
-    // rejected flag, a bad config value, auth — so it's the error we persist), and a
-    // run that produced zero parseable events almost always means the codex build's
-    // `--json` shape drifted from our extractors or the process never really started.
-    if (exit.code !== 0) {
+    // non-zero exit is an outright failure, and a run that produced zero parseable
+    // events almost always means the codex build's `--json` shape drifted from our
+    // extractors (see the class doc-comment) or the process never really started.
+    // The generic exit-code message is only a fallback: callers keep the LATEST
+    // error, so emitting it after codex already said why (e.g. `model_not_found`)
+    // would bury the real reason behind "exited with code 1".
+    if (exitCode !== 0) {
+      if (!sawError) yield { type: "error", message: `codex exited with code ${exitCode}` };
       sawError = true;
-      const why = exit.stderrTail.trim() || lastFatal;
-      yield { type: "error", message: `codex exited with code ${exit.code}${why ? `: ${why}` : ""}` };
     } else if (!sawActivity) {
       sawError = true;
       yield {
@@ -157,13 +161,17 @@ export class CodexRuntime implements Runtime {
    * the `exec` flags (all of which the 0.163 TUI also accepts) but is less tested.
    */
   interactiveCommand(opts: RunOptions): InteractiveSpec {
-    const flags = [
-      "-m",
-      opts.model.id,
-      "-s",
-      opts.readOnly ? "read-only" : "workspace-write",
-      ...sharedFlags(opts),
-    ];
+    const m = opts.model;
+    const flags = ["-m", m.id, "-s", opts.readOnly ? "read-only" : "workspace-write"];
+    if (m.effort) flags.push("-c", `model_reasoning_effort=${m.effort}`);
+    for (const dir of opts.addDirs ?? []) flags.push("--add-dir", dir);
+    flags.push(...contextFlags(opts.contextFile));
+    for (const s of opts.mcpServers ?? []) {
+      flags.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
+      flags.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+      for (const [k, v] of Object.entries(s.env ?? {}))
+        flags.push("-c", `mcp_servers.${s.name}.env.${k}=${quote(v)}`);
+    }
     const prompt = opts.prompt.trim() ? [opts.prompt] : [];
     // `codex resume <id>` continues a prior session; a fresh run omits it. Codex
     // can't pre-assign an id, so a fresh interactive run has no sessionRef.
@@ -205,6 +213,45 @@ export class CodexRuntime implements Runtime {
     return usage;
   }
 
+  /**
+   * The models this codex login can use, via `codex debug models`. That command
+   * refreshes the catalog against the signed-in account — a ChatGPT login is offered
+   * a different set than an API key (e.g. no `gpt-5.6-sol`) — which is exactly what
+   * Tack's static catalog can't know. Only `visibility: "list"` entries are kept
+   * (the rest are internal, like the auto-review model), ordered by codex's
+   * `priority` so the picker's default comes first. It's a debug subcommand with an
+   * unversioned shape, so any failure or surprise returns null (unknown) rather than
+   * a partial list that would prune real models.
+   */
+  listModels(bin: string): Model[] | null {
+    const r = spawnSync(bin, ["debug", "models"], { encoding: "utf8", timeout: 30_000 });
+    if (r.error || r.status !== 0) return null;
+    let entries: unknown;
+    try {
+      entries = JSON.parse(r.stdout)?.models;
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(entries)) return null;
+    const rank = (e: any) => (typeof e.priority === "number" ? e.priority : Number.MAX_SAFE_INTEGER);
+    const models = entries
+      .filter((e: any) => typeof e?.slug === "string" && e.slug && e.visibility === "list")
+      .sort((a: any, b: any) => rank(a) - rank(b))
+      .map((e: any): Model => {
+        const effort = ModelSchema.shape.effort.safeParse(e.default_reasoning_level);
+        return {
+          key: e.slug,
+          provider: "openai",
+          name: typeof e.display_name === "string" && e.display_name ? e.display_name : e.slug,
+          version: versionFromId(e.slug),
+          runtime: "codex",
+          id: e.slug,
+          effort: effort.success ? effort.data : undefined,
+        };
+      });
+    return models.length > 0 ? models : null;
+  }
+
   /** The rollout file whose name contains `sessionRef`, or the newest one. */
   private findRollout(sessionRef?: string): string | null {
     const root = join(homedir(), ".codex", "sessions");
@@ -226,21 +273,29 @@ export class CodexRuntime implements Runtime {
   }
 
   private buildCmd(opts: RunOptions): string[] {
-    // Approval posture (see the class doc): `--approve-for-me` implies
-    // workspace-write and refuses to coexist with `-s`, so it replaces
-    // `-s workspace-write` on the write path. The read-only posture (supervisor /
-    // summary roles — not exercised on codex today, they run on claude) spells out
-    // the same auto-review approvals by config, since bare `-s read-only` gets exec's
-    // forced `approval_policy=never`, which the MDM rejects ("`Never` is not in the
-    // allowed set [UnlessTrusted, OnRequest]"). `on-request` alone isn't enough —
-    // exec still forces `never` unless the reviewer is `auto_review`.
-    const posture = opts.readOnly
-      ? ["-s", "read-only", "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
-      : ["--approve-for-me"];
-    const flags = ["--json", "--skip-git-repo-check", "-m", opts.model.id, ...posture, ...sharedFlags(opts)];
-    // Continuation: `codex exec resume <id>` accepts only a subset of exec's flags
-    // (no `--approve-for-me`, `-s` or `--add-dir` — it exits 2 on them), but exec's
-    // own options may precede the subcommand, so the posture is identical either way.
+    const m = opts.model;
+    // Approval posture. Plain `codex exec` forces `approval_policy=never`, which a
+    // managed-device (MDM) profile can forbid — it then downgrades to a stricter
+    // policy whose approval requests exec mode can't service, so EVERY command and
+    // edit is auto-rejected and the agent produces an empty diff. `--approve-for-me`
+    // routes those approvals through automatic review inside a workspace-write
+    // sandbox, which stays within the MDM-allowed set. It IMPLIES workspace-write
+    // and refuses to coexist with `-s`, so we pass it instead of `-s workspace-write`
+    // on the write path. The read-only supervisor/summary posture still needs an
+    // explicit `-s read-only` (and isn't exercised on codex today — those roles run
+    // on claude — so it keeps codex's original read-only sandbox flag).
+    const posture = opts.readOnly ? ["-s", "read-only"] : ["--approve-for-me"];
+    const cmd = [opts.bin, "exec", "--json", "--skip-git-repo-check", "-m", m.id, ...posture];
+    if (m.effort) cmd.push("-c", `model_reasoning_effort=${m.effort}`);
+    for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
+    cmd.push(...contextFlags(opts.contextFile));
+    for (const s of opts.mcpServers ?? []) {
+      cmd.push("-c", `mcp_servers.${s.name}.command=${quote(s.command)}`);
+      cmd.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+      for (const [k, v] of Object.entries(s.env ?? {}))
+        cmd.push("-c", `mcp_servers.${s.name}.env.${k}=${quote(v)}`);
+    }
+    // `codex exec resume <id>` is the continuation form; flags follow the subcommand.
     if (opts.resume && opts.sessionRef) {
       return [opts.bin, "exec", ...flags, "resume", opts.sessionRef, opts.prompt];
     }
@@ -272,6 +327,24 @@ function sharedFlags(opts: RunOptions): string[] {
  */
 function tomlString(s: string): string {
   return JSON.stringify(s);
+}
+
+/**
+ * The `-c` flags that hand codex Tack's context file (kept separate from the repo's
+ * AGENTS.md). Codex has no append-a-file hook: `model_instructions_file` — the
+ * successor to the `experimental_instructions_file` this used to pass, which 0.16x
+ * silently ignores — REPLACES codex's ~20KB base prompt (tool use, sandbox, editing
+ * workflow), so pointing it at our file would gut the agent. `developer_instructions`
+ * instead layers a developer message on top of the base prompt. The context itself
+ * stays on disk (SPEC §4: long context never goes on the command line); we pass only
+ * a short directive to read it first.
+ */
+function contextFlags(contextFile: string | undefined): string[] {
+  if (!contextFile) return [];
+  const directive =
+    `Tack, the supervisor coordinating this run, wrote your operating context to ${contextFile}. ` +
+    "Before doing anything else, read that file in full and follow it for the rest of the session.";
+  return ["-c", `developer_instructions=${quote(directive)}`];
 }
 
 // --- Defensive field extraction across Codex event shapes -------------------
@@ -316,18 +389,16 @@ function toTokenUsage(info: any): TokenUsage {
   };
 }
 
-/** The event's item, only once it's finished (`item.completed`), or a legacy item. */
-function completedItem(ev: any): any {
-  if (typeof ev?.type === "string" && ev.type.startsWith("item.")) {
-    return ev.type === "item.completed" ? ev.item : null;
-  }
-  return ev?.item ?? ev?.msg?.item ?? null;
+/** An item's type with case and underscores folded, so the PascalCase item types of
+ * older builds (`AgentMessage`) and the snake_case of 0.16x (`agent_message`) match. */
+function itemType(item: any): string {
+  return String(item?.type ?? "").replace(/_/g, "").toLowerCase();
 }
 
 function findAgentText(ev: any): string | null {
   if (ev?.msg?.type === "agent_message" && ev.msg.message) return String(ev.msg.message);
-  const item = completedItem(ev);
-  if ((item?.type === "agent_message" || item?.type === "AgentMessage") && item.text) return String(item.text);
+  const item = ev?.item ?? ev?.msg?.item;
+  if (itemType(item) === "agentmessage" && item.text) return String(item.text);
   return null;
 }
 
@@ -338,6 +409,8 @@ function findAgentText(ev: any): string | null {
  * `file_change`, which is applied atomically) are reported on completion.
  */
 function findToolCall(ev: any): { name: string; input?: unknown } | null {
+  const item = ev?.item ?? ev?.msg?.item;
+  if (itemType(item) === "commandexecution") return { name: "shell", input: item.command };
   if (ev?.msg?.type === "exec_command_begin") return { name: "shell", input: ev.msg.command };
   const isNew = typeof ev?.type === "string" && ev.type.startsWith("item.");
   if (isNew && ev.type !== "item.started" && ev.type !== "item.completed") return null;
@@ -361,18 +434,27 @@ function findToolCall(ev: any): { name: string; input?: unknown } | null {
   return null;
 }
 
+// `turn.failed` carries the fatal reason under `error.message`. Note `item.completed`
+// items of type "error" are deliberately NOT errors: codex uses them for non-fatal
+// warnings (e.g. "ignoring unrecognized configuration setting").
+function isError(ev: any): boolean {
+  return ev?.type === "error" || ev?.type === "turn.failed" || ev?.msg?.type === "error";
+}
+
 /**
- * The message of an event that means the run failed, else null. Not every `error`
- * is fatal: codex streams transient `error{message:"Reconnecting... 2/5 (…)"}` while
- * it retries the model connection, and `item.completed{item:{type:"error"}}` for
- * warnings (an ignored config key, a transport fallback). Those stay in the log
- * only. A turn that really fails ends in `turn.failed` and a non-zero exit.
+ * The human-readable reason from an error event. API failures arrive as the raw
+ * response body JSON-encoded into `message`
+ * (`{"type":"error","status":400,"error":{"message":"The 'x' model is not supported…"}}`),
+ * so unwrap that to its inner message when it parses.
  */
-function fatalError(ev: any): string | null {
-  if (ev?.type === "turn.failed") return String(ev.error?.message ?? "codex turn failed");
-  if (ev?.type === "error" || ev?.msg?.type === "error") {
-    const message = String(ev?.message ?? ev?.msg?.message ?? "codex error");
-    return /^Reconnecting\b/.test(message) ? null : message;
+function errorMessage(ev: any): string {
+  const raw = String(ev?.message ?? ev?.error?.message ?? ev?.msg?.message ?? "codex error");
+  try {
+    const body = JSON.parse(raw);
+    const inner = body?.error?.message ?? body?.message;
+    if (typeof inner === "string" && inner) return inner;
+  } catch {
+    // Not JSON — already a plain message.
   }
-  return null;
+  return raw;
 }

@@ -19,8 +19,8 @@ const PROMPT =
   "major tools the repo depends on, as strings.";
 
 /** Collapses whitespace and strips wrapping quotes so multi-line model output
- * becomes one clean config-ready sentence. */
-function tidy(text: string): string {
+ * becomes one clean config-ready sentence. Shared with the session titler. */
+export function tidy(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.replace(/^["'`]|["'`]$/g, "").trim();
 }
