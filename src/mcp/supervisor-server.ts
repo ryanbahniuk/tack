@@ -257,7 +257,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           "Plan not approved yet. Call `request_plan_approval` with your short plan summary and wait for " +
             "the human to accept it before spawning any agents. Don't ask the human to change or exit any " +
             "mode — the tool call is the approval. `spawn_agent` stays blocked until then. " +
-            `If the human says they never saw an approval prompt, they can run \`tack session approve ${sessionId}\` themselves.`,
+            `If the human says they never saw an approval prompt, they can type \`/approve\` in the session or run \`tack session approve ${sessionId}\` themselves.`,
         );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
@@ -414,7 +414,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         throw new Error(
           "Plan not approved yet. Present your plan to the human and let them accept it before starting any " +
             "agents. `fix_pr` stays blocked until then. " +
-            `If the human says they never saw an approval prompt, they can run \`tack session approve ${sessionId}\` themselves.`,
+            `If the human says they never saw an approval prompt, they can type \`/approve\` in the session or run \`tack session approve ${sessionId}\` themselves.`,
         );
       const pr = resolveSessionPr(listSessionPrs(sessionId), ref);
       const tag = `PR #${pr.number ?? "?"}`;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { APPROVE_PROMPT_MARKER } from "../src/supervisor/approve-prompt";
 import type { RunOptions } from "../src/runtimes/types";
 
 const CLAUDE_TS = resolve(import.meta.dir, "../src/runtimes/claude.ts");
@@ -128,4 +129,23 @@ describe("ClaudeRuntime.prepareInteractive", () => {
     // Trust is still recorded: it's about the TUI launching, not the posture.
     expect(readJson(join(home, ".claude.json")).projects[cwd].hasTrustDialogAccepted).toBe(true);
   });
+});
+
+test("writes and refreshes /approve only when the prompt hook is supplied", () => {
+  const home = tmp("tack-home-");
+  const cwd = tmp("tack-cwd-");
+  const command = join(cwd, ".claude", "commands", "approve.md");
+  prepare(home, { cwd });
+  expect(existsSync(command)).toBe(false);
+
+  const onUserPrompt = { command: "tack", args: ["__approve-prompt", "ses_x"] };
+  prepare(home, { cwd, onUserPrompt });
+  const body = readFileSync(command, "utf8");
+  expect(body).toContain("description: Approve the supervisor's plan (use if the approval prompt didn't appear)");
+  expect(body).toContain(APPROVE_PROMPT_MARKER);
+  expect(body).toContain("Proceed to spawn agents per the plan.");
+
+  writeFileSync(command, "stale command");
+  prepare(home, { cwd, onUserPrompt, resume: true });
+  expect(readFileSync(command, "utf8")).toBe(body);
 });

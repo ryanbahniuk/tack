@@ -43,6 +43,7 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -1366,6 +1367,25 @@ if (hidden === "__mcp") {
   } catch (err) {
     console.error(`title-session ${sessionId}: ${(err as Error).message}`);
   }
+} else if (hidden === "__approve-prompt") {
+  // Only the harness runs this on submitted prompts. Fail open so malformed input
+  // or a missing session never interrupts ordinary chat or leaks junk to stdout.
+  try {
+    const sessionId = process.argv[3];
+    const input = JSON.parse(await Bun.stdin.text());
+    if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
+      approveSessionPlan(sessionId);
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: "The human approved the plan via /approve; plan_approved_at is set. Proceed to spawn agents.",
+        },
+      }));
+    }
+  } catch {
+    // Approval is best-effort; never block the human's prompt.
+  }
+  process.exit(0);
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse hook on `request_plan_approval`
   // when a plan is presented for approval. Two jobs: (1) mark the session as awaiting
