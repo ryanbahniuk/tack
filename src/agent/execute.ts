@@ -26,6 +26,7 @@ import { readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
 import { ensurePrWorktree, ensureWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
+import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
 
@@ -78,6 +79,21 @@ export async function* runAgent(
   const project = config.projects.find((p) => p.name === agent.project_name);
   if (!project) throw new Error(`Agent ${agentId} references unknown project "${agent.project_name}"`);
   const model = resolveModel(config, agent.model ?? config.roles.agent);
+
+  // Backstop for spawns that don't go through `spawn_agent`'s check (PR-watch fix
+  // agents, `tack agent`, retries): a model the login doesn't offer fails the agent
+  // right away — before a worktree or a runtime run — with the remediation inline,
+  // instead of a late `model_not_found` buried in the log. Unknown never blocks.
+  const offered = checkModelOffered(config, model, {
+    role: model.key === config.roles.agent ? "agent" : undefined,
+  });
+  if (offered.ok === false) {
+    setAgentError(agent.id, offered.message);
+    setAgentStatus(agent.id, "failed");
+    yield { type: "error", message: offered.message };
+    yield { type: "done", ok: false };
+    return { ok: false, agent: getAgent(agent.id)! };
+  }
 
   const worktree = agentWorktree(agent, project.path);
   setAgentWorktree(agent.id, worktree.path, worktree.branch);

@@ -442,20 +442,29 @@ function fatalError(ev: any): string | null {
   return null;
 }
 
+/** Appended to a `model_not_found` failure: the fix is a config re-pin, not a retry. */
+export const MODEL_NOT_FOUND_HINT = " — run `tack models sync` to re-pin to a model this login offers";
+
 /**
  * The human-readable reason from an error message. API failures arrive as the raw
  * response body JSON-encoded into `message`
  * (`{"type":"error","status":400,"error":{"message":"The 'x' model is not supported…"}}`),
- * so unwrap that to its inner message when it parses.
+ * so unwrap that to its inner message when it parses. A `model_not_found` failure
+ * (the role is pinned to a model this login doesn't offer) gets the remediation
+ * appended — the unwrapped inner message alone doesn't say what to do about it.
  */
-function errorMessage(message: unknown): string {
+export function errorMessage(message: unknown): string {
   const raw = String(message);
+  let text = raw;
+  let code: unknown;
   try {
     const body = JSON.parse(raw);
     const inner = body?.error?.message ?? body?.message;
-    if (typeof inner === "string" && inner) return inner;
+    if (typeof inner === "string" && inner) text = inner;
+    code = body?.error?.code ?? body?.code ?? body?.error?.type;
   } catch {
     // Not JSON — already a plain message.
   }
-  return raw;
+  const notFound = code === "model_not_found" || /\bmodel_not_found\b/.test(raw);
+  return notFound && !text.includes(MODEL_NOT_FOUND_HINT) ? text + MODEL_NOT_FOUND_HINT : text;
 }

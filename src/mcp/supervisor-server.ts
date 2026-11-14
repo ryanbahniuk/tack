@@ -26,6 +26,7 @@ import {
   writeSharedContext,
 } from "../artifacts/store";
 import { prepareAgent } from "../agent/execute";
+import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
 import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
@@ -159,6 +160,12 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
       const m = resolveModel(config, model ?? config.roles.agent);
+      // Fail fast on a model the runtime's login doesn't offer (e.g. a codex model a
+      // ChatGPT login rejects with `model_not_found`): refuse here, before a worktree
+      // or agent row exists, rather than spawn an agent that's certain to die. Unknown
+      // (can't list, lookup failed) never blocks.
+      const offered = checkModelOffered(config, m, { role: model ? undefined : "agent" });
+      if (offered.ok === false) throw new Error(`Refusing to spawn: ${offered.message}`);
 
       const siblings = listAgents(session.id);
       // Validate declared dependencies point at real agents in this session.

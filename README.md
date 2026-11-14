@@ -114,7 +114,7 @@ Verify your setup at any time:
 
 ```bash
 tack runtimes list   # list runtimes and their status
-tack runtimes doctor # resolve runtime binaries + verify version pins
+tack runtimes doctor # resolve runtime binaries, verify version pins + role models the login offers
 tack projects       # list configured projects
 tack models         # list models and role pins
 ```
@@ -128,6 +128,12 @@ can't run. A role pinned to a removed model is re-pinned — with a warning — 
 newest model of the same family from the same provider (e.g. `gpt-5.6-sol` →
 `gpt-6.1-sol`), else that provider's top-ranked model. Claude has no such listing,
 so claude models come from Tack's catalog and are never removed.
+
+Tack also checks this before running anything: `spawn_agent` refuses (and a
+detached agent fails immediately) when its model isn't offered to the codex login,
+and `tack runtimes doctor` warns about any role pinned to such a model. Either way
+the fix is `tack models sync`. If the login's model list can't be read, the check
+is skipped rather than blocking.
 
 ```bash
 tack models sync          # reconcile models with the connected runtimes + fill codex pricing

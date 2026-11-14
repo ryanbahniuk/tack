@@ -77,7 +77,10 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   `MODEL_CATALOG` (`src/runtimes/catalog.ts`) to make it discoverable — sync adds
   catalog models for whichever runtimes resolve to a working binary (and then
   fills codex pricing from models.dev). A runtime opts into live discovery by
-  implementing `Runtime.listModels`.
+  implementing `Runtime.listModels`. The same listing gates spawns:
+  `checkModelOffered` (`src/runtimes/availability.ts`, cached per runtime per
+  process) refuses `spawn_agent`, fails `runAgent` early, and makes `tack runtimes
+  doctor` warn when a model isn't offered. An unknown listing never blocks.
 - **Add a runtime (e.g. Bedrock):** add the kind to `RuntimeKind`
   (`src/config/schema.ts`), implement `Runtime` in `src/runtimes/`, wire it in
   `selectRuntime` (`src/runtimes/index.ts`), handle its `bin`/version in
