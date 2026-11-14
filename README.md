@@ -82,9 +82,9 @@ export default ({
     },
   ],
 
-  // Every role is pinned to a model by name; loading fails loudly on an unknown name.
+  // Each role accepts a model key or a non-empty list; unknown keys fail at load.
   // The summary model also auto-generates session titles (`tack session retitle <id>` to redo one).
-  roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
+  roles: { supervisor: "opus", agent: ["gpt-5-codex", "opus"], summary: "sonnet" },
 
   // Pin runtime CLI versions for reproducibility (verified before every run).
   // Pin from the CLI with `tack runtimes pin <runtime> <version>`; `tack init` /
@@ -97,6 +97,13 @@ export default ({
   readAllowlist: [],
 });
 ```
+
+A role with one key always uses that model. With several distinct keys, Tack picks
+uniformly at random each time the role is resolved (duplicates are ignored).
+Supervisor picks stay fixed for the session, including resumes; worker picks stay
+fixed for the agent. Summary calls pick each time. Use
+`tack roles set agent gpt-5-codex opus` (or `gpt-5-codex,opus`) to set a list;
+`tack roles set agent gpt-5-codex` restores a single model.
 
 The `description` field is load-bearing — the supervisor uses it to pick relevant
 repos *before reading any code*: it syncs just those into fresh, Tack-owned snapshot

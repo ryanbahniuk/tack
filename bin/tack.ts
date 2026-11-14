@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { STARTER_CONFIG } from "../src/config/starter";
-import { loadConfig, modelForRole, resolveModel } from "../src/config/load";
+import { loadConfig, modelForRole, resolveModel, roleModelKeys } from "../src/config/load";
 import {
   addModelsToConfig,
   addProjectsToConfig,
@@ -306,10 +306,11 @@ const doctor = defineCommand({
     // `model_not_found`. Read-only: report, and point at `tack models sync` to fix.
     // Runtimes that can't list models (or a lookup that fails) are skipped silently.
     for (const role of ROLE_KEYS) {
-      const model = config.models.find((m) => m.key === config.roles[role]);
-      if (!model) continue; // config load already rejects a dangling pin
-      const r = checkModelOffered(config, model, { role });
-      if (r.ok === false) console.log(pc.yellow(`! ${r.message}`));
+      for (const key of roleModelKeys(config, role)) {
+        const model = resolveModel(config, key);
+        const r = checkModelOffered(config, model, { role });
+        if (r.ok === false) console.log(pc.yellow(`! ${r.message}`));
+      }
     }
   },
 });
@@ -536,12 +537,12 @@ const projects = defineCommand({
 /** The functional roles, in schema order — the set `tack roles set` accepts. */
 const ROLE_KEYS = Object.keys(RolesSchema.shape) as (keyof Roles)[];
 
-/** Prints the `Roles` section: each role → its pinned model key. Shared by
+/** Prints the `Roles` section: each role → its candidate model keys. Shared by
  * `tack models list` and `tack roles list` so the two stay in lockstep. */
-function printRoles(roles: Roles): void {
+function printRoles(roles: TackConfig["roles"]): void {
   console.log(pc.bold("Roles"));
-  for (const [role, key] of Object.entries(roles)) {
-    console.log(`  ${role.padEnd(11)} → ${pc.cyan(key)}`);
+  for (const [role, keys] of Object.entries(roles)) {
+    console.log(`  ${role.padEnd(11)} → ${pc.cyan(keys.join(" | "))}${keys.length > 1 ? pc.dim(" (random)") : ""}`);
   }
 }
 
@@ -567,35 +568,40 @@ const rolesList = defineCommand({
 });
 
 const rolesSet = defineCommand({
-  meta: { name: "set", description: "Pin a role to a model in the config file" },
+  meta: { name: "set", description: "Set one or more candidate models for a role in the config file" },
   args: {
     role: { type: "positional", required: true, description: `Role to pin (${ROLE_KEYS.join(" | ")})` },
-    model: { type: "positional", required: true, description: "Model key from config" },
+    model: { type: "positional", required: true, description: "Model key(s) from config, space- or comma-separated" },
   },
   async run({ args }) {
     const role = String(args.role);
-    const model = String(args.model);
+    // Citty keeps ALL positional values in `_`, including the named role/model.
+    const models = [...new Set(args._.slice(1).flatMap((value) => String(value).split(",")))];
     if (!ROLE_KEYS.includes(role as keyof Roles)) {
       console.error(pc.red(`Unknown role "${role}".`) + pc.dim(` Known roles: ${ROLE_KEYS.join(", ")}.`));
       process.exit(1);
     }
     const config = await loadConfig();
-    if (!config.models.some((m) => m.key === model)) {
-      const keys = config.models.map((m) => m.key).join(", ");
-      console.error(pc.red(`Unknown model "${model}".`) + pc.dim(` Configured models: ${keys || "none"}.`));
-      process.exit(1);
+    for (const model of models) {
+      if (!config.models.some((m) => m.key === model)) {
+        const keys = config.models.map((m) => m.key).join(", ");
+        console.error(pc.red(`Unknown model "${model}".`) + pc.dim(` Configured models: ${keys || "none"}.`));
+        process.exit(1);
+      }
     }
-    const previous = await setRoleInConfig(CONFIG_PATH, role as keyof Roles, model);
-    if (previous === model) {
-      console.log(pc.dim(`${role} already → ${model}`));
+    const previous = await setRoleInConfig(CONFIG_PATH, role as keyof Roles, models.length === 1 ? models[0]! : models);
+    const previousKeys = Array.isArray(previous) ? previous : [previous];
+    const label = models.join(" | ");
+    if (JSON.stringify(previousKeys) === JSON.stringify(models)) {
+      console.log(pc.dim(`${role} already → ${label}`));
     } else {
-      console.log(`${role.padEnd(11)} ${pc.dim(previous)} → ${pc.cyan(model)}`);
+      console.log(`${role.padEnd(11)} ${pc.dim(previousKeys.join(" | "))} → ${pc.cyan(label)}`);
     }
   },
 });
 
 const roles = defineCommand({
-  meta: { name: "roles", alias: "role", description: "List role pins; pin a role to a model" },
+  meta: { name: "roles", alias: "role", description: "List role candidates; set one or more models for a role" },
   subCommands: { list: rolesList, set: rolesSet },
   default: "list",
 });
@@ -716,33 +722,43 @@ const modelsSync = defineCommand({
       (m) => offered.has(m.runtime) && !offered.get(m.runtime)!.some((o) => o.id === m.id),
     );
     const staleKeys = new Set(stale.map((m) => m.key));
+    // Retained stale keys still cannot serve as replacements for other candidates.
+    const allStaleKeys = new Set(staleKeys);
     for (const role of ROLE_KEYS) {
-      const pinned = stale.find((m) => m.key === current.roles[role]);
-      if (!pinned) continue;
-      // Rank the runtime's own offering (best-first) ahead of other configured models.
-      const rank = (m: Model) => {
-        const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
-        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-      };
-      const pool = current.models
-        .filter((m) => !staleKeys.has(m.key) && m.provider === pinned.provider)
-        .sort((a, b) => rank(a) - rank(b));
-      const replacement = pickReplacement(pinned, pool);
-      if (!replacement) {
-        staleKeys.delete(pinned.key);
+      let changed = false;
+      const next = roleModelKeys(current, role).map((key) => {
+        const pinned = stale.find((m) => m.key === key);
+        if (!pinned) return key;
+        // Rank the runtime's own offering (best-first) ahead of other configured models.
+        const rank = (m: Model) => {
+          const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
+          return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+        };
+        const pool = current.models
+          .filter((m) => !allStaleKeys.has(m.key) && m.provider === pinned.provider)
+          .sort((a, b) => rank(a) - rank(b));
+        const replacement = pickReplacement(pinned, pool);
+        if (!replacement) {
+          staleKeys.delete(pinned.key);
+          console.log(
+            pc.red(`\n! roles.${role} includes ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
+              pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
+          );
+          return key;
+        }
+        changed = true;
         console.log(
-          pc.red(`\n! roles.${role} is pinned to ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
-            pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
+          pc.yellow(`\n! roles.${role} included ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
+            `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
+            pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
         );
-        continue;
+        return replacement.key;
+      });
+      if (changed) {
+        const keys = [...new Set(next)];
+        await setRoleInConfig(CONFIG_PATH, role, keys.length === 1 ? keys[0]! : keys);
+        current = await requireConfig();
       }
-      await setRoleInConfig(CONFIG_PATH, role, replacement.key);
-      current = await requireConfig();
-      console.log(
-        pc.yellow(`\n! roles.${role} was pinned to ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
-          `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
-          pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
-      );
     }
     const removed = await removeModelsFromConfig(CONFIG_PATH, staleKeys);
     if (removed.length > 0) {
@@ -877,7 +893,7 @@ const agent = defineCommand({
   args: {
     project: { type: "positional", description: "Project name from config" },
     prompt: { type: "positional", description: "Task for the agent" },
-    model: { type: "string", description: "Model name (defaults to roles.agent)" },
+    model: { type: "string", description: "Model key (defaults to roles.agent; random pick when several are set)" },
   },
   async run({ args }) {
     const config = await ensureCwdProject(await loadConfig());
@@ -957,8 +973,8 @@ const sessionCreate = defineCommand({
       if (!hasTack) console.log(pc.yellow("Warning: no configured project is named tack."));
       prompt = tackBugSeed(bugSource.id, description, hasTack);
     }
-    const model = modelForRole(config, "supervisor");
     const session = createSupervisorSession(prompt, config);
+    const model = resolveModel(config, session.supervisor_model!);
     if (bugSource) writeTackBugReport(session.id, bugSource);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
     // Title from the seed now — before superviseInteractive blocks on the TUI. With
@@ -1078,9 +1094,9 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
     const pid = spawnSupervisorRunner(existing.id, "resume");
     return printBackgroundHandoff(existing.id, pid);
   }
-  const model = modelForRole(config, "supervisor");
-  console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
   const session = createSupervisorSession(problem, config);
+  const model = resolveModel(config, session.supervisor_model!);
+  console.log(`${pc.dim("supervisor")} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
   // Headless: no human to approve the plan, so open the gate up front.
   approveSessionPlan(session.id);
   writeSupervisorPrompt(session.id, problem);

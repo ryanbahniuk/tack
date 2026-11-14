@@ -65,17 +65,19 @@ export const ModelSchema = z.object({
 export type Model = z.infer<typeof ModelSchema>;
 
 /**
- * Every functional role is pinned to a model by name. `supervisor` plans and
- * coordinates; `agent` is the default worker; `summary` is a cheap model for
+ * Every functional role names one model key or a non-empty list of keys. Lists
+ * are de-duplicated at load; multiple keys mean a uniform random pick per use.
+ * `supervisor` plans and coordinates; `agent` is the default worker; `summary` is a cheap model for
  * chores like auto-describing a project from its README. All required so a
  * misconfiguration fails loudly at load rather than mid-run.
  */
 export const RolesSchema = z.object({
-  supervisor: z.string().min(1),
-  agent: z.string().min(1),
-  summary: z.string().min(1),
+  supervisor: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  agent: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  summary: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
 });
 export type Roles = z.infer<typeof RolesSchema>;
+export type ResolvedRoles = Record<keyof Roles, string[]>;
 
 /**
  * How Tack reacts when a runtime's installed `--version` doesn't satisfy its
@@ -199,11 +201,11 @@ export const ConfigSchema = z.object({
 /** Shape accepted from a user's config file. */
 export type TackConfigInput = z.input<typeof ConfigSchema>;
 
-/** Fully resolved config used throughout the app (paths home-expanded). */
+/** Fully resolved config used throughout the app (paths home-expanded, roles normalized). */
 export interface TackConfig {
   projects: Project[];
   models: Model[];
-  roles: Roles;
+  roles: ResolvedRoles;
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];

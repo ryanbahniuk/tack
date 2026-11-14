@@ -473,7 +473,7 @@ export default ({
     { name: "gpt-5-codex", runtime: "codex", id: "gpt-5-codex",
       pricing: { inputPer1M: 1.25, outputPer1M: 10, cacheReadPer1M: 0.125 } },
   ],
-  roles: { supervisor: "opus", agent: "gpt-5-codex", summary: "sonnet" },
+  roles: { supervisor: "opus", agent: ["gpt-5-codex", "opus"], summary: "sonnet" },
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
@@ -521,8 +521,16 @@ Refresh is best-effort: an unconfigured, unreachable, or not-yet-authenticated
 server just leaves statuses stale (the dashboard says "jira unavailable"). Loading
 fails if `mcpServer` doesn't name a configured server.
 
-Every functional role (supervisor / agent / summary) is **pinned to a model by
-name**; loading fails loudly if a role names an undefined model. Besides describing
+Every functional role (supervisor / agent / summary) accepts a model key or a
+non-empty list, e.g. `agent: ["gpt-5-codex", "opus"]`. Loading normalizes each role
+to distinct keys in config order and fails if any key is undefined. One key always
+uses that model; several mean a uniform random pick whenever the role is resolved.
+The supervisor pick is persisted at session creation and reused on resume; an
+agent's pick is persisted at spawn. Summary calls pick each time.
+`tack roles set <role> <model> [model...]` accepts space- or comma-separated keys;
+listing shows multiple candidates with a `(random)` hint. Model sync replaces each
+stale candidate independently and de-duplicates the result, keeping and warning
+about any stale key with no replacement. Besides describing
 projects, the summary model auto-generates session titles (from the first shared
 contract, or the seed prompt) into `sessions.title`, best-effort and in the background.
 
