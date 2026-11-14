@@ -28,6 +28,7 @@ import {
   SUPERVISOR_APPROVAL_TOOLS,
   SUPERVISOR_MCP_NAME,
   SUPERVISOR_PLAN_APPROVAL_PROMPT,
+  SUPERVISOR_PLAN_APPROVAL_TOOL,
 } from "../mcp/supervisor-server";
 import { buildSupervisorContext } from "./context";
 import { sessionSnapshotsRoot } from "../worktree/worktree";
@@ -179,7 +180,7 @@ async function* runSupervisor(opts: {
 /**
  * Runs the supervisor as an attended, interactive session: launches the pinned
  * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
- * posture as the headless supervisor — plan mode, no edit tools, only the
+ * posture as the headless supervisor — no edit tools, only the
  * `tack-supervisor` MCP tools, the supervisor context, and read access to the
  * projects. The runtime owns the terminal, so unlike `supervise` there is no event
  * stream to persist; instead we pre-persist the resume handle up front and recover
@@ -214,17 +215,16 @@ export async function superviseInteractive(opts: {
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
 
-  // The plan-approval gate on `spawn_agent` is flipped by claude's ExitPlanMode
-  // hook when the human accepts the plan. Codex has no such hook — instead it keeps
+  // The plan-approval gate on `spawn_agent` is flipped by the `request_plan_approval`
+  // tool, whose call claude gates behind a PreToolUse `ask` hook — so its handler
+  // only runs once the human accepts. Codex has no such hook — instead it keeps
   // approvals interactive (a human okays each tool call natively), so gating there
   // would just deadlock. So: claude wires the hook and starts gated; other runtimes
-  // open the gate up front and rely on their own in-loop approvals.
+  // open the gate up front (the tool then just reports approved) and rely on their
+  // own in-loop approvals.
   const usesPlanHook = model.runtime === "claude";
-  const approveHook = usesPlanHook ? selfCommand(["__approve-plan", session.id]) : undefined;
   // The await-plan hook both records the awaiting-input state AND emits the plan's
-  // approve/change prompt (its wording passed here) — replacing claude's native
-  // auto-vs-manual fork, which is meaningless for a delegate-only supervisor whose
-  // agents always run in auto mode.
+  // "Proceed with implementation?" prompt (its wording passed here).
   const awaitHook = usesPlanHook
     ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
     : undefined;
@@ -267,7 +267,7 @@ export async function superviseInteractive(opts: {
       // so their read calls don't each raise a prompt (see interactiveCommand).
       ...config.supervisorMcpServers,
     ],
-    onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
+    planApprovalTool: awaitHook ? SUPERVISOR_PLAN_APPROVAL_TOOL : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even
     // after plan approval. With it on (default), open_pr rides the server-wide allow.

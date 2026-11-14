@@ -176,11 +176,13 @@ the coordination tools it needs: `list_projects`, `sync_projects` (fetches the
 affected projects and checks each default-branch tip out into a detached snapshot
 worktree under `snapshots/<sessionId>/<project>` — the only project code the
 supervisor reads), `set_shared_context`,
+`request_plan_approval` (the attended plan gate, see §9),
 `spawn_agent` (with `touches`/`dependsOn`), `check_agents`, `wait_for_agents` (blocks
 server-side so the planner doesn't burn tokens polling, and returns early with any
 `pendingAmendments` so the system routes an agent's proposal back to the supervisor
 to adjudicate), `check_conflicts`, `read_agent_output`, `list_amendments`,
-`resolve_amendment`. Amendment resolution is therefore orchestrated by the system,
+`resolve_amendment`, plus the PR tools `open_pr`, `check_prs`, and `fix_pr` (a
+`pr_fix` agent on an existing session PR's own branch — §11 PR watch). Amendment resolution is therefore orchestrated by the system,
 not by the human — `tack stable` only surfaces pending amendments read-only.
 
 ---
@@ -331,23 +333,23 @@ Adapter specifics, hidden behind the interface:
   --permission-prompts none --disallowedTools Edit,Write,NotebookEdit,Task,Agent,Bash`
   (Bash disallowed via `disallowShell` so a delegate-only run can't shell out to
   write files); MCP via inline `--mcp-config` JSON + `--strict-mcp-config`; cost from
-  the final `result` event's `total_cost_usd`. The **interactive** supervisor also
-  auto-allows the mounted MCP servers and wires a `--settings` PostToolUse hook on
-  `ExitPlanMode` — accepting the plan runs `tack __approve-plan <id>`, which opens
-  the session's `spawn_agent` gate (see §9). Plan mode was observed to keep
-  prompting for supervisor tools when any single allow layer was used alone, so the
-  auto-allow is stated four ways: `--allowedTools mcp__<server>`; a PreToolUse hook
-  returning `allow`; a `permissions.allow: ["mcp__<server>"]` rule in the same
-  `--settings` blob; and that rule pre-written by `prepareInteractive` to the
-  Tack-owned session cwd's `.claude/settings.local.json` (merged and deduped, never
-  clobbering an existing or corrupt file — the same rule the TUI's "Yes, and don't
-  ask again" would persist, next to the pre-recorded workspace trust in
-  `~/.claude.json`). On top of that, the supervisor server marks its read-only tools
-  `readOnlyHint`, including `sync_projects`, whose only writes are Tack-owned
-  snapshot worktrees. The only human gates left are plan approval and, with
-  `autoOpenPrs: false`, `open_pr`: it gets a PreToolUse `ask` hook (excluded from
-  the allow hook's matcher, and carrying the "Open a PR for this?" wording) plus a
-  `permissions.ask` rule, which outranks every allow rule (deny → ask → allow).
+  the final `result` event's `total_cost_usd`. The **interactive** supervisor
+  does NOT use plan mode (its native `ExitPlanMode` menu can't be relabelled or
+  overridden by a hook): it blocks edits via a `--settings` `permissions.deny` list
+  (`Edit`, `Write`, `NotebookEdit`, `ExitPlanMode`, `EnterPlanMode`), auto-allows the
+  mounted MCP servers through four layers (`--allowedTools mcp__<server>`, a
+  PreToolUse `allow` hook, `permissions.allow` in `--settings`, and the same rule
+  merged and deduped into the Tack-owned cwd's `.claude/settings.local.json`
+  without clobbering existing or corrupt files), and wires a PreToolUse hook
+  on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
+  — marking the session as awaiting input and returning an `ask` decision so the
+  human sees a single "Proceed with implementation?" prompt. The tool's handler,
+  which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
+  Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
+  excluded from the allow hook and backed by `permissions.ask` rules, which
+  outrank server-wide allow rules. Their ask hooks supply the prompt wording.
+  The supervisor server also marks its read-only tools `readOnlyHint`, including
+  `sync_projects`, whose only writes are Tack-owned snapshot worktrees.
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's
@@ -365,7 +367,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime read-only, with only its session snapshot root (plus `readAllowlist`)
    granted as read dirs — never the user's checkouts — and the supervisor MCP
    server mounted. By default this is the runtime's own **interactive** TUI (Claude
-   Code / Codex) with inherited stdio — same capability posture (plan mode, no edit
+   Code / Codex) with inherited stdio — same capability posture (no edit
    tools, only the `tack-supervisor` MCP tools), so you chat with the supervisor
    directly and follow up with `--resume` in the same live session. Since the TUI
    owns the terminal there is no event stream to persist; cost is recovered from the
@@ -378,8 +380,10 @@ stdout/stderr to the log, and yields parsed JSON lines.
    `set_shared_context`, presents its plan, and
    gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
    it refuses until the session's `plan_approved_at` is set. An attended claude
-   session flips that gate when the human accepts the plan (the `ExitPlanMode` hook →
-   `tack __approve-plan`); background runs (no human) and codex interactive sessions
+   session flips that gate when the human accepts the plan: the supervisor calls
+   `request_plan_approval` with a short summary, a PreToolUse `ask` hook prompts
+   "Proceed with implementation?", and the tool's handler (which only runs on
+   acceptance) approves the plan; background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
    a **detached** `tack __run-agent <agentId>` runner.
@@ -541,6 +545,20 @@ always ending with the marker so Tack never ingests itself. Unreported items bec
 `declined` with no reply; a failed run marks its items `failed` (never retried
 automatically). It's latched per item (`handled_at`) and per agent
 (`post_fixed_at`), so it never double-posts.
+
+**Supervisor-initiated fix runs** (`fix_pr`) cover what the watcher won't retry on
+its own: a conflict that persists, a fix run that failed (e.g. its model wasn't
+offered to the login — `fix_pr` takes a `model` and runs `checkModelOffered` like
+`spawn_agent`), or follow-up changes the human asks for on an open PR (passed as
+`prompt`, rendered in the fix prompt as a `## Supervisor guidance` section just
+before `## Rules`). It's the same machinery, not a parallel path: the same `pr_fix`
+kind forked off the PR head (`spawnPrFixAgent`, shared with the watcher), the same
+`maxFixRunsPerDay` cap (`prFixCapReached`), the same one-at-a-time rule
+(`prFixBusy`: refused while a fix is pending/running or finished but not yet
+post-fixed), and the same watcher post-fix push + replies — `fix_pr` polls the PR
+live, folds in any not-yet-ingested feedback, spawns the agent, and (re)starts the
+watcher. `spawn_agent` + `open_pr` would instead create a second PR, so the
+supervisor never uses them to change an existing one.
 
 ---
 

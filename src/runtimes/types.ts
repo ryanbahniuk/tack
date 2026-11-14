@@ -54,13 +54,6 @@ export interface RunOptions {
   /** Extra directories the run may read beyond its cwd (project roots, allowlist). */
   addDirs?: string[];
   /**
-   * A command to run when the human approves the plan. The claude adapter wires it
-   * as a PostToolUse hook on ExitPlanMode (which only fires on acceptance), so Tack
-   * can flip the session's plan-approval gate that `spawn_agent` checks. Only the
-   * attended read-only supervisor sets this; headless/agent runs omit it.
-   */
-  onPlanApproved?: { command: string; args: string[] };
-  /**
    * Fully-qualified tool names (e.g. `mcp__tack-supervisor__open_pr`) that must
    * prompt the human on every call even when their MCP server is otherwise
    * auto-allowed. The claude adapter wires these as a PreToolUse hook that forces an
@@ -77,15 +70,21 @@ export interface RunOptions {
    */
   approvalPrompt?: string;
   /**
+   * Fully-qualified name of the tool the supervisor calls to present its plan for
+   * approval (e.g. `mcp__tack-supervisor__request_plan_approval`). The
+   * `onPlanPresented` hook matches exactly this tool. Only the attended read-only
+   * supervisor sets this.
+   */
+  planApprovalTool?: string;
+  /**
    * A command to run when the supervisor presents a plan for approval. The claude
-   * adapter wires it as a PreToolUse hook on ExitPlanMode (which fires when the plan
-   * is put in front of the human, before they decide). Tack uses it to mark the
-   * session as awaiting input AND to return an `ask` permission decision, so the
-   * human sees a single approve/change prompt instead of claude's native
-   * "auto-accept edits vs manually approve edits" fork — that fork is meaningless
-   * for the delegate-only supervisor, whose spawned agents always run in auto mode.
-   * Cleared by the matching `onPlanApproved` (acceptance) hook. Only the attended
-   * read-only supervisor sets this.
+   * adapter wires it as a PreToolUse hook on `planApprovalTool` (both must be set),
+   * so it fires when the plan is put in front of the human, before they decide.
+   * Tack uses it to mark the session as awaiting input AND to return an `ask`
+   * permission decision with our own wording, so the human sees a single
+   * "Proceed with implementation?" prompt. The tool's handler — which flips the
+   * session's plan-approval gate that `spawn_agent` checks — only runs if they
+   * accept. Only the attended read-only supervisor sets this.
    */
   onPlanPresented?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */

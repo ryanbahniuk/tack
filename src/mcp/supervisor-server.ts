@@ -6,6 +6,7 @@ import { getSession } from "../db";
 import {
   addSharedContext,
   agentTouches,
+  approveSessionPlan,
   getAgent,
   latestSharedContext,
   listAgents,
@@ -13,11 +14,13 @@ import {
   listPrFeedback,
   listPrFixAgents,
   listSessionPrs,
+  prFeedbackSourceIds,
   resolveAmendment,
   unlinkSessionJiraTicket,
   upsertSessionJiraTicket,
   upsertSessionPr,
   type AgentStatus,
+  type SessionPrRow,
 } from "../db";
 import { overlapWithSiblings, sessionFileCollisions } from "../supervisor/conflicts";
 import {
@@ -30,8 +33,15 @@ import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
 import { commitWorktree, sessionPrBranch, syncSnapshot } from "../worktree/worktree";
-import { openSessionPr } from "../projects/prs";
-import { spawnPrWatcher } from "../prwatch/watch";
+import { fetchReviewThreads, normalizeFeedback, openSessionPr } from "../projects/prs";
+import {
+  isWatchablePr,
+  pollPrStatus,
+  prFixBusy,
+  prFixCapReached,
+  spawnPrFixAgent,
+  spawnPrWatcher,
+} from "../prwatch/watch";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
@@ -57,16 +67,24 @@ export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`
 export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
 
 /**
- * Plain-language wording for the plan-approval prompt. Handed to the runtime via
- * the ExitPlanMode PreToolUse hook so the human sees a single approve/change
- * decision instead of Claude's native "auto-accept edits vs manually approve
- * edits" fork. That fork is meaningless here: the supervisor never edits, and the
- * agents it spawns always run headless in auto mode (see PERMISSION_ARGS in the
- * claude adapter) regardless of which branch the human would pick — so we suppress
- * it and state plainly what approving does.
+ * Plain-language wording for the plan-approval prompt. The attended claude
+ * supervisor presents its plan by calling `request_plan_approval`, which a
+ * PreToolUse hook gates behind an `ask` decision carrying this text — so the human
+ * sees one plain approve/decline question instead of Claude Code's native
+ * ExitPlanMode menu (auto-mode vs manually-approve-edits vs keep planning). That
+ * menu can't be relabelled or overridden by a hook, and its edit-mode fork is
+ * meaningless here: the supervisor never edits, and the agents it spawns always run
+ * headless in auto mode (see PERMISSION_ARGS in the claude adapter).
  */
-export const SUPERVISOR_PLAN_APPROVAL_PROMPT =
-  "Start the agents on this plan? They run autonomously in auto mode.";
+export const SUPERVISOR_PLAN_APPROVAL_PROMPT = "Proceed with implementation?";
+
+/**
+ * Fully-qualified name of the plan-approval tool, handed to the runtime as
+ * `planApprovalTool` so its PreToolUse hook (the human prompt) matches exactly this
+ * tool. Deliberately NOT in SUPERVISOR_APPROVAL_TOOLS: it gets its own hook, which
+ * also marks the session as awaiting input.
+ */
+export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__request_plan_approval`;
 
 /**
  * The supervisor's tool server. The supervisor is itself a runtime session
@@ -172,6 +190,33 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool(
+    "request_plan_approval",
+    {
+      description:
+        "Present your plan to the human for approval. Calling this shows them an approve/decline prompt " +
+        "with your summary; it returns once they approve. If they decline, revise the plan per their " +
+        "feedback and call this again. `spawn_agent` is blocked until the plan is approved.",
+      inputSchema: {
+        summary: z
+          .string()
+          .describe(
+            "Short plan summary for the human: goal in one sentence, then one line per agent (project + " +
+              "what it does), plus any real trade-off/risk.",
+          ),
+      },
+    },
+    // The `summary` arg is for the human (it's shown with the tool call they're asked
+    // to approve); the handler doesn't need it. It only executes after the human
+    // accepts the PreToolUse `ask` prompt (a decline never reaches it), so reaching it
+    // is an un-forgeable approval signal the model can't self-trigger. Sessions with no such hook (background,
+    // codex) are already approved up front, so this is then a harmless no-op.
+    async () => {
+      approveSessionPlan(sessionId);
+      return text({ approved: true, note: "Plan approved — proceed to spawn agents." });
+    },
+  );
+
+  server.registerTool(
     "spawn_agent",
     {
       description:
@@ -184,7 +229,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "first) so Tack can coordinate parallel work: overlapping touch-sets in the same project are reported " +
         "back as a warning so you can fold the clashing units into one agent, and a dependent agent self-gates " +
         "until its prerequisites finish (use this to order work across projects). You can fan out every agent " +
-        "at once with dependencies declared — they order themselves.",
+        "at once with dependencies declared — they order themselves.\n\n" +
+        "To change an already-open PR (a conflict, a failed fix run, a follow-up the human asked for), use " +
+        "fix_pr instead — an agent from spawn_agent can't be pushed onto an existing PR.",
       inputSchema: {
         project: z.string().describe("Project name from list_projects"),
         prompt: z.string().describe("The task for the agent, self-contained"),
@@ -202,13 +249,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     async ({ project, prompt, model, touches, dependsOn }) => {
       const session = requireSession();
       // Plan-gate: agents only run once the human has approved the plan (attended
-      // sessions flip this via the ExitPlanMode hook; background sessions are
-      // pre-approved). Refuse until then so a spawn can't slip out during planning.
+      // claude sessions flip this via `request_plan_approval`; background and codex
+      // sessions are pre-approved). Refuse until then so a spawn can't slip out
+      // during planning.
       if (!session.plan_approved_at)
         throw new Error(
-          "Plan not approved yet. Present your plan and shared contract to the human and let them accept " +
-            "it before spawning any agents. Don't ask the human to change or exit any mode — just wait for " +
-            "their approval. `spawn_agent` stays blocked until then.",
+          "Plan not approved yet. Call `request_plan_approval` with your short plan summary and wait for " +
+            "the human to accept it before spawning any agents. Don't ask the human to change or exit any " +
+            "mode — the tool call is the approval. `spawn_agent` stays blocked until then.",
         );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
@@ -335,13 +383,123 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool(
+    "fix_pr",
+    {
+      description:
+        "Fix an EXISTING pull request in this session on its own branch: spawns a pr_fix agent forked off the " +
+        "PR's current head, and the PR watcher pushes its commits (non-force) onto that PR and replies to any " +
+        "review feedback once it finishes. This is the ONLY way to change an open PR — resolve a merge " +
+        "conflict that persists, redo a watcher fix run that failed (e.g. on an unavailable model; pass " +
+        "`model`), or make follow-up changes the human asked for (put them in `prompt`). Never use " +
+        "spawn_agent + open_pr for that: it creates a separate PR. The agent automatically gets a merge step " +
+        "if GitHub reports a conflict and any review feedback still pending on the PR. Fix runs share the " +
+        "watcher's daily cap (prWatch.maxFixRunsPerDay per PR) and its one-at-a-time rule: this refuses while " +
+        "another fix on the PR is running or awaiting its push. Returns immediately with the agent id.",
+      inputSchema: {
+        pr: z
+          .union([z.number().int(), z.string()])
+          .describe("The session PR to fix: its number (18 or \"#18\") or its URL — see check_prs"),
+        prompt: z
+          .string()
+          .optional()
+          .describe("Extra guidance for the fix agent: what to change or why the last run failed"),
+        model: z.string().optional().describe("Model name; defaults to the configured agent model"),
+      },
+    },
+    async ({ pr: ref, prompt, model }) => {
+      const session = requireSession();
+      // Same plan-gate as spawn_agent: a fix run is an agent run.
+      if (!session.plan_approved_at)
+        throw new Error(
+          "Plan not approved yet. Present your plan to the human and let them accept it before starting any " +
+            "agents. `fix_pr` stays blocked until then.",
+        );
+      const pr = resolveSessionPr(listSessionPrs(sessionId), ref);
+      const tag = `PR #${pr.number ?? "?"}`;
+      if (!isWatchablePr(pr)) throw new Error(`${tag} is ${pr.state}; there's nothing to fix.`);
+      if (pr.number === null) throw new Error(`${tag} (${pr.url}) has no PR number recorded; can't fix it.`);
+      if (!pr.head_branch)
+        throw new Error(`${tag} has no head branch recorded, so a fix couldn't be pushed onto it.`);
+      if (prFixBusy(pr.id))
+        throw new Error(
+          `A fix for ${tag} is already running or awaiting its push/replies. Use check_prs to follow it, and ` +
+            "call fix_pr again once it has finished and been post-fixed.",
+        );
+      const cap = prFixCapReached(pr.id, config);
+      if (cap.reached)
+        throw new Error(
+          `${tag} has hit the daily cap of ${config.prWatch.maxFixRunsPerDay} fix runs per 24h ` +
+            `(${cap.runs} so far, failed runs included). Report this to the human instead of retrying.`,
+        );
+
+      const m = resolveModel(config, model ?? config.roles.agent);
+      // Same fail-fast as spawn_agent — the very failure fix_pr is often called to
+      // recover from is a fix run that died on a model the login doesn't offer.
+      const offered = checkModelOffered(config, m, { role: model ? undefined : "agent" });
+      if (offered.ok === false)
+        throw new Error(`Refusing to fix ${tag}: ${offered.message}. Pass \`model\` to pick one that is offered.`);
+
+      const project = config.projects.find((p) => p.name === pr.project_name);
+      if (!project) throw new Error(`${tag}'s project "${pr.project_name ?? "?"}" isn't in the config.`);
+
+      // Poll live (and persist, as the watcher does) so the agent is told about the
+      // conflict and base GitHub reports now, not at the last tick.
+      const { status, state, mergeable } = await pollPrStatus(pr.id, project.path, pr.number);
+      if (state === "merged" || state === "closed") throw new Error(`${tag} is ${state}; there's nothing to fix.`);
+      const conflict = mergeable === "CONFLICTING";
+      // Fold in feedback the watcher hasn't ingested yet so this run addresses it
+      // too, rather than a second run right after. Best-effort: the fix still runs
+      // on the conflict / guidance / already-pending items if gh can't list threads.
+      let fresh: ReturnType<typeof normalizeFeedback> = [];
+      try {
+        const threads = await fetchReviewThreads(project.path, pr.number);
+        fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
+      } catch {
+        /* the watcher's next tick picks them up */
+      }
+
+      const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+        conflict,
+        baseBranch: status.baseRefName,
+        title: status.title,
+        fresh,
+        model: m,
+        guidance: prompt,
+      });
+      // The watcher owns the post-fix push + replies; make sure one is running.
+      // Best-effort, like open_pr: the agent is already spawned.
+      try {
+        spawnPrWatcher(sessionId, config); // no-op when disabled or already running
+      } catch {
+        /* the dashboard's refresh will retry starting it */
+      }
+      const after = "Use wait_for_agents on it, then check_prs to see the result.";
+      return text({
+        agentId: agent.id,
+        pr: pr.number,
+        conflict,
+        feedbackItems: items,
+        model: m.name,
+        note: !config.prWatch.enabled
+          ? "PR watch is disabled (prWatch.enabled = false), so nothing will push this agent's commits onto " +
+            `the PR; they'll stay on the agent's branch. ${after}`
+          : config.prWatch.autoPush
+            ? `When the agent finishes, the PR watcher pushes its commits onto ${pr.head_branch} and posts ` +
+              `replies to any feedback. ${after}`
+            : "prWatch.autoPush is off, so the agent's commits will stay on its own branch rather than being " +
+              `pushed to ${pr.head_branch}. ${after}`,
+      });
+    },
+  );
+
+  server.registerTool(
     "check_prs",
     {
       description:
         "Read-only snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
         "review feedback (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
         "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
-        "on it, not to drive it.",
+        "on it. If a PR needs intervention (a conflict persists, a fix run failed), call fix_pr.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -601,6 +759,26 @@ function agentSummary(a: ReturnType<typeof listAgents>[number]) {
     cost: a.cost,
     branch: a.branch,
   };
+}
+
+/**
+ * Resolves `fix_pr`'s `pr` argument against the session's PRs: an exact URL, or a
+ * number (`18`, `"18"`, `"#18"`, or a PR URL's trailing number when the URL itself
+ * isn't recorded). Errors name the session's PRs so the supervisor can retry, and a
+ * number shared by PRs in two repos is refused as ambiguous rather than guessed.
+ */
+function resolveSessionPr(prs: SessionPrRow[], ref: number | string): SessionPrRow {
+  const list = () =>
+    prs.length ? prs.map((p) => `#${p.number ?? "?"} ${p.url}`).join("; ") : "(this session has no PRs)";
+  const raw = typeof ref === "number" ? String(ref) : ref.trim();
+  const byUrl = prs.find((p) => p.url.replace(/\/+$/, "") === raw.replace(/\/+$/, ""));
+  if (byUrl) return byUrl;
+  const num = /^#?(\d+)$/.exec(raw)?.[1] ?? /\/pull\/(\d+)\/?$/.exec(raw)?.[1];
+  const matches = num ? prs.filter((p) => p.number === Number(num)) : [];
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1)
+    throw new Error(`PR number ${num} is ambiguous in this session; pass its URL. Session PRs: ${list()}`);
+  throw new Error(`"${raw}" isn't a PR in this session. Session PRs: ${list()}`);
 }
 
 function latestVersion(sessionId: string): number | null {

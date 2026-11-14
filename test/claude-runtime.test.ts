@@ -13,6 +13,7 @@ const MODEL = {
 } as unknown as Model;
 
 const OPEN_PR = "mcp__tack-supervisor__open_pr";
+const PLAN_APPROVAL = "mcp__tack-supervisor__request_plan_approval";
 
 type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string }> };
 
@@ -67,6 +68,17 @@ describe("ClaudeRuntime.interactiveCommand auto-allow hook", () => {
     expect(ask!.hooks[0]!.command).toContain('"permissionDecision":"ask"');
   });
 
+  test("excludes the plan-approval tool, which keeps its own ask hook", () => {
+    const entries = preToolUse({
+      planApprovalTool: PLAN_APPROVAL,
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+    });
+    const re = new RegExp(allowEntry(entries).matcher);
+    expect(re.test("mcp__tack-supervisor__check_agents")).toBe(true);
+    expect(re.test(PLAN_APPROVAL)).toBe(false);
+    expect(entries.find((e) => e.matcher === PLAN_APPROVAL)).toBeDefined();
+  });
+
   test("does not match another server's tools", () => {
     const re = new RegExp(allowEntry(preToolUse()).matcher);
     expect(re.test("mcp__other__check_agents")).toBe(false);
@@ -88,6 +100,26 @@ describe("ClaudeRuntime.interactiveCommand auto-allow hook", () => {
 describe("ClaudeRuntime.interactiveCommand settings permissions", () => {
   test("the supervisor's --settings allows the tack-supervisor server", () => {
     expect(settingsOf().permissions.allow).toEqual(["mcp__tack-supervisor"]);
+  });
+
+  test("retains edit denies and both human gates alongside server-wide allows", () => {
+    const settings = settingsOf({
+      approvalTools: [OPEN_PR],
+      planApprovalTool: PLAN_APPROVAL,
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+    });
+    expect(settings.permissions).toEqual({
+      deny: ["Edit", "Write", "NotebookEdit", "ExitPlanMode", "EnterPlanMode"],
+      allow: ["mcp__tack-supervisor"],
+      ask: [OPEN_PR, PLAN_APPROVAL],
+    });
+    const entries = settings.hooks.PreToolUse as HookEntry[];
+    const allow = new RegExp(allowEntry(entries).matcher);
+    expect(allow.test(PLAN_APPROVAL)).toBe(false);
+    expect(allow.test(OPEN_PR)).toBe(false);
+    expect(allow.test("mcp__tack-supervisor__sync_projects")).toBe(true);
+    expect(entries.find((e) => e.matcher === PLAN_APPROVAL)?.hooks[0]?.command)
+      .toContain("__await-plan");
   });
 
   test("keeps the --allowedTools flag alongside the settings rule", () => {
