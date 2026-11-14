@@ -372,8 +372,11 @@ stdout/stderr to the log, and yields parsed JSON lines.
    branches; agents only commit to their worktree, and `open_pr` folds in anything
    they left uncommitted. By default (`autoOpenPrs: true`) the supervisor opens them
    on its own once `check_conflicts` is clean — the human gate is review/merge of
-   each PR, not permission to open it. With `autoOpenPrs: false` it asks first, and
-   an attended claude session also forces a per-call confirmation on `open_pr`.
+   each PR, not permission to open it. The setting is presented to the supervisor
+   as the human's explicit authorization to commit, push, and open PRs, so user-level
+   "don't commit unless asked" rules count as already satisfied. With
+   `autoOpenPrs: false` it asks first, and an attended claude session also forces a
+   per-call confirmation on `open_pr`.
 5. The `tack stable` dashboard discovers PRs via `gh`.
 
 **Coordinating parallel work (the correctness layer).** The supervisor defaults to
@@ -426,8 +429,10 @@ export default ({
 ```
 
 `autoOpenPrs` (default `true`) lets the supervisor commit and open the session's
-PRs without asking once the work is done; `false` restores the ask-first flow with
-a per-call `open_pr` confirmation (§9).
+PRs without asking once the work is done — its prompts frame the setting as the
+human's explicit authorization to commit, push, and open PRs, so user-level "don't
+commit unless asked" rules count as satisfied; `false` restores the ask-first flow
+with a per-call `open_pr` confirmation (§9).
 
 `supervisorMcpServers` mounts extra MCP servers for the **supervisor only**, on top
 of its `tack-supervisor` tools. Runs are `--strict-mcp-config`, so the supervisor
