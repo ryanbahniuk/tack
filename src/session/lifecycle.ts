@@ -7,6 +7,7 @@ import {
   getSession,
   listAgents,
   setAgentStatus,
+  setSessionPrWatchPid,
   setSessionStatus,
 } from "../db";
 import { isAlive } from "../process/self";
@@ -30,15 +31,24 @@ export function stopAgent(agentId: string): void {
   if (a.status === "running" || a.status === "pending") setAgentStatus(agentId, "stopped");
 }
 
-/** Stops a session and every agent under it (best-effort). */
+/** Stops a session and every agent under it (best-effort), including its PR
+ * watcher. Note the session stays `active`, so `tack stable` will restart the
+ * watcher on its next PR refresh while the session has open PRs — archive the
+ * session to stop watching for good. */
 export function stopSession(sessionId: string): void {
   const s = getSession(sessionId);
-  if (s) kill(s.pid);
+  if (s) {
+    kill(s.pid);
+    if (s.pr_watch_pid) {
+      kill(s.pr_watch_pid);
+      setSessionPrWatchPid(sessionId, null);
+    }
+  }
   for (const a of listAgents(sessionId)) stopAgent(a.id);
 }
 
 export function archiveSession(sessionId: string): void {
-  stopSession(sessionId);
+  stopSession(sessionId); // SIGTERMs the PR watcher too; an archived session is never re-watched
   tmuxKillSession(sessionId);
   setSessionStatus(sessionId, "archived");
 }

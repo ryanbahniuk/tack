@@ -96,6 +96,10 @@ export function sessionFileCollisions(agents: AgentRow[], config: TackConfig): F
   const byProject = new Map<string, Map<string, Set<string>>>();
   for (const a of agents) {
     if (!a.worktree_path || !a.branch) continue;
+    // PR-fix agents build ON TOP of an existing PR branch (and are diffed against its
+    // head), so overlapping the agent that produced that PR is the point, not a
+    // collision between sibling branches.
+    if (a.kind === "pr_fix") continue;
     const repo = projectPath.get(a.project_name);
     if (!repo) continue;
     const files = changedFiles(repo, a.branch, a.worktree_path);

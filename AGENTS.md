@@ -40,7 +40,8 @@ src/agent/               execute.ts (prepare/run + activity/error), detached.ts 
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees + PR branch nomenclature
-src/projects/            prs.ts (gh-based PR discovery), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
+src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
+src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
 src/cli/                 stable.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
@@ -91,8 +92,10 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 
 ## Testing & gotchas
 
-- No automated suite yet. At minimum keep `bun run typecheck` green and smoke-test
-  the CLI + MCP handshakes against a scratch `TACK_HOME`.
+- `bun test` runs the unit tests under `test/` (pure logic: PR-watch feedback
+  normalization, fix prompts, migrations against an in-memory DB). Keep it and
+  `bun run typecheck` green, and smoke-test the CLI + MCP handshakes against a
+  scratch `TACK_HOME`.
 - Live runs cost money and mutate repos — validate with `tack agent <project>
   "<small task>"` before `tack session create`.
 - **Codex `--json` parsing is version-fragile** (targets an internal build); if you

@@ -9,6 +9,13 @@ import type { RuntimeKind } from "../config/schema";
 export type SessionStatus = "active" | "archived";
 export type AgentStatus = "pending" | "running" | "done" | "failed" | "stopped";
 export type CostSource = "runtime" | "pricing";
+/** NULL = a normal agent the supervisor spawned; `pr_fix` = spawned by the PR watcher
+ * to address review feedback / a merge conflict on one session PR. */
+export type AgentKind = "pr_fix";
+/** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
+export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+export type PrFeedbackKind = "review_thread" | "review" | "issue_comment";
+export type PrFeedbackDecision = "pending" | "fixed" | "declined" | "not_applicable" | "failed";
 
 export interface SessionRow {
   id: string;
@@ -32,6 +39,8 @@ export interface SessionRow {
   /** When the human last looked at this session (`tack stable` selection, attach,
    * resume). Compared against agents' `finished_at` to find unread completed work. */
   last_seen_at: string | null;
+  /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
+  pr_watch_pid: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +86,13 @@ export interface AgentRow {
   /** JSON array of sibling agent ids that must reach a terminal state before this
    * agent starts; the runner self-gates on them. Null when undeclared. */
   depends_on: string | null;
+  /** NULL for a normal agent; `pr_fix` for one the PR watcher spawned. */
+  kind: AgentKind | null;
+  /** For a `pr_fix` agent, the `session_prs.id` it is fixing. */
+  session_pr_id: string | null;
+  /** When the PR watcher finished this fix agent's post-fix step (push + replies) —
+   * the idempotency latch that keeps it from ever re-pushing or double-posting. */
+  post_fixed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -110,8 +126,40 @@ export interface SessionPrRow {
   title: string | null;
   state: string | null;
   head_branch: string | null;
+  /** GitHub's last-polled mergeability (see `PrMergeable`); null before the first poll. */
+  mergeable: PrMergeable | null;
+  /** The PR's base branch, which a merge conflict is resolved against. */
+  base_branch: string | null;
+  /** The PR head commit as of the last poll. */
+  head_sha: string | null;
+  /** When the PR watcher last polled this PR successfully. */
+  checked_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** One GitHub comment Tack has ingested as PR-watch input (bodies live on disk). */
+export interface PrFeedbackRow {
+  id: string;
+  session_pr_id: string;
+  source_id: string;
+  source_kind: PrFeedbackKind;
+  author: string | null;
+  /** 1 when the author is a bot/app account. Bots are still feedback; this only
+   * stops Tack's reply from @-mentioning (and so re-summoning) them. */
+  author_is_bot: number;
+  url: string | null;
+  path: string | null;
+  line: number | null;
+  /** For a review-thread comment, the thread's root comment id (the replies target). */
+  in_reply_to: string | null;
+  body_ref: string | null;
+  fix_agent_id: string | null;
+  decision: PrFeedbackDecision;
+  reply_ref: string | null;
+  reply_url: string | null;
+  created_at: string;
+  handled_at: string | null;
 }
 
 /** A JIRA ticket a session is tracking (see migration v5). Track-only: everything
@@ -275,13 +323,17 @@ export function createAgent(input: {
   touches?: string[] | null;
   /** Sibling agent ids that must finish before this agent starts. */
   dependsOn?: string[] | null;
+  /** `pr_fix` for a PR-watch fix agent; omitted/null for a normal agent. */
+  kind?: AgentKind | null;
+  /** The session PR a `pr_fix` agent is fixing. */
+  sessionPrId?: string | null;
 }): AgentRow {
   const db = getDb();
   const now = nowIso();
   const id = shortId("agt");
   db.prepare(
-    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, kind, session_pr_id, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.sessionId,
@@ -291,6 +343,8 @@ export function createAgent(input: {
     input.promptRef ?? null,
     input.touches && input.touches.length ? JSON.stringify(input.touches) : null,
     input.dependsOn && input.dependsOn.length ? JSON.stringify(input.dependsOn) : null,
+    input.kind ?? null,
+    input.sessionPrId ?? null,
     now,
     now,
   );
@@ -499,7 +553,10 @@ export function upsertSessionPr(input: {
     .get(input.sessionId, input.url) as { id: string } | null;
   if (existing) {
     db.prepare(
-      `UPDATE session_prs SET agent_id = ?, project_name = ?, number = ?, title = ?, state = ?, head_branch = ?, updated_at = ?
+      // `agent_id` is COALESCEd, not overwritten: the first writer (open_pr, which
+      // knows the real producing agent) wins. The dashboard's discovery refresh only
+      // has a best-effort guess and must never clobber the true link.
+      `UPDATE session_prs SET agent_id = COALESCE(agent_id, ?), project_name = ?, number = ?, title = ?, state = ?, head_branch = ?, updated_at = ?
        WHERE id = ?`,
     ).run(
       input.agentId ?? null,
@@ -535,6 +592,225 @@ export function listSessionPrs(sessionId: string): SessionPrRow[] {
   return getDb()
     .prepare(`SELECT * FROM session_prs WHERE session_id = ? ORDER BY created_at ASC`)
     .all(sessionId) as SessionPrRow[];
+}
+
+export function getSessionPr(id: string): SessionPrRow | null {
+  return (getDb().prepare(`SELECT * FROM session_prs WHERE id = ?`).get(id) as SessionPrRow) ?? null;
+}
+
+/**
+ * Persists one PR-watch poll of a PR's GitHub status. Separate from
+ * `upsertSessionPr` (discovery) because the watcher knows the row already exists and
+ * only owns these polled fields; it stamps `checked_at` on every successful poll.
+ */
+export function setSessionPrStatus(
+  id: string,
+  status: {
+    state: string;
+    mergeable: PrMergeable | null;
+    baseBranch: string | null;
+    headSha: string | null;
+    title?: string | null;
+  },
+): void {
+  const now = nowIso();
+  getDb()
+    .prepare(
+      `UPDATE session_prs
+         SET state = ?, mergeable = ?, base_branch = ?, head_sha = ?, title = COALESCE(?, title),
+             checked_at = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(
+      status.state,
+      status.mergeable,
+      status.baseBranch,
+      status.headSha,
+      status.title ?? null,
+      now,
+      now,
+      id,
+    );
+}
+
+/** Records (or clears, with null) the session's PR-watch process id. */
+export function setSessionPrWatchPid(sessionId: string, pid: number | null): void {
+  getDb()
+    .prepare(`UPDATE sessions SET pr_watch_pid = ?, updated_at = ? WHERE id = ?`)
+    .run(pid, nowIso(), sessionId);
+}
+
+/** Tags an existing agent with a kind and/or the session PR it serves. `createAgent`
+ * takes both up front; this is for callers that need to retag after the fact. */
+export function setAgentKind(id: string, kind: AgentKind | null, sessionPrId: string | null): void {
+  getDb()
+    .prepare(`UPDATE agents SET kind = ?, session_pr_id = ?, updated_at = ? WHERE id = ?`)
+    .run(kind, sessionPrId, nowIso(), id);
+}
+
+/** Every `pr_fix` agent spawned for one session PR, oldest first. */
+export function listPrFixAgents(sessionPrId: string): AgentRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM agents WHERE kind = 'pr_fix' AND session_pr_id = ? ORDER BY created_at ASC`)
+    .all(sessionPrId) as AgentRow[];
+}
+
+/** Latches a fix agent's post-fix step as complete (idempotent: first stamp wins). */
+export function markAgentPostFixed(id: string): void {
+  const now = nowIso();
+  getDb()
+    .prepare(`UPDATE agents SET post_fixed_at = COALESCE(post_fixed_at, ?), updated_at = ? WHERE id = ?`)
+    .run(now, now, id);
+}
+
+/**
+ * How many fix runs were spawned for a PR since `sinceIso` — the input to the
+ * `prWatch.maxFixRunsPerDay` cap. Counts every `pr_fix` agent regardless of outcome,
+ * so failed runs spend budget too (that's what stops a broken PR from looping).
+ */
+export function countPrFixRunsSince(sessionPrId: string, sinceIso: string): number {
+  return (
+    getDb()
+      .prepare(
+        `SELECT COUNT(*) AS n FROM agents WHERE kind = 'pr_fix' AND session_pr_id = ? AND created_at >= ?`,
+      )
+      .get(sessionPrId, sinceIso) as { n: number }
+  ).n;
+}
+
+// ---------------------------------------------------------------------------
+// PR feedback (PR watch input; bodies + replies on disk)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ingests one GitHub comment as pending feedback. INSERT OR IGNORE on the
+ * (session_pr_id, source_id) uniqueness makes this safe to call for a comment that
+ * is already known — the first ingest wins and later ones are no-ops. Returns the
+ * row (new or existing).
+ */
+export function insertPrFeedback(input: {
+  sessionPrId: string;
+  sourceId: string;
+  sourceKind: PrFeedbackKind;
+  author?: string | null;
+  authorIsBot?: boolean;
+  url?: string | null;
+  path?: string | null;
+  line?: number | null;
+  inReplyTo?: string | null;
+  bodyRef?: string | null;
+}): PrFeedbackRow {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR IGNORE INTO pr_feedback
+       (id, session_pr_id, source_id, source_kind, author, author_is_bot, url, path, line, in_reply_to, body_ref, decision, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  ).run(
+    shortId("fb"),
+    input.sessionPrId,
+    input.sourceId,
+    input.sourceKind,
+    input.author ?? null,
+    input.authorIsBot ? 1 : 0,
+    input.url ?? null,
+    input.path ?? null,
+    input.line ?? null,
+    input.inReplyTo ?? null,
+    input.bodyRef ?? null,
+    nowIso(),
+  );
+  return db
+    .prepare(`SELECT * FROM pr_feedback WHERE session_pr_id = ? AND source_id = ?`)
+    .get(input.sessionPrId, input.sourceId) as PrFeedbackRow;
+}
+
+/** All feedback ingested for a PR, oldest first. */
+export function listPrFeedback(sessionPrId: string): PrFeedbackRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM pr_feedback WHERE session_pr_id = ? ORDER BY created_at ASC, source_id ASC`)
+    .all(sessionPrId) as PrFeedbackRow[];
+}
+
+/** Every source id already ingested for a PR — the "already handled" set that keeps
+ * a comment from being acted on twice. */
+export function prFeedbackSourceIds(sessionPrId: string): Set<string> {
+  const rows = getDb()
+    .prepare(`SELECT source_id FROM pr_feedback WHERE session_pr_id = ?`)
+    .all(sessionPrId) as Array<{ source_id: string }>;
+  return new Set(rows.map((r) => r.source_id));
+}
+
+/** Pending feedback no fix agent has claimed (new, or released after a rejected push). */
+export function listUnassignedPrFeedback(sessionPrId: string): PrFeedbackRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM pr_feedback
+        WHERE session_pr_id = ? AND decision = 'pending' AND fix_agent_id IS NULL AND handled_at IS NULL
+        ORDER BY created_at ASC, source_id ASC`,
+    )
+    .all(sessionPrId) as PrFeedbackRow[];
+}
+
+/** The feedback rows assigned to one fix agent. */
+export function listAgentPrFeedback(agentId: string): PrFeedbackRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM pr_feedback WHERE fix_agent_id = ? ORDER BY created_at ASC, source_id ASC`)
+    .all(agentId) as PrFeedbackRow[];
+}
+
+/** How many of a PR's comments Tack hasn't finished with yet (dashboard badge). */
+export function countOpenPrFeedback(sessionPrId: string): number {
+  return (
+    getDb()
+      .prepare(`SELECT COUNT(*) AS n FROM pr_feedback WHERE session_pr_id = ? AND handled_at IS NULL`)
+      .get(sessionPrId) as { n: number }
+  ).n;
+}
+
+/** Hands a batch of feedback rows to the fix agent that will address them. */
+export function assignPrFeedback(ids: string[], agentId: string): void {
+  const stmt = getDb().prepare(`UPDATE pr_feedback SET fix_agent_id = ? WHERE id = ?`);
+  getDb().transaction(() => {
+    for (const id of ids) stmt.run(agentId, id);
+  })();
+}
+
+/** Records a fix agent's verdict on one item (via `report_pr_feedback`). Leaves
+ * `handled_at` unset: the item is only "handled" once the watcher has replied. */
+export function recordPrFeedbackDecision(
+  id: string,
+  decision: Exclude<PrFeedbackDecision, "pending" | "failed">,
+  replyRef: string | null,
+): void {
+  getDb()
+    .prepare(`UPDATE pr_feedback SET decision = ?, reply_ref = ? WHERE id = ?`)
+    .run(decision, replyRef, id);
+}
+
+/** Marks an item finished: replied (with its url), or given up on (no url). An
+ * optional decision overrides the recorded one (e.g. `declined` for an item the
+ * agent never reported, `failed` for a failed run). */
+export function markPrFeedbackHandled(
+  id: string,
+  opts: { replyUrl?: string | null; decision?: PrFeedbackDecision } = {},
+): void {
+  getDb()
+    .prepare(
+      `UPDATE pr_feedback SET reply_url = ?, decision = COALESCE(?, decision), handled_at = ? WHERE id = ?`,
+    )
+    .run(opts.replyUrl ?? null, opts.decision ?? null, nowIso(), id);
+}
+
+/** Releases every unhandled item a fix agent held back to pending + unassigned, so
+ * the next watcher tick re-spawns a fix for them (used after a rejected push or a
+ * stopped run, where nothing reached the PR). */
+export function releaseAgentPrFeedback(agentId: string): number {
+  return getDb()
+    .prepare(
+      `UPDATE pr_feedback SET decision = 'pending', reply_ref = NULL, fix_agent_id = NULL
+        WHERE fix_agent_id = ? AND handled_at IS NULL`,
+    )
+    .run(agentId).changes;
 }
 
 // ---------------------------------------------------------------------------

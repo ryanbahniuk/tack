@@ -74,6 +74,19 @@ export default ({
     // },
   ],
 
+  // PR watch: every session with open PRs polls them in the background. New review
+  // comments (bots included) or a merge conflict spawn a fix agent (roles.agent) that
+  // fixes what's warranted — or merges the base branch to resolve the conflict — and
+  // then Tack pushes (never force) and replies to each comment explaining what it did.
+  // \`maxFixRunsPerDay\` caps fix runs per PR per rolling 24h. All fields optional.
+  prWatch: {
+    // enabled: true,          // false = never start a watcher
+    // intervalSeconds: 300,   // poll cadence (min 60)
+    // autoPush: true,         // push fix commits to the PR branch
+    // reply: true,            // post a reply on each handled comment
+    // maxFixRunsPerDay: 5,
+  },
+
   // When the work is done, the supervisor commits and opens one PR per unit of work
   // in every affected repo without asking (you still review and merge each). Set to
   // false to have it ask first and confirm each PR before it's opened.

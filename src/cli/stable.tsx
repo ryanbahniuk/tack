@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, render, useApp, useInput } from "ink";
 import {
+  countOpenPrFeedback,
+  getSession,
   listAgents,
   listPendingAmendments,
   listSessionJiraTickets,
@@ -19,6 +21,8 @@ import { archiveSession, deleteSession, stopSession, unarchiveSession } from "..
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
+import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
+import { isAlive } from "../process/self";
 import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
 import { sessionFileCollisions, type FileCollision } from "../supervisor/conflicts";
@@ -37,6 +41,9 @@ interface View {
   amendments: AmendmentRow[];
   /** Files more than one agent changed in the same project (cross-branch collisions). */
   conflicts: FileCollision[];
+  /** PR-watch state per session PR id: comments Tack hasn't finished with yet, and
+   * whether a pr_fix agent is currently working on the PR. */
+  prWatch: Record<string, { openFeedback: number; fixing: boolean }>;
 }
 
 /** Sort weight: sessions waiting on the human float to the top, then live ones, so
@@ -50,10 +57,11 @@ function snapshot(showArchived: boolean, config: TackConfig | null): View[] {
   return listSessions(showArchived)
     .map((session) => {
       const agents = listAgents(session.id);
+      const prs = listSessionPrs(session.id);
       return {
         session,
         agents,
-        prs: listSessionPrs(session.id),
+        prs,
         tickets: listSessionJiraTickets(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
@@ -64,6 +72,20 @@ function snapshot(showArchived: boolean, config: TackConfig | null): View[] {
         // Cross-agent file collisions; cached in `conflicts.ts` so this is cheap on
         // the 1s poll. Needs project paths, so only when config loaded.
         conflicts: config ? sessionFileCollisions(agents, config) : [],
+        prWatch: Object.fromEntries(
+          prs.map((pr) => [
+            pr.id,
+            {
+              openFeedback: countOpenPrFeedback(pr.id),
+              fixing: agents.some(
+                (a) =>
+                  a.kind === "pr_fix" &&
+                  a.session_pr_id === pr.id &&
+                  (a.status === "pending" || a.status === "running"),
+              ),
+            },
+          ]),
+        ),
       };
     })
     .sort((a, b) => rank(b) - rank(a));
@@ -80,7 +102,12 @@ function signature(views: View[]): string {
           .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
         ";" +
-        v.prs.map((p) => `${p.number}/${p.state}`).join(",") +
+        v.prs
+          .map((p) => {
+            const w = v.prWatch[p.id];
+            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}`;
+          })
+          .join(",") +
         ";" +
         v.tickets.map((t) => `${t.key}/${t.status ?? ""}/${t.title ?? ""}`).join(","),
     )
@@ -178,7 +205,8 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
   }, [rows]);
 
   // Refreshing PR status is automatic, so opening the dashboard is itself the "check
-  // now" gesture — refresh once on mount (merge status should be right away, not
+  // now" gesture — and the same tick (re)starts any missing PR watchers (see
+  // `ensurePrWatchers`) — refresh once on mount (merge status should be right away, not
   // after a full interval), then every 60s. `refreshing` guards against a slow `gh`
   // call stacking with the next tick. Never touches `setRows`: it only writes to
   // SQLite, and the 1s snapshot poll above already re-reads `listSessionPrs`.
@@ -190,7 +218,10 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
       refreshing.current = true;
       const ids = rowsRef.current.map((v) => v.session.id);
       refreshSessionPrs(config, ids)
-        .then((res) => setGhMissing(res.ghMissing))
+        .then((res) => {
+          setGhMissing(res.ghMissing);
+          if (!res.ghMissing) ensurePrWatchers(config, ids);
+        })
         .catch(() => {})
         .finally(() => {
           refreshing.current = false;
@@ -414,7 +445,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
               return (
                 <Box key={a.id} flexDirection="column">
                   <Text>
-                    {"    ├─ Agent "}
+                    {`    ├─ ${agentLabel(a, v.prs)} `}
                     <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
                     <Text dimColor>
                       {" "}
@@ -456,13 +487,22 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
           {i === cursor &&
             v.prs.map((pr) => {
               const { glyph, color, label } = prStateDisplay(pr.state);
+              const w = v.prWatch[pr.id];
               return (
                 <Text key={pr.id}>
                   {"    └─ PR "}
                   {pr.number ?? "?"}{" "}
                   <Text color={color}>
                     {glyph} {label}
-                  </Text>{" "}
+                  </Text>
+                  {pr.mergeable === "CONFLICTING" ? <Text color="red"> ⚠ conflict</Text> : null}
+                  {w && w.openFeedback > 0 ? (
+                    <Text color="yellow">
+                      {" "}
+                      {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
+                    </Text>
+                  ) : null}
+                  {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
                   <Text underline>{pr.url}</Text>
                 </Text>
               );
@@ -524,7 +564,8 @@ function AgentsPanel({ view, cursor, notice }: { view: View; cursor: number; not
         return (
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
-            <Text bold>{a.id}</Text>{" "}
+            <Text bold>{a.id}</Text>
+            {a.kind === "pr_fix" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
             <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
             <Text dimColor>
               {" "}
@@ -589,6 +630,34 @@ function relativeTime(iso: string): string {
 function oneLine(s: string, max: number): string {
   const line = s.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * Makes sure every active session with an open PR has a live PR watcher — the
+ * restart path for watchers that exited (crash, reboot, `tack session stop`) or
+ * sessions whose PRs predate PR watch. Best-effort and cheap: a pid liveness check
+ * per session, and `spawnPrWatcher` is itself a no-op when disabled/already alive.
+ */
+function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
+  if (!config.prWatch.enabled) return;
+  for (const id of sessionIds) {
+    const s = getSession(id);
+    if (!s || s.status !== "active" || isAlive(s.pr_watch_pid)) continue;
+    if (!listSessionPrs(id).some(isWatchablePr)) continue;
+    try {
+      spawnPrWatcher(id, config);
+    } catch {
+      /* try again next refresh */
+    }
+  }
+}
+
+/** The dashboard's name for an agent row: "Agent", or `pr-fix #<n>` for a PR-watch
+ * fix agent so it's obvious which PR it's working on. */
+function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
+  if (a.kind !== "pr_fix") return "Agent";
+  const pr = prs.find((p) => p.id === a.session_pr_id);
+  return `pr-fix #${pr?.number ?? "?"}`;
 }
 
 function agentStatusColor(status: string): string | undefined {

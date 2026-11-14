@@ -10,6 +10,9 @@ import {
   latestSharedContext,
   listAgents,
   listPendingAmendments,
+  listPrFeedback,
+  listPrFixAgents,
+  listSessionPrs,
   resolveAmendment,
   unlinkSessionJiraTicket,
   upsertSessionJiraTicket,
@@ -27,6 +30,7 @@ import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
 import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
 import { openSessionPr } from "../projects/prs";
+import { spawnPrWatcher } from "../prwatch/watch";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
@@ -238,7 +242,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // Safety net: fold any changes the agent left uncommitted into its branch so
       // nothing is dropped from the PR (a push only carries commits).
       commitWorktree(a.worktree_path, `Tack: finalize work for agent ${agentId}`);
-      const pr = openSessionPr({
+      const pr = await openSessionPr({
         repoPath: proj.path,
         localBranch: a.branch,
         prBranch: sessionPrBranch(sessionId, slug ?? title),
@@ -257,7 +261,66 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         state: draft ? "draft" : "open",
         headBranch: pr.headBranch,
       });
-      return text({ ok: true, url: pr.url, number: pr.number, branch: pr.headBranch });
+      // Start (or keep) the session's PR watcher so review feedback and merge
+      // conflicts on this PR get picked up automatically. Best-effort: the PR is
+      // already open, so a watcher hiccup must not turn this into a tool error.
+      try {
+        spawnPrWatcher(sessionId, config); // no-op when disabled or already running
+      } catch {
+        /* the dashboard's refresh will retry starting it */
+      }
+      return text({ ok: true, url: pr.url, number: pr.number, branch: pr.headBranch, prWatch: config.prWatch.enabled });
+    },
+  );
+
+  server.registerTool(
+    "check_prs",
+    {
+      description:
+        "Read-only snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
+        "review feedback (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
+        "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
+        "on it, not to drive it.",
+      inputSchema: {},
+    },
+    async () => {
+      const s = requireSession();
+      return text({
+        watcherPid: s.pr_watch_pid,
+        prWatchEnabled: config.prWatch.enabled,
+        prs: listSessionPrs(sessionId).map((pr) => {
+          const feedback = listPrFeedback(pr.id);
+          const brief = (f: (typeof feedback)[number]) => ({
+            sourceId: f.source_id,
+            kind: f.source_kind,
+            author: f.author,
+            url: f.url,
+            decision: f.decision,
+            reply: f.reply_ref ? readArtifact(f.reply_ref) : undefined,
+            replyUrl: f.reply_url,
+            fixAgentId: f.fix_agent_id,
+          });
+          return {
+            number: pr.number,
+            url: pr.url,
+            title: pr.title,
+            state: pr.state,
+            mergeable: pr.mergeable,
+            baseBranch: pr.base_branch,
+            headBranch: pr.head_branch,
+            checkedAt: pr.checked_at,
+            pendingFeedback: feedback.filter((f) => !f.handled_at).map(brief),
+            handledFeedback: feedback.filter((f) => f.handled_at).map(brief),
+            fixAgents: listPrFixAgents(pr.id).map((a) => ({
+              id: a.id,
+              status: a.status,
+              cost: a.cost,
+              error: a.error,
+              postFixed: Boolean(a.post_fixed_at),
+            })),
+          };
+        }),
+      });
     },
   );
 
@@ -457,6 +520,7 @@ function text(value: unknown) {
 function agentSummary(a: ReturnType<typeof listAgents>[number]) {
   return {
     id: a.id,
+    ...(a.kind ? { kind: a.kind } : {}),
     project: a.project_name,
     status: a.status,
     model: a.model,
