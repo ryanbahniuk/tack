@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { WORKTREES_DIR } from "../paths";
+import { SNAPSHOTS_DIR, WORKTREES_DIR } from "../paths";
 
 export interface Worktree {
   repo: string;
@@ -25,6 +25,12 @@ function git(args: string[], cwd: string): string {
  * same project within one session without colliding. */
 export function sessionWorktreesRoot(sessionId: string): string {
   return join(WORKTREES_DIR, sessionId);
+}
+
+/** Supervisor snapshot worktrees are scoped per session, then per project (see
+ * `syncSnapshot`). This root is the supervisor's whole read grant over projects. */
+export function sessionSnapshotsRoot(sessionId: string): string {
+  return join(SNAPSHOTS_DIR, sessionId);
 }
 
 /**
@@ -78,8 +84,9 @@ function readBaseRef(repo: string, branch: string): string | null {
   return r.status === 0 && sha ? sha : null;
 }
 
-/** Bounds the pre-worktree fetch so an unreachable remote or an auth prompt can't
- * stall agent startup; on timeout we just use the already-local remote ref. */
+/** Bounds the pre-worktree / pre-snapshot fetch so an unreachable remote or an auth
+ * prompt can't stall agent startup or a supervisor sync; on timeout we just use the
+ * already-local remote ref. */
 const FETCH_TIMEOUT_MS = 15_000;
 
 /** `git rev-parse --verify --quiet <ref>^{commit}`, or null if the ref doesn't resolve. */
@@ -111,6 +118,16 @@ function remoteDefaultBranch(repo: string): string | null {
   return null;
 }
 
+/** Fetch argv + env shared by the sync (agent worktree) and async (supervisor
+ * snapshot) paths, so both refresh the default branch the same way. */
+function defaultBranchFetch(remoteRef: string): { args: string[]; env: Record<string, string | undefined> } {
+  return {
+    args: ["fetch", "--quiet", "origin", remoteRef.slice("origin/".length)],
+    // Never block on a credential prompt; a headless run has no one to answer it.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  };
+}
+
 /**
  * The commit a new agent worktree should fork from: the tip of the remote default
  * branch, refreshed by a best-effort fetch. Basing on the project's local HEAD went
@@ -123,14 +140,13 @@ function remoteDefaultBranch(repo: string): string | null {
 function resolveStartPoint(repo: string): string {
   const remoteRef = remoteDefaultBranch(repo);
   if (remoteRef) {
-    const branch = remoteRef.slice("origin/".length);
-    spawnSync("git", ["fetch", "--quiet", "origin", branch], {
+    const { args, env } = defaultBranchFetch(remoteRef);
+    spawnSync("git", args, {
       cwd: repo,
       encoding: "utf8",
       timeout: FETCH_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
-      // Never block on a credential prompt; a headless run has no one to answer it.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      env,
     });
     const sha = tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
     if (sha) return sha;
@@ -211,16 +227,101 @@ export function ensurePrWorktree(repo: string, sessionId: string, agentId: strin
 }
 
 // Async (`Bun.spawn`) git helpers for the PR watcher, which runs on a timer and so
-// must never block on `spawnSync` (see src/prwatch/watch.ts).
+// must never block on `spawnSync` (see src/prwatch/watch.ts), and for supervisor
+// snapshot syncs, which run inside the MCP server and may fan out per project.
 
-async function gitAsync(args: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { code, out: out.trim(), err: err.trim() };
+async function gitAsync(
+  args: string[],
+  cwd: string,
+  opts: { timeoutMs?: number; env?: Record<string, string | undefined> } = {},
+): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(opts.env ? { env: opts.env } : {}),
+  });
+  // Kill on timeout rather than abandoning the promise, so a hung fetch can't leak a
+  // git process past the caller giving up on it.
+  let timedOut = false;
+  const timer =
+    opts.timeoutMs !== undefined
+      ? setTimeout(() => {
+          timedOut = true;
+          proc.kill();
+        }, opts.timeoutMs)
+      : undefined;
+  try {
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { code, out: out.trim(), err: err.trim(), timedOut };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Result of refreshing one project's supervisor snapshot (see `syncSnapshot`). */
+export interface SnapshotSync {
+  /** The snapshot worktree the supervisor should read. */
+  path: string;
+  /** What the snapshot tracks: `origin/<default>`, or `HEAD` for a repo without one. */
+  ref: string;
+  /** The commit now checked out in the snapshot. */
+  sha: string;
+  /** Whether the pre-sync fetch succeeded; false means the snapshot is at the
+   * last-fetched remote commit (offline, auth failure, timeout) or there's no origin. */
+  fetched: boolean;
+}
+
+/**
+ * Refreshes the supervisor's read-only snapshot of a project: fetches the remote
+ * default branch (same rules as `resolveStartPoint` — best-effort, time-boxed,
+ * never prompting) and checks its tip out DETACHED into a Tack-owned worktree at
+ * `snapshots/<sessionId>/<project>`. The supervisor reads this instead of the
+ * user's checkout, which may be stale or on an unrelated branch — and the user's
+ * checkout (its HEAD, index, and working tree) is never touched. A repo with no
+ * usable origin snapshots its local HEAD. Re-syncing an existing snapshot moves it
+ * in place, so the path the supervisor was given stays valid across follow-ups.
+ *
+ * Async throughout so several projects can sync concurrently without blocking the
+ * supervisor MCP server.
+ */
+export async function syncSnapshot(repo: string, sessionId: string, project: string): Promise<SnapshotSync> {
+  assertRepoRoot(repo);
+  let ref = "HEAD";
+  let sha: string | null = null;
+  let fetched = false;
+  const remoteRef = remoteDefaultBranch(repo);
+  if (remoteRef) {
+    const { args, env } = defaultBranchFetch(remoteRef);
+    const f = await gitAsync(args, repo, { timeoutMs: FETCH_TIMEOUT_MS, env });
+    fetched = f.code === 0 && !f.timedOut;
+    sha = tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
+    if (sha) ref = remoteRef;
+  }
+  if (!sha) {
+    const head = await gitAsync(["rev-parse", "--verify", "HEAD^{commit}"], repo);
+    if (head.code !== 0 || !head.out) throw new Error(`cannot resolve HEAD in ${repo}: ${head.err || head.out}`);
+    sha = head.out;
+  }
+
+  const root = sessionSnapshotsRoot(sessionId);
+  const path = join(root, project);
+  if (!existsSync(path)) {
+    mkdirSync(root, { recursive: true });
+    const r = await gitAsync(["worktree", "add", "--detach", path, sha], repo);
+    if (r.code !== 0) throw new Error(`failed to create snapshot worktree at ${path}: ${r.err || r.out}`);
+  } else {
+    // --force: a snapshot is read-only by contract, so any stray modification in it
+    // is discarded rather than allowed to block the refresh.
+    const r = await gitAsync(["checkout", "--detach", "--force", sha], path);
+    if (r.code !== 0) throw new Error(`failed to update snapshot worktree at ${path}: ${r.err || r.out}`);
+  }
+  return { path, ref, sha, fetched };
 }
 
 /** The pinned fork point of a `tack/…` branch, or null if none was recorded. */
