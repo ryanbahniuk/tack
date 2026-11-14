@@ -3,7 +3,7 @@ import { mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import { isAlive, selfInvocation } from "../process/self";
-import type { Project, TackConfig } from "../config/schema";
+import type { Model, Project, TackConfig } from "../config/schema";
 import { resolveModel } from "../config/load";
 import {
   assignPrFeedback,
@@ -25,6 +25,7 @@ import {
   type AgentRow,
   type AgentStatus,
   type PrFeedbackRow,
+  type PrMergeable,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
@@ -41,6 +42,7 @@ import {
   pushBranch,
   toMergeable,
   type PrFeedbackItem,
+  type PrStatus,
 } from "../projects/prs";
 import { commitWorktreeAsync, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
@@ -59,6 +61,11 @@ export { buildPrFixPrompt } from "./prompt";
  * conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
  * finishes, the watcher (never the agent) pushes its commits non-force onto the PR
  * branch and replies to each comment with the agent's verdict.
+ *
+ * The supervisor can also start a fix run itself (`fix_pr`, for a conflict that
+ * persists, a failed run, or follow-ups the human asked for). It goes through the
+ * same `spawnPrFixAgent` / `prFixBusy` / `prFixCapReached` as a tick, and this loop
+ * post-fixes it like any other — so the invariants below hold for both.
  *
  * Invariants:
  *  - At most one fix agent per PR in flight; the next tick waits for it.
@@ -190,18 +197,8 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   if (!project) return log(`${tag}: project "${pr.project_name ?? "?"}" not in config; skipping`);
   if (pr.number === null) return log(`${tag}: no PR number recorded; skipping`);
 
-  // 1. Poll and persist status. A draft stays "draft" (the dashboard's vocabulary);
-  // gh reports it as OPEN + isDraft.
-  const status = await fetchPrStatus(project.path, pr.number);
-  const state = status.state.toLowerCase();
-  const mergeable = toMergeable(status.mergeable);
-  setSessionPrStatus(pr.id, {
-    state: state === "open" && status.isDraft ? "draft" : state,
-    mergeable,
-    baseBranch: status.baseRefName,
-    headSha: status.headRefOid,
-    title: status.title,
-  });
+  // 1. Poll and persist status.
+  const { status, state, mergeable } = await pollPrStatus(pr.id, project.path, pr.number);
 
   // 2. Nothing to do on a finished PR.
   if (state === "merged" || state === "closed") return;
@@ -234,15 +231,97 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   const released = listUnassignedPrFeedback(pr.id);
   if (!conflict && fresh.length === 0 && released.length === 0) return;
 
-  const runs = countPrFixRunsSince(pr.id, new Date(Date.now() - DAY_MS).toISOString());
-  if (runs >= config.prWatch.maxFixRunsPerDay) {
+  const cap = prFixCapReached(pr.id, config);
+  if (cap.reached) {
     return log(
       `${tag}: ${fresh.length + released.length} item(s)${conflict ? " + conflict" : ""} waiting, but the daily cap ` +
         `(${config.prWatch.maxFixRunsPerDay} fix runs/24h) is reached; will retry later`,
     );
   }
 
-  for (const item of fresh) {
+  const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+    conflict,
+    baseBranch: status.baseRefName,
+    title: status.title,
+    fresh,
+  });
+  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s)${conflict ? ", merge conflict" : ""})`);
+}
+
+/**
+ * Polls one PR's live status from GitHub and persists it on the row (state,
+ * mergeability, base, head, title), returning the raw status plus the lower-cased
+ * state and normalized mergeability. A draft is stored as "draft" (the dashboard's
+ * vocabulary); gh reports it as OPEN + isDraft, so `state` here stays "open". Shared
+ * by the watcher's tick and `fix_pr` so both record what they acted on.
+ */
+export async function pollPrStatus(
+  sessionPrId: string,
+  repoPath: string,
+  number: number,
+): Promise<{ status: PrStatus; state: string; mergeable: PrMergeable | null }> {
+  const status = await fetchPrStatus(repoPath, number);
+  const state = status.state.toLowerCase();
+  const mergeable = toMergeable(status.mergeable);
+  setSessionPrStatus(sessionPrId, {
+    state: state === "open" && status.isDraft ? "draft" : state,
+    mergeable,
+    baseBranch: status.baseRefName,
+    headSha: status.headRefOid,
+    title: status.title,
+  });
+  return { status, state, mergeable };
+}
+
+/**
+ * Whether a PR already has a fix run that a new one would collide with — the "one
+ * fix at a time per PR" invariant, shared by the watcher and the supervisor's
+ * `fix_pr`. Busy means any fix agent that is still pending/running (alive or not: a
+ * dead runner is failed and post-fixed by the watcher's next tick, and spawning
+ * alongside it would fork off a head its post-fix is about to move) or any finished
+ * one whose post-fix (push + replies) hasn't run yet.
+ */
+export function prFixBusy(sessionPrId: string): boolean {
+  return listPrFixAgents(sessionPrId).some((a) => ACTIVE.has(a.status) || !a.post_fixed_at);
+}
+
+/**
+ * The per-PR daily cap on fix runs (`prWatch.maxFixRunsPerDay` over a rolling 24h,
+ * failed runs included), shared by the watcher and `fix_pr` so supervisor-initiated
+ * runs draw from the same budget and can't be used to loop past it.
+ */
+export function prFixCapReached(sessionPrId: string, config: TackConfig): { reached: boolean; runs: number } {
+  const runs = countPrFixRunsSince(sessionPrId, new Date(Date.now() - DAY_MS).toISOString());
+  return { reached: runs >= config.prWatch.maxFixRunsPerDay, runs };
+}
+
+/**
+ * Starts one `pr_fix` agent on a PR: the shared tail of the watcher's tick and the
+ * supervisor's `fix_pr`. Records any `fresh` feedback (bodies to disk), hands the
+ * agent every unassigned item on the PR (new ones plus any released back to
+ * pending), builds its prompt, and launches it detached — forked off the PR head
+ * (`kind: "pr_fix"` routes `prepareAgent` to the PR worktree). The watcher's
+ * post-fix step later pushes and replies for it regardless of who spawned it.
+ *
+ * Callers own the guards (`isWatchablePr`, `prFixBusy`, `prFixCapReached`); this
+ * only spawns. `baseBranch`/`title` are the freshly polled values, falling back to
+ * the row's. Returns the agent and how many feedback items it was given.
+ */
+export function spawnPrFixAgent(
+  session: SessionRow,
+  pr: SessionPrRow,
+  project: Project,
+  config: TackConfig,
+  opts: {
+    conflict: boolean;
+    baseBranch: string | null;
+    title: string | null;
+    fresh?: PrFeedbackItem[];
+    model?: Model;
+    guidance?: string;
+  },
+): { agent: AgentRow; items: number } {
+  for (const item of opts.fresh ?? []) {
     insertPrFeedback({
       sessionPrId: pr.id,
       sourceId: item.sourceId,
@@ -258,15 +337,16 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   }
   const rows = listUnassignedPrFeedback(pr.id);
   const prompt = buildPrFixPrompt({
-    pr: { number: pr.number, title: status.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
-    conflict,
-    baseBranch: status.baseRefName ?? pr.base_branch,
+    pr: { number: pr.number, title: opts.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
+    conflict: opts.conflict,
+    baseBranch: opts.baseBranch ?? pr.base_branch,
     items: rows.map((r) => feedbackItem(r, pr)),
+    guidance: opts.guidance,
   });
   const agent = prepareAgent({
     session,
     project,
-    model: resolveModel(config, config.roles.agent),
+    model: opts.model ?? resolveModel(config, config.roles.agent),
     prompt,
     kind: "pr_fix",
     sessionPrId: pr.id,
@@ -276,7 +356,7 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
     agent.id,
   );
   spawnAgentRunner(session.id, agent.id);
-  log(`${tag}: spawned fix agent ${agent.id} (${rows.length} item(s)${conflict ? ", merge conflict" : ""})`);
+  return { agent, items: rows.length };
 }
 
 /** Rehydrates a stored feedback row (body from disk) into the prompt's item shape. */

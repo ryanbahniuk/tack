@@ -9,6 +9,18 @@ import {
   type ReviewThread,
 } from "../src/projects/prs";
 import { buildPrFixPrompt } from "../src/prwatch/prompt";
+import {
+  createAgent,
+  createSession,
+  getDb,
+  listSessionPrs,
+  markAgentPostFixed,
+  setAgentStatus,
+  upsertSessionPr,
+  type AgentStatus,
+} from "../src/db";
+import { prFixBusy, prFixCapReached } from "../src/prwatch/watch";
+import type { TackConfig } from "../src/config/schema";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
 
@@ -174,6 +186,105 @@ describe("buildPrFixPrompt", () => {
     const p = buildPrFixPrompt({ pr, conflict: true, baseBranch: "main", items });
     expect(p).toContain("git merge origin/main");
     expect(p).toContain("report_pr_feedback");
+  });
+
+  test("supervisor guidance: plain-text section right before the (unchanged, last) Rules", () => {
+    const guidance = "The last run died on an unavailable model.\nAlso rename `foo` to `bar` in src/a.ts.";
+    const p = buildPrFixPrompt({ pr, conflict: true, baseBranch: "main", items, guidance: `  ${guidance}\n` });
+    const g = p.indexOf("## Supervisor guidance");
+    const r = p.indexOf("## Rules");
+    expect(g).toBeGreaterThan(p.indexOf("## Review feedback"));
+    expect(r).toBeGreaterThan(g);
+    // Trimmed and as-is (not markdown-quoted like review comments).
+    expect(p.slice(g, r)).toContain(`\n\n${guidance}\n\n`);
+    expect(p).not.toContain("> The last run died");
+    const rules = p.slice(r);
+    expect(rules).toMatch(/NEVER push/);
+    expect(rules).toContain("report_pr_feedback");
+    expect(rules).not.toContain("Supervisor guidance");
+  });
+
+  test("guidance alone sets the job line; blank guidance is ignored", () => {
+    const p = buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items: [], guidance: "Add a CHANGELOG entry." });
+    expect(p).toContain("Your job: follow the supervisor guidance below.");
+    expect(p).toContain("## Supervisor guidance\n\nAdd a CHANGELOG entry.\n\n## Rules");
+    expect(p).not.toContain("report_pr_feedback");
+
+    const blank = buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items: [], guidance: "  \n " });
+    expect(blank).not.toContain("Supervisor guidance");
+    expect(blank).toContain("Your job: check the PR is in good shape.");
+    expect(blank).toBe(buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items: [] }));
+  });
+
+  test("guidance alongside a conflict keeps the conflict as the job", () => {
+    const p = buildPrFixPrompt({ pr, conflict: true, baseBranch: "main", items: [], guidance: "Prefer main's API." });
+    expect(p).toContain("Your job: resolve a merge conflict with the base branch.");
+    expect(p).toContain("Prefer main's API.");
+  });
+});
+
+// These run against the scratch TACK_HOME DB that test/setup.ts points at.
+describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
+  function freshPr(): string {
+    const session = createSession({ title: "fix guards" });
+    const url = `${PR_URL}/${session.id}`;
+    upsertSessionPr({ sessionId: session.id, url, projectName: "app", number: 7, state: "open", headBranch: "b" });
+    return listSessionPrs(session.id)[0]!.id;
+  }
+  function fixAgent(prId: string, status: AgentStatus, opts: { postFixed?: boolean } = {}) {
+    const sessionId = (getDb().prepare(`SELECT session_id FROM session_prs WHERE id = ?`).get(prId) as {
+      session_id: string;
+    }).session_id;
+    const a = createAgent({ sessionId, projectName: "app", kind: "pr_fix", sessionPrId: prId });
+    if (status !== "pending") setAgentStatus(a.id, status);
+    if (opts.postFixed) markAgentPostFixed(a.id);
+    return a;
+  }
+  const config = (maxFixRunsPerDay: number) => ({ prWatch: { maxFixRunsPerDay } }) as unknown as TackConfig;
+
+  test("busy while a fix is pending/running (alive or not) or finished but not post-fixed", () => {
+    const pr = freshPr();
+    expect(prFixBusy(pr)).toBe(false);
+
+    const pending = fixAgent(pr, "pending"); // no pid: not alive, still busy
+    expect(prFixBusy(pr)).toBe(true);
+    setAgentStatus(pending.id, "running");
+    expect(prFixBusy(pr)).toBe(true);
+    setAgentStatus(pending.id, "done"); // finished, awaiting the watcher's push/replies
+    expect(prFixBusy(pr)).toBe(true);
+    markAgentPostFixed(pending.id);
+    expect(prFixBusy(pr)).toBe(false);
+
+    fixAgent(pr, "failed", { postFixed: true });
+    fixAgent(pr, "stopped", { postFixed: true });
+    expect(prFixBusy(pr)).toBe(false);
+    fixAgent(pr, "failed");
+    expect(prFixBusy(pr)).toBe(true);
+  });
+
+  test("a normal agent on the session never makes the PR busy", () => {
+    const pr = freshPr();
+    const sessionId = (getDb().prepare(`SELECT session_id FROM session_prs WHERE id = ?`).get(pr) as {
+      session_id: string;
+    }).session_id;
+    createAgent({ sessionId, projectName: "app" });
+    expect(prFixBusy(pr)).toBe(false);
+  });
+
+  test("cap counts fix runs in the last 24h, failures included", () => {
+    const pr = freshPr();
+    expect(prFixCapReached(pr, config(2))).toEqual({ reached: false, runs: 0 });
+    fixAgent(pr, "failed", { postFixed: true });
+    expect(prFixCapReached(pr, config(2))).toEqual({ reached: false, runs: 1 });
+    const old = fixAgent(pr, "done", { postFixed: true });
+    expect(prFixCapReached(pr, config(2))).toEqual({ reached: true, runs: 2 });
+
+    // A run older than the rolling window no longer counts.
+    getDb()
+      .prepare(`UPDATE agents SET created_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), old.id);
+    expect(prFixCapReached(pr, config(2))).toEqual({ reached: false, runs: 1 });
+    expect(prFixCapReached(pr, config(1))).toEqual({ reached: true, runs: 1 });
   });
 });
 

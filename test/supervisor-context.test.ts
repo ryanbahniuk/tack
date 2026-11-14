@@ -31,3 +31,13 @@ describe("supervisor context: autoOpenPrs", () => {
     expect(body).not.toContain("already satisfied");
   });
 });
+
+describe("supervisor context: PR fixes", () => {
+  test("points at fix_pr for changing an open PR, never a new agent/PR", () => {
+    const body = context(true);
+    expect(body).toContain("- `fix_pr` —");
+    expect(body).toContain("when a PR stays conflicting");
+    expect(body).toContain("asks for changes to an open PR, use `fix_pr`");
+    expect(body).toContain("never spawn a new agent or open a new PR");
+  });
+});
