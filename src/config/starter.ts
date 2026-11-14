@@ -72,6 +72,11 @@ export default ({
     //   env: { CONFLUENCE_CLOUD_ID: "a40b7113-0103-4597-b693-76b66e0a4614", CONFLUENCE_SITE_URL: "https://chime.atlassian.net" },
     // },
   ],
+
+  // When true, the supervisor opens PRs (ready for review, not draft) on its own once
+  // agents finish and conflicts are clear — no "Open a PR for this?" prompt. Off by
+  // default because opening a PR is outward-facing.
+  autoOpenPrs: false,
 });
 `;
 

@@ -43,6 +43,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       ...s,
       command: expandHome(s.command),
     })),
+    autoOpenPrs: parsed.autoOpenPrs,
   };
 }
 

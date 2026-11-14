@@ -8,6 +8,38 @@ import type { TackConfig } from "../config/schema";
  */
 export function buildSupervisorContext(sessionId: string, config: TackConfig): string {
   const projects = config.projects.map((p) => `- ${p.name}: ${p.description}`).join("\n");
+  // PR handling branches on `autoOpenPrs`. Off (default): the human approves PRs in
+  // chat, backed by a per-call runtime prompt — the original wording, kept verbatim.
+  // On: the human pre-authorized PRs, so the supervisor opens them itself once
+  // conflicts are clear; telling it to ask would only stall the run.
+  const openPrBullet = config.autoOpenPrs
+    ? [
+        "- `open_pr` — open a pull request for a finished agent's committed work. YOU own",
+        "  PRs and open them yourself once agents finish and conflicts are clear; agents",
+        "  never open their own (see step 6).",
+      ]
+    : [
+        "- `open_pr` — open a pull request for a finished agent's committed work. YOU own",
+        "  PRs; agents never open their own. Only after you've summarized and the human has",
+        "  approved (see step 6).",
+      ];
+  const prSteps = config.autoOpenPrs
+    ? [
+        "6. When the agents are done, run `check_conflicts`; if collisions exist, reconcile",
+        "   them (e.g. a follow-up agent) first. Then, without asking the human, call",
+        "   `open_pr` once per successful unit of work with a clear title and body (do not",
+        "   set `draft`). Skip agents that failed or produced no diff, and say so.",
+        "7. Finish with a concise per-project summary of what each agent did and the PR",
+        "   links.",
+      ]
+    : [
+        "6. When the agents are done, summarize for the human what each one actually did",
+        "   (per project, grounded in their output and diff), then ASK for their approval",
+        "   to open pull requests and WAIT for it. Only after they approve, call `open_pr`",
+        "   once per unit of work with a clear title and body. Never open a PR before that",
+        "   approval, and never ask the agents to open their own.",
+        "7. Finish with a concise summary of what landed, per project, with the PR links.",
+      ];
   const body = [
     "# Tack supervisor",
     "",
@@ -42,9 +74,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig): s
     "- `check_conflicts` — files more than one agent changed in the same project (a",
     "  cross-branch merge conflict waiting to happen). Run it before opening PRs.",
     "- `read_agent_output` — read an agent's result and diff once it's done.",
-    "- `open_pr` — open a pull request for a finished agent's committed work. YOU own",
-    "  PRs; agents never open their own. Only after you've summarized and the human has",
-    "  approved (see step 6).",
+    ...openPrBullet,
     "- `list_amendments` / `resolve_amendment` — adjudicate agents' proposed changes",
     "  to the shared contract; you are authoritative.",
     "",
@@ -88,12 +118,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig): s
     "   state directory (`~/.tack`); those reads aren't granted and will interrupt",
     "   the human with a permission prompt. If you need more than the result and diff",
     "   show, spawn a follow-up agent rather than opening files yourself.",
-    "6. When the agents are done, summarize for the human what each one actually did",
-    "   (per project, grounded in their output and diff), then ASK for their approval",
-    "   to open pull requests and WAIT for it. Only after they approve, call `open_pr`",
-    "   once per unit of work with a clear title and body. Never open a PR before that",
-    "   approval, and never ask the agents to open their own.",
-    "7. Finish with a concise summary of what landed, per project, with the PR links.",
+    ...prSteps,
     "",
     "## Reporting to the human",
     "Report what happened, not how the machinery works or what might have gone wrong.",

@@ -35,7 +35,8 @@ export const SUPERVISOR_MCP_NAME = "tack-supervisor";
  * Supervisor tools that must prompt the human on every call rather than riding the
  * server-wide auto-allow — opening a PR is outward-facing, so it stays behind an
  * explicit per-call human ok even after the plan is approved. The attended
- * launcher hands these to the runtime as `approvalTools`.
+ * launcher hands these to the runtime as `approvalTools` — only when `autoOpenPrs`
+ * is false; with it on, the human has pre-authorized PRs and no prompt is wired.
  */
 export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`];
 
@@ -185,11 +186,18 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   server.registerTool(
     "open_pr",
     {
-      description:
-        "Open a pull request for a finished agent's committed work. YOU own PRs — agents no longer open their " +
-        "own. Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
-        "explicitly approved opening PRs. Pushes the agent's worktree branch under the tack/pr/<session>/<slug> " +
-        "nomenclature and runs `gh pr create`; returns the PR url.",
+      // The guidance branches on `autoOpenPrs`: off, the model must get a chat
+      // approval first (and the runtime adds a per-call prompt); on, the human has
+      // pre-authorized PRs, so telling the model to ask would just stall the run.
+      description: config.autoOpenPrs
+        ? "Open a pull request for a finished agent's committed work. YOU own PRs — agents never open their " +
+          "own. Call this once agents finish and check_conflicts is clean; no human approval is required. " +
+          "Pushes the agent's worktree branch under the tack/pr/<session>/<slug> nomenclature and runs " +
+          "`gh pr create`; returns the PR url."
+        : "Open a pull request for a finished agent's committed work. YOU own PRs — agents no longer open their " +
+          "own. Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
+          "explicitly approved opening PRs. Pushes the agent's worktree branch under the tack/pr/<session>/<slug> " +
+          "nomenclature and runs `gh pr create`; returns the PR url.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),

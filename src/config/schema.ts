@@ -140,6 +140,14 @@ export const ConfigSchema = z.object({
   readAllowlist: z.array(z.string()).default([]),
   /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
   supervisorMcpServers: z.array(McpServerSchema).default([]),
+  /**
+   * When true, the attended supervisor opens PRs itself — ready for review, not
+   * draft — once agents finish and `check_conflicts` is clean, with no per-PR
+   * permission prompt and no chat approval step. Off by default because opening a
+   * PR is outward-facing (it pushes a branch and pings reviewers), so the safe
+   * default keeps a human ok in front of every one.
+   */
+  autoOpenPrs: z.boolean().default(false),
 });
 
 /** Shape accepted from a user's config file. */
@@ -153,6 +161,8 @@ export interface TackConfig {
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
+  /** Supervisor opens PRs without asking (see `ConfigSchema.autoOpenPrs`). */
+  autoOpenPrs: boolean;
 }
 
 /** Identity helper for config authoring: `export default defineConfig({...})`. */

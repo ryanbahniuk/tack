@@ -314,7 +314,10 @@ Adapter specifics, hidden behind the interface:
   the final `result` event's `total_cost_usd`. The **interactive** supervisor also
   auto-allows the mounted MCP servers (`--allowedTools mcp__<server>`) and wires a
   `--settings` PostToolUse hook on `ExitPlanMode` — accepting the plan runs `tack
-  __approve-plan <id>`, which opens the session's `spawn_agent` gate (see §9).
+  __approve-plan <id>`, which opens the session's `spawn_agent` gate (see §9). It
+  also wires a PreToolUse hook on `open_pr` returning an `ask` decision, so every PR
+  needs a per-call human ok ("Open a PR for this?") — unless `autoOpenPrs` is set,
+  in which case that hook is omitted (see §10).
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's
@@ -353,7 +356,9 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runs `check_conflicts`, optionally spawns follow-ups, and finishes with a
    summary. It then opens **one PR per unit of work** (the deliverable — N reviewable
    PRs, see Positioning) on `tack/pr/<sessionId>/<slug>` branches, after the human
-   approves; agents only commit to their worktree.
+   approves; agents only commit to their worktree. With `autoOpenPrs: true` the
+   supervisor skips that approval and opens the PRs itself (ready for review, not
+   draft) once `check_conflicts` is clean.
 5. The `tack stable` dashboard discovers PRs via `gh`.
 
 **Coordinating parallel work (the correctness layer).** `spawn_agent` takes an
@@ -391,8 +396,15 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
+  autoOpenPrs: false,
 });
 ```
+
+`autoOpenPrs` (default `false`) lets the attended supervisor open PRs on its own:
+once agents finish and `check_conflicts` is clean it calls `open_pr` (non-draft)
+for each successful unit, with no per-call "Open a PR for this?" prompt and no chat
+approval step. It's opt-in because opening a PR is outward-facing. Agents still
+never open PRs, and their permission posture is unchanged.
 
 `supervisorMcpServers` mounts extra MCP servers for the **supervisor only**, on top
 of its `tack-supervisor` tools. Runs are `--strict-mcp-config`, so the supervisor
@@ -424,7 +436,8 @@ name**; loading fails loudly if a role names an undefined model.
 - **`tack stable`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
-  branches, upserted into `session_prs`.
+  branches, upserted into `session_prs`. Only the supervisor opens them (`open_pr`):
+  after a human ok by default, or on its own when `autoOpenPrs` is true.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
   cascade DB rows).
