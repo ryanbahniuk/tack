@@ -449,8 +449,26 @@ name**; loading fails loudly if a role names an undefined model.
 
 ## 12. Known risks & future work
 
-- **Codex event parsing** is defensive against an internal build's `--json` schema;
-  re-verify against the Codex version you pin.
+- **Codex event parsing** targets codex-cli 0.163's `exec --json` schema
+  (`thread.started{thread_id}`, `item.started|completed{item:{type:"agent_message"|
+  "command_execution"|"file_change"|"mcp_tool_call"|…}}`, `turn.completed{usage}`,
+  `turn.failed{error}`, `error{message}`) and still accepts the older `msg`-wrapped /
+  PascalCase / `total_token_usage` shapes; re-verify when you bump codex. Not every
+  `error` is fatal: `error{"Reconnecting... n/5"}` is a transient retry and
+  `item{type:"error"}` is a warning (e.g. an ignored config key). A run fails on
+  `turn.failed`, any other `error`, or a non-zero exit, whose error reads
+  `codex exited with code N: <reason>` — codex's in-stream fatal (API JSON
+  unwrapped) if it gave one, else the stderr tail (`streamJson` keeps ~2KB of it).
+  Codex's `input_tokens` includes cached tokens, so the cached share is moved to
+  `cacheRead` rather than billed twice.
+- **Codex approval posture.** `exec` forces `approval_policy=never`, which managed
+  (MDM) devices can forbid ("`Never` is not in the allowed set [UnlessTrusted,
+  OnRequest]"). Without a usable policy, every command and edit is rejected. Write
+  runs use `--approve-for-me` (workspace-write sandbox plus Codex's automatic
+  approval reviewer). Read-only runs use `-s read-only -c approval_policy="on-request"
+  -c approvals_reviewer="auto_review"` (`on-request` alone is still forced to
+  `never`). Never `--dangerously-bypass-approvals-and-sandbox`. `exec resume` rejects
+  `--approve-for-me`/`-s`/`--add-dir`, so those flags precede the `resume` subcommand.
 - **Codex context injection** is a `developer_instructions` directive to read the
   context file, so it relies on the agent actually reading it. The file-based
   alternative (`model_instructions_file`, née `experimental_instructions_file` —
