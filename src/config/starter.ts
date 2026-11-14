@@ -14,20 +14,21 @@ export default ({
     { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
     { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },
     {
-      key: "gpt-5.6-sol",
+      key: "gpt-6.1-sol",
       provider: "openai",
-      name: "GPT-5.6 Sol",
-      version: "5.6",
+      name: "GPT-6.1 Sol",
+      version: "6.1",
       runtime: "codex",
-      id: "gpt-5.6-sol",
+      id: "gpt-6.1-sol",
       effort: "medium",
+      // UNVERIFIED placeholder rates — run \`tack models sync\` to fill from models.dev
       pricing: { inputPer1M: 4, outputPer1M: 20, cacheReadPer1M: 0.4, cacheWritePer1M: 5 },
     },
   ],
 
   roles: {
     supervisor: "opus-5",
-    agent: "gpt-5.6-sol",
+    agent: "gpt-6.1-sol",
     summary: "sonnet-5",
   },
 
@@ -72,6 +73,19 @@ export default ({
     //   env: { CONFLUENCE_CLOUD_ID: "a40b7113-0103-4597-b693-76b66e0a4614", CONFLUENCE_SITE_URL: "https://chime.atlassian.net" },
     // },
   ],
+
+  // When the work is done, the supervisor commits and opens one PR per unit of work
+  // in every affected repo without asking (you still review and merge each). Set to
+  // false to have it ask first and confirm each PR before it's opened.
+  autoOpenPrs: true,
+
+  // Optional session JIRA ticket tracking (track-only — Tack never creates, edits,
+  // or transitions tickets). The supervisor links the tickets a session works on;
+  // \`tack stable\` refreshes their status read-only through the server named by
+  // \`mcpServer\` (one of supervisorMcpServers above, reusing its cached auth), and
+  // \`siteUrl\` builds the browse links. \`cloudId\` is optional: it falls back to
+  // that server's CONFLUENCE_CLOUD_ID env, then to asking the server.
+  // jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 });
 `;
 

@@ -5,7 +5,7 @@ import type { Runtime } from "./types";
 
 export * from "./types";
 export { costFromPricing } from "./pricing";
-export { MODEL_CATALOG, pricingFor } from "./catalog";
+export { MODEL_CATALOG, pickReplacement, pricingFor } from "./catalog";
 export { fetchPricingCatalog, pricingForModel, MODELS_DEV_URL } from "./pricing-sync";
 export {
   resolveRuntime,

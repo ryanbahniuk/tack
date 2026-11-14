@@ -4,11 +4,13 @@ import { Box, Text, render, useApp, useInput } from "ink";
 import {
   listAgents,
   listPendingAmendments,
+  listSessionJiraTickets,
   listSessionPrs,
   listSessions,
   sessionTotalCost,
   type AgentRow,
   type AmendmentRow,
+  type SessionJiraTicketRow,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
@@ -17,6 +19,7 @@ import { archiveSession, deleteSession, stopSession, unarchiveSession } from "..
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
+import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
 
@@ -24,6 +27,8 @@ interface View {
   session: SessionRow;
   agents: AgentRow[];
   prs: SessionPrRow[];
+  /** JIRA tickets the supervisor linked to this session (track-only). */
+  tickets: SessionJiraTicketRow[];
   cost: number;
   live: boolean;
   needsInput: boolean;
@@ -46,6 +51,7 @@ function snapshot(showArchived: boolean): View[] {
         session,
         agents,
         prs: listSessionPrs(session.id),
+        tickets: listSessionJiraTickets(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
         // Waiting on the human: a plan to approve, a pending amendment, or unread
@@ -68,7 +74,9 @@ function signature(views: View[]): string {
           .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
         ";" +
-        v.prs.map((p) => `${p.number}/${p.state}/${p.mergeable ?? ""}`).join(","),
+        v.prs.map((p) => `${p.number}/${p.state}/${p.mergeable ?? ""}`).join(",") +
+        ";" +
+        v.tickets.map((t) => `${t.key}/${t.status ?? ""}/${t.title ?? ""}`).join(","),
     )
     .join("|");
 }
@@ -124,6 +132,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [notice, setNotice] = useState("");
   const [ghMissing, setGhMissing] = useState(false);
+  const [jiraUnavailable, setJiraUnavailable] = useState(false);
 
   const cursor = Math.max(0, rows.findIndex((r) => r.session.id === cursorId));
   const selected = rows[cursor] as View | undefined;
@@ -184,6 +193,35 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
     run();
     const t = setInterval(run, 60_000);
     return () => clearInterval(t);
+  }, [config]);
+
+  // Same shape for JIRA ticket status, on its own guard and a slower 2-minute
+  // cadence: ticket status moves on human timescales, and each tick is MCP round
+  // trips through the Atlassian server rather than one local `gh` call. The client
+  // (and its server subprocess) is long-lived inside `projects/jira.ts` — the first
+  // tick pays the slow `uvx` start, later ticks reuse it — so cleanup closes it.
+  // Only a configured `jira` block can be "unavailable"; without one the feature is
+  // simply off and stays silent. Like PRs, never touches `setRows`.
+  const refreshingJira = useRef(false);
+  useEffect(() => {
+    if (!config) return;
+    const run = () => {
+      if (refreshingJira.current) return;
+      refreshingJira.current = true;
+      const ids = rowsRef.current.map((v) => v.session.id);
+      refreshSessionJiraTickets(config, ids)
+        .then((res) => setJiraUnavailable(Boolean(config.jira) && res.unavailable))
+        .catch(() => {})
+        .finally(() => {
+          refreshingJira.current = false;
+        });
+    };
+    run();
+    const t = setInterval(run, 120_000);
+    return () => {
+      clearInterval(t);
+      void closeJiraClient();
+    };
   }, [config]);
 
   useInput((input, key) => {
@@ -298,6 +336,15 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
       }
       for (const pr of selected.prs) openUrl(pr.url);
       setNotice(`opened ${selected.prs.length} PR${selected.prs.length === 1 ? "" : "s"} in browser`);
+    } else if (input === "J") {
+      // Tickets linked before a `jira` block existed have no url — skip them.
+      const urls = selected.tickets.map((t) => t.url).filter((u): u is string => Boolean(u));
+      if (urls.length === 0) {
+        setNotice(`${selected.session.id} has no tickets yet`);
+        return;
+      }
+      for (const url of urls) openUrl(url);
+      setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser`);
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
     } else if (input === "a") {
@@ -345,6 +392,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
             <Text dimColor> {v.session.status} </Text>
             <Text color="green">{usd(v.cost)}</Text>
             {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
+            {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
             {v.amendments.length > 0 ? (
               <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
             ) : null}
@@ -400,6 +448,26 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
                 </Text>
               );
             })}
+          {i === cursor &&
+            v.tickets.map((t) => {
+              const { glyph, color } = ticketStatusDisplay(t.status_category);
+              return (
+                <Text key={t.id}>
+                  {"    └─ JIRA "}
+                  {t.key}{" "}
+                  <Text color={color}>
+                    {glyph} {t.status ?? "?"}
+                  </Text>
+                  {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
+                  {t.url ? (
+                    <>
+                      {"  "}
+                      <Text underline>{t.url}</Text>
+                    </>
+                  ) : null}
+                </Text>
+              );
+            })}
         </Box>
       ))}
       <Box marginTop={1} flexDirection="column">
@@ -413,8 +481,9 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
           <>
             {notice ? <Text dimColor>{notice}</Text> : null}
             {ghMissing ? <Text dimColor>gh not found — PR status not updating</Text> : null}
+            {jiraUnavailable ? <Text dimColor>jira unavailable — ticket status not updating</Text> : null}
             <Text dimColor>
-              j/k move · enter/o open · v output · m amendments · n next needing · O open PR · c new · x stop · a archive · d delete · z archived · q quit
+              j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive · d delete · z archived · q quit
             </Text>
           </>
         )}
@@ -537,6 +606,26 @@ function prRollup(prs: SessionPrRow[]): React.ReactElement {
   return <Text dimColor>{`${total} PR${total === 1 ? "" : "s"}`}</Text>;
 }
 
+/** Glyph + color for a ticket, keyed on Jira's stable status *category* rather than
+ *  the per-project workflow name ("In Review", "QA", …), so every project's tickets
+ *  read the same way: to do = gray ○, in progress = yellow ●, done = magenta ✔. */
+function ticketStatusDisplay(category: string | null): { glyph: string; color: string } {
+  if (category === "done") return { glyph: "✔", color: "magenta" };
+  if (category === "indeterminate") return { glyph: "●", color: "yellow" };
+  if (category === "new") return { glyph: "○", color: "gray" };
+  return { glyph: "·", color: "gray" };
+}
+
+/** Compact per-session ticket summary for the collapsed line, mirroring `prRollup`:
+ *  all done is the magenta badge, some done a yellow fraction, none a dim count. */
+function ticketRollup(tickets: SessionJiraTicketRow[]): React.ReactElement {
+  const done = tickets.filter((t) => t.status_category === "done").length;
+  const total = tickets.length;
+  if (done === total) return <Text color="magenta">✔ {done} done</Text>;
+  if (done > 0) return <Text color="yellow">{`${done}/${total} done`}</Text>;
+  return <Text dimColor>{`${total} ticket${total === 1 ? "" : "s"}`}</Text>;
+}
+
 // Alternate-screen-buffer controls: the dashboard renders on its own full screen and
 // restores the prior terminal contents (scrollback intact) on exit. Ink has no
 // built-in alt-screen, so we drive the escape sequences ourselves.
@@ -572,7 +661,12 @@ export async function runStable(): Promise<void> {
       // if render throws — so we never strand the terminal in the alt buffer.
       process.stdout.write(ALT_SCREEN_EXIT);
     }
-    if (!launch) return; // quit, not a hand-off
+    if (!launch) {
+      // Quit, not a hand-off: reap the Jira MCP server subprocess (if one was
+      // started) so it doesn't outlive the dashboard.
+      await closeJiraClient();
+      return;
+    }
 
     // Fully relinquish stdin before handing the terminal to the child. Ink turns raw
     // mode off and `unref`s stdin on unmount, but never *pauses* the stream — so this

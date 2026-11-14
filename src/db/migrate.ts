@@ -151,6 +151,36 @@ const migrations: Migration[] = [
   },
   {
     version: 5,
+    name: "session_jira_tickets",
+    // Session-scoped JIRA ticket tracking, the sibling of `session_prs`. TRACK ONLY:
+    // Tack never creates/edits/transitions a ticket — the supervisor links keys it's
+    // working on (`link_jira_ticket`) and the dashboard refreshes title/status
+    // read-only through the configured Atlassian MCP server. Keyed by
+    // (session, key) so re-linking or a status refresh upserts in place; a ticket
+    // can be tracked by several sessions independently. `status` is the workflow
+    // name as Jira shows it ("In Review"); `status_category` is Jira's stable
+    // new|indeterminate|done bucket, which is what we color/roll up on since
+    // workflow names vary per project. Cascades with the session like the PRs do.
+    sql: `
+      CREATE TABLE session_jira_tickets (
+        id              TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        agent_id        TEXT,               -- best-effort link to the agent working it
+        key             TEXT NOT NULL,      -- e.g. ABC-123 (uppercased)
+        url             TEXT,               -- <siteUrl>/browse/<key>, when jira is configured
+        title           TEXT,
+        status          TEXT,               -- workflow status name, e.g. "In Progress"
+        status_category TEXT,               -- new | indeterminate | done
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        UNIQUE (session_id, key)
+      );
+
+      CREATE INDEX idx_session_jira_tickets_session ON session_jira_tickets(session_id);
+    `,
+  },
+  {
+    version: 6,
     name: "session_pr_mergeable",
     // GitHub's actual merge-conflict status for a PR, so the dashboard can badge
     // real conflicts (and clear the badge once they're resolved) instead of listing
