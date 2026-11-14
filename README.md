@@ -188,6 +188,23 @@ tack session archive <session>     # hide from the default view
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
+`tack dashboard` defaults to a split view on terminals at least 140 columns wide:
+work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
+full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
+Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
+The header shows the current layout and range. Existing session keys still work
+in the list: `j/k`, `enter/o`, `v`, `m`, `n`, `O`, `J`, `c`, `x`, `a`, `d`, `z`, `q`.
+
+Insights includes archived sessions regardless of the list's `z` filter. It shows
+sessions, agents, PRs opened/merged, tickets linked/done, cost, changes against the
+previous equal-length period, top repos, and a contribution heatmap. Full-screen
+Insights adds a per-repo table, sorted by agent count. Daily/weekly/monthly buckets
+adapt to range and width; dates use local time. PR creation means first linked to
+a session, and ticket completion is approximated by its last status refresh.
+Costs include supervisor and agent spend; repo costs include agents only.
+Monochrome glyphs preserve chart values without color. Charts refresh every five
+seconds when their data changes; an idle dashboard does not repaint.
+
 Run `tack --help` (or `tack <command> --help`) for the full command list.
 
 With tmux installed, interactive supervisors stay live when you detach with
@@ -205,7 +222,7 @@ bun run typecheck   # tsc --noEmit — keep this green
 TACK_HOME=$(mktemp -d)/tack bun run ./bin/tack.ts init
 ```
 
-There is no automated test suite yet. At minimum keep `bun run typecheck` green and
+Run `bun test` and keep `bun run typecheck` green, then
 smoke-test the CLI against a scratch `TACK_HOME`. Live runs cost money and mutate
 repos, so validate with `tack agent` before `tack session create`. See
 [AGENTS.md](./AGENTS.md) for conventions and common extension points.

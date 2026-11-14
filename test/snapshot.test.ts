@@ -68,7 +68,10 @@ function pushCommit(upstream: string, file: string, content: string): string {
 
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
-  rmSync(TACK_HOME, { recursive: true, force: true });
+  // The preload's home is shared with DB tests; only remove snapshots we own.
+  for (const id of ["ses_a", "ses_b", "ses_c", "ses_d"]) {
+    rmSync(sessionSnapshotsRoot(id), { recursive: true, force: true });
+  }
 });
 
 describe("syncSnapshot", () => {

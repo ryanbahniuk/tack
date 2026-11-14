@@ -269,6 +269,7 @@ export async function pollPrStatus(
     baseBranch: status.baseRefName,
     headSha: status.headRefOid,
     title: status.title,
+    mergedAt: status.mergedAt,
   });
   return { status, state, mergeable };
 }

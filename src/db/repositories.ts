@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { getDb } from "./connection";
 import { nowIso, shortId } from "../util/id";
 import type { RuntimeKind } from "../config/schema";
@@ -117,6 +118,7 @@ export interface AmendmentRow {
 }
 
 export interface SessionPrRow {
+  merged_at: string | null;
   id: string;
   session_id: string;
   agent_id: string | null;
@@ -546,6 +548,7 @@ export function upsertSessionPr(input: {
   title?: string | null;
   state?: string | null;
   headBranch?: string | null;
+  mergedAt?: string | null;
   /** Omitted/null keeps any previously-fetched value (see COALESCE below). */
   mergeable?: PrMergeable | null;
 }): void {
@@ -562,7 +565,7 @@ export function upsertSessionPr(input: {
       // COALESCEd too, so callers that don't know it (e.g. `open_pr`, right after
       // `gh pr create`) never wipe a value a poll already fetched.
       `UPDATE session_prs SET agent_id = COALESCE(agent_id, ?), project_name = ?, number = ?, title = ?, state = ?, head_branch = ?,
-         mergeable = COALESCE(?, mergeable), updated_at = ?
+         mergeable = COALESCE(?, mergeable), merged_at = COALESCE(?, merged_at), updated_at = ?
        WHERE id = ?`,
     ).run(
       input.agentId ?? null,
@@ -572,14 +575,15 @@ export function upsertSessionPr(input: {
       input.state ?? null,
       input.headBranch ?? null,
       input.mergeable ?? null,
+      input.mergedAt ?? null,
       now,
       existing.id,
     );
     return;
   }
   db.prepare(
-    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, mergeable, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, mergeable, merged_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     shortId("pr"),
     input.sessionId,
@@ -591,6 +595,7 @@ export function upsertSessionPr(input: {
     input.state ?? null,
     input.headBranch ?? null,
     input.mergeable ?? null,
+    input.mergedAt ?? null,
     now,
     now,
   );
@@ -619,6 +624,7 @@ export function setSessionPrStatus(
     baseBranch: string | null;
     headSha: string | null;
     title?: string | null;
+    mergedAt?: string | null;
   },
 ): void {
   const now = nowIso();
@@ -626,7 +632,7 @@ export function setSessionPrStatus(
     .prepare(
       `UPDATE session_prs
          SET state = ?, mergeable = ?, base_branch = ?, head_sha = ?, title = COALESCE(?, title),
-             checked_at = ?, updated_at = ?
+             merged_at = COALESCE(?, merged_at), checked_at = ?, updated_at = ?
        WHERE id = ?`,
     )
     .run(
@@ -635,6 +641,7 @@ export function setSessionPrStatus(
       status.baseBranch,
       status.headSha,
       status.title ?? null,
+      status.mergedAt ?? null,
       now,
       now,
       id,
@@ -885,4 +892,31 @@ export function unlinkSessionJiraTicket(sessionId: string, key: string): boolean
     .prepare(`DELETE FROM session_jira_tickets WHERE session_id = ? AND key = ?`)
     .run(sessionId, key);
   return res.changes > 0;
+}
+
+export type InsightMetric = "sessions" | "agents" | "prFix" | "prs" | "merged" | "tickets" | "done" | "cost";
+export interface InsightEvent {
+  at: string;
+  repo: string | null;
+  metric: InsightMetric;
+  value: number;
+}
+
+/** One grouped read over all history, including archived sessions. Group before
+ * crossing into JS; no session fan-out or large prompt/artifact columns needed. */
+export function readInsightEvents(db: Database = getDb()): InsightEvent[] {
+  return db.query(`
+    SELECT at, repo, metric, SUM(value) AS value FROM (
+      SELECT created_at AS at, NULL AS repo, 'sessions' AS metric, 1 AS value FROM sessions
+      UNION ALL SELECT created_at, NULL, 'cost', cost FROM sessions WHERE cost != 0
+      UNION ALL SELECT created_at, project_name, 'agents', 1 FROM agents
+      UNION ALL SELECT created_at, project_name, 'prFix', 1 FROM agents WHERE kind = 'pr_fix'
+      UNION ALL SELECT created_at, project_name, 'cost', cost FROM agents WHERE cost != 0
+      UNION ALL SELECT created_at, project_name, 'prs', 1 FROM session_prs
+      UNION ALL SELECT COALESCE(merged_at, updated_at), project_name, 'merged', 1
+        FROM session_prs WHERE LOWER(state) = 'merged'
+      UNION ALL SELECT created_at, NULL, 'tickets', 1 FROM session_jira_tickets
+      UNION ALL SELECT updated_at, NULL, 'done', 1 FROM session_jira_tickets WHERE status_category = 'done'
+    ) GROUP BY at, repo, metric
+  `).all() as InsightEvent[];
 }
