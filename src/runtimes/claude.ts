@@ -205,6 +205,14 @@ export class ClaudeRuntime implements Runtime {
     const hooks: Record<string, unknown[]> = {};
     if (preToolUse.length) hooks.PreToolUse = preToolUse;
     if (postToolUse.length) hooks.PostToolUse = postToolUse;
+    // (4) Title the session from its first message the moment it's submitted. The
+    // event takes no matcher; the hook gets claude's JSON (with `prompt`) on stdin and
+    // is no-op once the session has a title, so it's cheap on every later turn. Its
+    // stdout would be injected into the model's context, so the command stays silent.
+    if (opts.onPromptSubmitted) {
+      const command = shellJoin([opts.onPromptSubmitted.command, ...opts.onPromptSubmitted.args]);
+      hooks.UserPromptSubmit = [{ hooks: [{ type: "command", command }] }];
+    }
     if (Object.keys(hooks).length > 0) settings.hooks = hooks;
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(

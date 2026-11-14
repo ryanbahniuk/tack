@@ -476,8 +476,14 @@ fails if `mcpServer` doesn't name a configured server.
 
 Every functional role (supervisor / agent / summary) is **pinned to a model by
 name**; loading fails loudly if a role names an undefined model. Besides describing
-projects, the summary model auto-generates session titles (from the first shared
-contract, or the seed prompt) into `sessions.title`, best-effort and in the background.
+projects, the summary model auto-generates session titles into `sessions.title`,
+best-effort and in the background, as soon as the session's first prompt is known:
+at creation for seeded runs (`-m`, `--background`, `tack agent`), or — for an
+unseeded interactive claude session — when the human submits their first message
+(a `UserPromptSubmit` hook → `__prompt-submitted`, which sets the truncated prompt
+as an instant stand-in). Titles stick: they're generated from that seed prompt and
+the shared contract never renames them; only a session still untitled at its first
+contract (e.g. an unseeded codex TUI, which has no prompt hook) is titled from it.
 
 ---
 

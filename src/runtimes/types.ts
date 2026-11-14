@@ -88,6 +88,18 @@ export interface RunOptions {
    * read-only supervisor sets this.
    */
   onPlanPresented?: { command: string; args: string[] };
+  /**
+   * A command to run each time the human submits a prompt. The claude adapter wires
+   * it as a UserPromptSubmit hook (no matcher), receiving claude's hook JSON —
+   * including the submitted `prompt` — on stdin. Tack uses it to title an unseeded
+   * interactive session from its first message the moment it's sent, rather than
+   * waiting for the supervisor's first shared contract. The command MUST stay silent:
+   * UserPromptSubmit stdout is injected into the model's context, so anything it
+   * prints becomes part of the conversation. It must also exit 0 and return fast —
+   * the prompt is held until it does. Only the attended supervisor sets this; other
+   * runtimes ignore it.
+   */
+  onPromptSubmitted?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;

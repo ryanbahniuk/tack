@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR, TACK_HOME } from "../paths";
 import type { TackConfig } from "../config/schema";
@@ -21,6 +21,7 @@ import {
   type AgentEvent,
 } from "../runtimes";
 import { selfCommand } from "../process/self";
+import { supervisorPromptPath, writeSupervisorPrompt } from "../session/prompt";
 import { uuid } from "../util/id";
 import {
   SUPERVISOR_APPROVAL_PROMPT,
@@ -51,7 +52,8 @@ export function createSupervisorSession(problem: string, config: TackConfig): Se
   return createSession({
     // The truncated prompt is only a stand-in until the summary model's title lands
     // (`src/session/title.ts`); with no seed there's nothing worth showing, so leave
-    // it null rather than storing a placeholder.
+    // it null rather than storing a placeholder — an interactive run then gets its
+    // stand-in + model title from the first message typed (`__prompt-submitted`).
     title: problem.trim() ? problem.slice(0, 80) : null,
     supervisorModel: model.key,
     runtime: model.runtime,
@@ -228,6 +230,11 @@ export async function superviseInteractive(opts: {
     ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
     : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
+  // Title an unseeded session from the first message the human types into the TUI,
+  // the moment it's submitted (claude's UserPromptSubmit hook; a no-op once the
+  // session has a title). Gated with the plan hooks — codex has no such hook, so its
+  // unseeded sessions fall back to titling from the first shared contract.
+  const promptHook = usesPlanHook ? selfCommand(["__prompt-submitted", session.id]) : undefined;
 
   // The human is now looking at this session (creating/resuming it), so anything
   // that finished before this turn counts as seen.
@@ -268,6 +275,7 @@ export async function superviseInteractive(opts: {
     ],
     onPlanApproved: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
+    onPromptSubmitted: promptHook ? { command: promptHook.command, args: promptHook.args } : undefined,
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even
     // after plan approval. With it on (default), open_pr rides the server-wide allow.
     ...(config.autoOpenPrs
@@ -375,20 +383,14 @@ function recoverSupervisorCost(opts: {
 export type SupervisorRunMode = "fresh" | "resume";
 
 /**
- * Where a launcher stashes the prompt for a detached supervisor run. The prompt
- * can be long/multiline, so we hand it off via a file rather than argv — the
+ * A launcher stashes the prompt for a detached supervisor run in a file
+ * (`supervisorPromptPath`) rather than argv — it can be long/multiline — and the
  * runner reads it once at startup, mirroring how `spawnAgentRunner` prepares an
- * agent row before the detached `__run-agent` process picks it up.
+ * agent row before the detached `__run-agent` process picks it up. The path and
+ * writer live in `src/session/prompt.ts` (shared with the titler); re-exported here
+ * for the launchers that already import it from the supervisor.
  */
-function promptPath(sessionId: string): string {
-  return join(LOGS_DIR, sessionId, "supervisor.prompt");
-}
-
-/** Persists the prompt for a detached supervisor run keyed by session id. */
-export function writeSupervisorPrompt(sessionId: string, prompt: string): void {
-  mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
-  writeFileSync(promptPath(sessionId), prompt, "utf8");
-}
+export { writeSupervisorPrompt };
 
 /**
  * The `__run-supervisor` entrypoint: drive a supervisor session to completion in
@@ -401,7 +403,7 @@ export async function runSupervisorToCompletion(
   mode: SupervisorRunMode,
   config: TackConfig,
 ): Promise<void> {
-  const prompt = readFileSync(promptPath(sessionId), "utf8");
+  const prompt = readFileSync(supervisorPromptPath(sessionId), "utf8");
   const gen =
     mode === "resume"
       ? resumeSupervise(sessionId, prompt, config)

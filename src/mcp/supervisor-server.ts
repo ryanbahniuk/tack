@@ -159,10 +159,12 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const version = ((latestVersion(sessionId) ?? 0) + 1);
       const ref = writeSharedContext(sessionId, version, body);
       addSharedContext({ sessionId, bodyRef: ref, authoredBy: "supervisor" });
-      // The first contract is the best summary of what the session is about — title
-      // (or retitle, if it came from the seed prompt) from it. Detached and silent,
-      // so it neither blocks this tool call nor touches the MCP stdout.
-      if (version === 1) spawnSessionTitler(sessionId);
+      // Titles stick: a session named from its seed/first prompt (at creation, or by
+      // the UserPromptSubmit hook) keeps that name. Only a session that reaches its
+      // first contract still untitled — e.g. an unseeded codex TUI, which has no
+      // prompt hook — gets titled from the contract here. Detached and silent, so it
+      // neither blocks this tool call nor touches the MCP stdout.
+      if (version === 1 && !getSession(sessionId)?.title?.trim()) spawnSessionTitler(sessionId);
       return text({ ok: true, version });
     },
   );

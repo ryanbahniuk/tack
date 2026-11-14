@@ -94,3 +94,49 @@ describe("autoAllowMatcher", () => {
     expect(autoAllowMatcher("s", ["mcp__other__open_pr"])).toBe("^mcp__s__.*");
   });
 });
+
+describe("ClaudeRuntime.interactiveCommand prompt-submitted hook", () => {
+  function settingsOf(over: Partial<RunOptions> = {}): { hooks?: Record<string, unknown> } | null {
+    const { args } = new ClaudeRuntime().interactiveCommand({
+      model: MODEL,
+      bin: "claude",
+      cwd: "/tmp/x",
+      prompt: "",
+      ...over,
+    });
+    const i = args.indexOf("--settings");
+    return i === -1 ? null : JSON.parse(args[i + 1]!);
+  }
+
+  test("wires onPromptSubmitted as a matcher-less UserPromptSubmit hook", () => {
+    const settings = settingsOf({
+      onPromptSubmitted: { command: "/usr/bin/tack", args: ["__prompt-submitted", "ses_1"] },
+    });
+    expect(settings?.hooks?.UserPromptSubmit).toEqual([
+      { hooks: [{ type: "command", command: "'/usr/bin/tack' '__prompt-submitted' 'ses_1'" }] },
+    ]);
+  });
+
+  test("rides the same --settings blob as the other hooks", () => {
+    const settings = settingsOf({
+      readOnly: true,
+      mcpServers: [{ name: "tack-supervisor", command: "tack", args: [] }],
+      onPromptSubmitted: { command: "tack", args: ["__prompt-submitted", "ses_1"] },
+    });
+    expect(settings?.hooks?.PreToolUse).toBeDefined();
+    expect(settings?.hooks?.UserPromptSubmit).toBeDefined();
+  });
+
+  test("adds no UserPromptSubmit key when unset", () => {
+    const settings = settingsOf({
+      readOnly: true,
+      mcpServers: [{ name: "tack-supervisor", command: "tack", args: [] }],
+    });
+    expect(settings?.hooks).toBeDefined();
+    expect(settings!.hooks!).not.toHaveProperty("UserPromptSubmit");
+  });
+
+  test("omits --settings entirely when there are no hooks at all", () => {
+    expect(settingsOf()).toBeNull();
+  });
+});

@@ -50,7 +50,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import { generateSessionTitle, spawnSessionTitler } from "../src/session/title";
+import { generateSessionTitle, spawnSessionTitler, titleFromFirstPrompt } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
 import { runStable } from "../src/cli/stable";
@@ -921,7 +921,10 @@ const sessionCreate = defineCommand({
     const session = createSupervisorSession(prompt, config);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
     // Title from the seed now — before superviseInteractive blocks on the TUI. With
-    // no seed, the first shared contract titles it instead (see set_shared_context).
+    // no seed, the first message typed into the TUI titles it (claude's
+    // UserPromptSubmit hook → __prompt-submitted); a runtime without that hook falls
+    // back to the first shared contract (see set_shared_context). Either way the
+    // title then sticks — the contract never renames it.
     if (prompt) {
       writeSupervisorPrompt(session.id, prompt);
       spawnSessionTitler(session.id);
@@ -1206,7 +1209,7 @@ const sessionContext = defineCommand({
 const sessionRetitle = defineCommand({
   meta: {
     name: "retitle",
-    description: "Regenerate a session's title with the summary model (from its shared contract or seed prompt)",
+    description: "Regenerate a session's title with the summary model (from its seed prompt, else its shared contract)",
   },
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
@@ -1379,6 +1382,22 @@ if (hidden === "__mcp") {
   // Stays silent (no stdout) so it doesn't disturb the runtime's TUI.
   const [, , , sessionId] = process.argv;
   approveSessionPlan(sessionId!);
+} else if (hidden === "__prompt-submitted") {
+  // Fired by the interactive supervisor's UserPromptSubmit hook on every prompt the
+  // human sends, with claude's hook JSON (carrying `prompt`) on stdin. The first one
+  // into an untitled session sets a stand-in title, stashes the prompt, and kicks off
+  // the detached titler (`titleFromFirstPrompt`); later turns are a no-op. Must be
+  // SILENT on stdout — UserPromptSubmit stdout is injected into the model's context —
+  // and must always exit 0 so a bad payload or missing session never blocks or
+  // annotates the human's prompt. Titling is cosmetic; every failure is swallowed.
+  const [, , , sessionId] = process.argv;
+  try {
+    const input = JSON.parse(await Bun.stdin.text()) as { prompt?: unknown };
+    if (sessionId && typeof input?.prompt === "string") titleFromFirstPrompt(sessionId, input.prompt);
+  } catch {
+    // Best-effort: never fail (or print over) the human's prompt over a title.
+  }
+  process.exit(0);
 } else {
   await runMain(main);
 }

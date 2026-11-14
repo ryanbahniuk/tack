@@ -5,10 +5,11 @@ import { LOGS_DIR } from "../paths";
 import type { TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import { resolveRuntime, selectRuntime } from "../runtimes";
-import { latestSharedContext, setSessionTitle } from "../db";
+import { getSession, latestSharedContext, setSessionTitle } from "../db";
 import { readArtifact } from "../artifacts/store";
 import { selfInvocation } from "../process/self";
 import { tidy } from "../projects/summarize";
+import { supervisorPromptPath, writeSupervisorPrompt } from "./prompt";
 
 /** How much source text the titler sends the model — a title needs the gist, not
  * the whole contract, and capping it keeps this cheap summary-model call cheap. */
@@ -24,20 +25,50 @@ const PROMPT_HEAD =
   "single line.\n\nThe task text is between the markers below.\n\n";
 
 /**
- * The best text to name a session from: the latest shared contract (the
- * supervisor's distilled plan — sharper than the raw ask) when one exists, else the
- * seed prompt stashed at creation. Throws if the session has neither yet.
+ * The text to name a session from: the seed prompt stashed when the session got
+ * its first message (at creation for `-m`/background/agent runs, or by the
+ * UserPromptSubmit hook for an unseeded interactive run — see
+ * `titleFromFirstPrompt`), else the latest shared contract. The prompt wins so a
+ * session keeps the name it was given up front rather than being renamed partway
+ * through when the supervisor writes its plan; the contract is only the fallback
+ * for sessions that never stashed a prompt (e.g. an unseeded codex TUI, which has
+ * no prompt hook). Throws if the session has neither yet.
  */
-function titleSource(sessionId: string): string {
-  const contract = latestSharedContext(sessionId);
-  const body = contract ? readArtifact(contract.body_ref).trim() : "";
-  if (body) return body;
-  const promptFile = join(LOGS_DIR, sessionId, "supervisor.prompt");
+export function titleSource(sessionId: string): string {
+  const promptFile = supervisorPromptPath(sessionId);
   if (existsSync(promptFile)) {
     const prompt = readFileSync(promptFile, "utf8").trim();
     if (prompt) return prompt;
   }
-  throw new Error(`Session ${sessionId} has no shared contract or seed prompt to title it from yet.`);
+  const contract = latestSharedContext(sessionId);
+  const body = contract ? readArtifact(contract.body_ref).trim() : "";
+  if (body) return body;
+  throw new Error(`Session ${sessionId} has no seed prompt or shared contract to title it from yet.`);
+}
+
+/**
+ * Titles a still-untitled session from the first prompt the human submitted — the
+ * `__prompt-submitted` hook entrypoint's work. When the session exists, has no title
+ * yet, and the prompt has content, it sets the truncated prompt as an instant
+ * stand-in, stashes the prompt where `titleSource` reads it, and kicks off the
+ * detached titler; returns true. Otherwise (unknown session, already titled, blank
+ * prompt) it does nothing and returns false — so the hook, which fires on every
+ * turn, costs one row read after the first. `spawnTitler` is injectable so tests
+ * can exercise this without launching a process.
+ */
+export function titleFromFirstPrompt(
+  sessionId: string,
+  prompt: string,
+  spawnTitler: (sessionId: string) => void = spawnSessionTitler,
+): boolean {
+  const session = getSession(sessionId);
+  if (!session || session.title?.trim()) return false;
+  const text = prompt.trim();
+  if (!text) return false;
+  setSessionTitle(sessionId, text.slice(0, MAX_TITLE_CHARS));
+  writeSupervisorPrompt(sessionId, prompt);
+  spawnTitler(sessionId);
+  return true;
 }
 
 /** Model output → one clean title line: collapse, first line, no trailing period, capped. */
@@ -50,8 +81,8 @@ function cleanTitle(raw: string): string {
 
 /**
  * Generates a short title for a session with the `summary`-role model and writes it
- * to `sessions.title`, replacing the truncated-prompt stand-in (or the empty title
- * of an unseeded interactive run). Runs read-only with no shell, in the
+ * to `sessions.title`, replacing the truncated-prompt stand-in (or, for a session
+ * titled from its contract, the empty title). Runs read-only with no shell, in the
  * session's log dir — it only reads the text it's handed, never a repo. Throws on
  * any failure; callers on the session/supervisor path go through
  * `spawnSessionTitler`, which keeps that best-effort. Its cost is deliberately not
