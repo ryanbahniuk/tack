@@ -13,6 +13,7 @@ const MODEL = {
 } as unknown as Model;
 
 const OPEN_PR = "mcp__tack-supervisor__open_pr";
+const PLAN_APPROVAL = "mcp__tack-supervisor__request_plan_approval";
 
 type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string }> };
 
@@ -61,6 +62,17 @@ describe("ClaudeRuntime.interactiveCommand auto-allow hook", () => {
     const ask = entries.find((e) => e.matcher === OPEN_PR);
     expect(ask).toBeDefined();
     expect(ask!.hooks[0]!.command).toContain('"permissionDecision":"ask"');
+  });
+
+  test("excludes the plan-approval tool, which keeps its own ask hook", () => {
+    const entries = preToolUse({
+      planApprovalTool: PLAN_APPROVAL,
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+    });
+    const re = new RegExp(allowEntry(entries).matcher);
+    expect(re.test("mcp__tack-supervisor__check_agents")).toBe(true);
+    expect(re.test(PLAN_APPROVAL)).toBe(false);
+    expect(entries.find((e) => e.matcher === PLAN_APPROVAL)).toBeDefined();
   });
 
   test("does not match another server's tools", () => {
