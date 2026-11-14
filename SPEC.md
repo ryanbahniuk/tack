@@ -180,7 +180,8 @@ supervisor reads), `set_shared_context`,
 server-side so the planner doesn't burn tokens polling, and returns early with any
 `pendingAmendments` so the system routes an agent's proposal back to the supervisor
 to adjudicate), `check_conflicts`, `read_agent_output`, `list_amendments`,
-`resolve_amendment`. Amendment resolution is therefore orchestrated by the system,
+`resolve_amendment`, plus the PR tools `open_pr`, `check_prs`, and `fix_pr` (a
+`pr_fix` agent on an existing session PR's own branch — §11 PR watch). Amendment resolution is therefore orchestrated by the system,
 not by the human — `tack stable` only surfaces pending amendments read-only.
 
 ---
@@ -528,6 +529,20 @@ always ending with the marker so Tack never ingests itself. Unreported items bec
 `declined` with no reply; a failed run marks its items `failed` (never retried
 automatically). It's latched per item (`handled_at`) and per agent
 (`post_fixed_at`), so it never double-posts.
+
+**Supervisor-initiated fix runs** (`fix_pr`) cover what the watcher won't retry on
+its own: a conflict that persists, a fix run that failed (e.g. its model wasn't
+offered to the login — `fix_pr` takes a `model` and runs `checkModelOffered` like
+`spawn_agent`), or follow-up changes the human asks for on an open PR (passed as
+`prompt`, rendered in the fix prompt as a `## Supervisor guidance` section just
+before `## Rules`). It's the same machinery, not a parallel path: the same `pr_fix`
+kind forked off the PR head (`spawnPrFixAgent`, shared with the watcher), the same
+`maxFixRunsPerDay` cap (`prFixCapReached`), the same one-at-a-time rule
+(`prFixBusy`: refused while a fix is pending/running or finished but not yet
+post-fixed), and the same watcher post-fix push + replies — `fix_pr` polls the PR
+live, folds in any not-yet-ingested feedback, spawns the agent, and (re)starts the
+watcher. `spawn_agent` + `open_pr` would instead create a second PR, so the
+supervisor never uses them to change an existing one.
 
 ---
 

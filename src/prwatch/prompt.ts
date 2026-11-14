@@ -18,14 +18,23 @@ export interface PrFixPromptPr {
  * without touching code, and explains each call in a short reply that Tack posts.
  * It also restates the hard boundary from the shared contract: fix agents never push
  * and never call `gh`; the watcher owns both.
+ *
+ * `guidance` is the supervisor's own instructions for a run it started via `fix_pr`
+ * (e.g. "the last fix run died on an unavailable model; finish resolving the
+ * conflict"). It's rendered as plain text — unlike review comments it IS an
+ * instruction from Tack's side, not quoted third-party input — in a
+ * `## Supervisor guidance` section just before `## Rules`, so the rules stay last
+ * and can't be displaced by it.
  */
 export function buildPrFixPrompt(input: {
   pr: PrFixPromptPr;
   conflict: boolean;
   baseBranch: string | null;
   items: PrFeedbackItem[];
+  guidance?: string;
 }): string {
   const { pr, conflict, items } = input;
+  const guidance = input.guidance?.trim() ?? "";
   const base = input.baseBranch || "main";
   const label = pr.number !== null ? `#${pr.number}` : pr.url;
   const out: string[] = [];
@@ -40,6 +49,7 @@ export function buildPrFixPrompt(input: {
   const tasks: string[] = [];
   if (conflict) tasks.push("resolve a merge conflict with the base branch");
   if (items.length) tasks.push(`evaluate ${items.length} piece${items.length === 1 ? "" : "s"} of review feedback`);
+  if (guidance && !tasks.length) tasks.push("follow the supervisor guidance below");
   out.push(`Your job: ${tasks.join(", and ") || "check the PR is in good shape"}.`);
 
   if (conflict) {
@@ -84,6 +94,13 @@ export function buildPrFixPrompt(input: {
       out.push("");
       out.push(quote(item.body));
     }
+  }
+
+  if (guidance) {
+    out.push("");
+    out.push("## Supervisor guidance");
+    out.push("");
+    out.push(guidance);
   }
 
   out.push("");
