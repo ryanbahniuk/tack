@@ -54,7 +54,7 @@ import {
 import { generateSessionTitle, spawnSessionTitler } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
-import { runStable } from "../src/cli/stable";
+import { runDashboard } from "../src/cli/dashboard";
 import { startSpinner } from "../src/cli/spinner";
 import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor, openInEditor } from "../src/util/editor";
@@ -918,7 +918,7 @@ const sessionCreate = defineCommand({
   meta: { name: "create", description: "Create a session: plan and coordinate agents for a problem" },
   args: {
     message: { type: "string", alias: "m", description: "Seed the first message inline (foreground) or the problem to solve (--background)" },
-    background: { type: "boolean", alias: "b", description: "Run the supervisor headless & detached instead of interactively; watch it with `tack stable`" },
+    background: { type: "boolean", alias: "b", description: "Run the supervisor headless & detached instead of interactively; watch it with `tack dashboard`" },
   },
   async run({ args }) {
     const background = Boolean(args.background);
@@ -1001,11 +1001,11 @@ function reportInteractiveOutcome(id: string, detached: boolean): void {
     // parallel meanwhile.
     console.log(`\n${pc.yellow("supervisor detached")}  ${pc.bold(id)} ${pc.dim("· still running")}`);
     console.log(pc.dim(`Rejoin it with \`tack session resume ${id}\`.`));
-    console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+    console.log(pc.dim(`Watch work and find PRs with \`tack dashboard\`.`));
     return;
   }
   console.log(`\n${pc.green("supervisor exited")}  ${pc.bold(id)}  ${usd(sessionTotalCost(id).total)}`);
-  console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+  console.log(pc.dim(`Watch work and find PRs with \`tack dashboard\`.`));
   console.log(pc.dim(`Resume it with \`tack session resume ${id}\`.`));
 }
 
@@ -1068,7 +1068,7 @@ async function runBackground(opts: { resumeId?: string; message?: string }): Pro
 /** Prints where a detached supervisor went and how to watch/follow it. */
 function printBackgroundHandoff(sessionId: string, pid: number): void {
   console.log(`${pc.green("supervisor running in background")}  ${pc.bold(sessionId)}  ${pc.dim(`pid ${pid}`)}`);
-  console.log(pc.dim(`Watch work and find PRs with \`tack stable\`.`));
+  console.log(pc.dim(`Watch work and find PRs with \`tack dashboard\`.`));
   console.log(pc.dim(`Follow up with \`tack session resume ${sessionId}\`, or stop it with \`tack session stop ${sessionId}\`.`));
 }
 
@@ -1147,7 +1147,7 @@ const sessionShow = defineCommand({
       console.log(`  ${pr.number ? `#${pr.number}` : "?"}  ${prStateLabel(pr.state)}  ${pc.dim(pr.url)}`);
     }
 
-    // Shown as last refreshed by `tack stable` — this view is a cheap DB read and
+    // Shown as last refreshed by `tack dashboard` — this view is a cheap DB read and
     // deliberately doesn't spin up the Atlassian MCP server just to print.
     console.log(pc.bold(`\nTickets (${tickets.length})`));
     if (tickets.length === 0) console.log(pc.dim("  none linked"));
@@ -1294,11 +1294,17 @@ const config = defineCommand({
   default: "path",
 });
 
-const stable = defineCommand({
-  meta: { name: "stable", description: "Live dashboard of all sessions, agents, and PRs" },
+const dashboard = defineCommand({
+  meta: { name: "dashboard", description: "Live dashboard of all sessions, agents, and PRs" },
   async run() {
-    await runStable();
+    await runDashboard();
   },
+});
+
+// citty has no native aliases; this hidden wrapper lets `tack dash` reuse the dashboard.
+const dash = defineCommand({
+  meta: { name: "dash", hidden: true, description: "Live dashboard of all sessions, agents, and PRs" },
+  run: dashboard.run,
 });
 
 // Bare `tack` aliases `tack session create`. It can't just default to the
@@ -1327,7 +1333,8 @@ const main = defineCommand({
     session,
     create: sessionCreateDefault,
     agent,
-    stable,
+    dashboard,
+    dash,
   },
   // Bare `tack` (no subcommand) creates a session — `tack session create`.
   default: "create",

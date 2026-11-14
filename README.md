@@ -23,7 +23,7 @@ shells out to their headless entrypoints and inherits whatever they ship. See
   Tack can install pinned versions for you (see [Configure](#configure)), or you
   can supply them on your `PATH`.
 - **[`gh`](https://cli.github.com)** (optional) — the GitHub CLI, used to discover
-  the PRs agents open (via the `tack stable` dashboard). PR discovery is skipped if
+  the PRs agents open (via the `tack dashboard` dashboard). PR discovery is skipped if
   it's absent; everything else works without it.
 - Authenticated `claude` and/or `codex` — Tack uses your existing CLI logins; it
   does not manage runtime credentials.
@@ -172,11 +172,11 @@ tack
 tack session create -m "Migrate all services off the deprecated auth client"
 tack session create --resume <session>          # follow up, in the chat
 
-# Or run the supervisor headless & detached (no chat), watched via `tack stable`.
+# Or run the supervisor headless & detached (no chat), watched via `tack dashboard`.
 tack session create --background -m "Migrate all services off the deprecated auth client"
 
 # Watch live work: Session → Agent → PR tree with cost and liveness.
-tack stable
+tack dashboard
 
 # Inspect and manage sessions.
 tack session list                  # list sessions and cost

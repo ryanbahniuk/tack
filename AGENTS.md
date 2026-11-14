@@ -43,7 +43,7 @@ src/worktree/            session-scoped worktrees, supervisor snapshots (syncSna
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
-src/cli/                 stable.tsx (Ink dashboard), liveness.ts
+src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
 ```
 

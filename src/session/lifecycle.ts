@@ -32,7 +32,7 @@ export function stopAgent(agentId: string): void {
 }
 
 /** Stops a session and every agent under it (best-effort), including its PR
- * watcher. Note the session stays `active`, so `tack stable` will restart the
+ * watcher. Note the session stays `active`, so `tack dashboard` will restart the
  * watcher on its next PR refresh while the session has open PRs — archive the
  * session to stop watching for good. */
 export function stopSession(sessionId: string): void {

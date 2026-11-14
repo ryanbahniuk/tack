@@ -3,7 +3,7 @@
 Tack is a **runtime-neutral supervisor** that sits on top of coding-agent CLIs —
 Claude Code (`claude`) and the Codex CLI (`codex`) — and coordinates parallel work
 across projects. It plans, delegates to agents running in isolated git worktrees,
-shares context between them, tracks cost and PRs, and gives you one stable view of
+shares context between them, tracks cost and PRs, and gives you one dashboard of
 everything in flight. It deliberately reimplements **none** of the agent loop that
 those CLIs already provide.
 
@@ -77,7 +77,7 @@ below favors the supervisor's intelligence over reimplementing the agent loop.
   *agents* to do the work it plans and coordinates.
 - **Isolated work.** All work happens in git worktrees Tack creates and coordinates.
 - **Shared context** across agents, even across different runtimes.
-- **Per-session cost tracking**, a **stable view** of live work, **PR tracking**,
+- **Per-session cost tracking**, a **dashboard** of live work, **PR tracking**,
   and **user-configurable** behavior.
 - **Version pinning** of each runtime CLI for reproducibility.
 
@@ -183,7 +183,7 @@ server-side so the planner doesn't burn tokens polling, and returns early with a
 to adjudicate), `check_conflicts`, `read_agent_output`, `list_amendments`,
 `resolve_amendment`, plus the PR tools `open_pr`, `check_prs`, and `fix_pr` (a
 `pr_fix` agent on an existing session PR's own branch — §11 PR watch). Amendment resolution is therefore orchestrated by the system,
-not by the human — `tack stable` only surfaces pending amendments read-only.
+not by the human — `tack dashboard` only surfaces pending amendments read-only.
 
 ---
 
@@ -421,7 +421,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
    "don't commit unless asked" rules count as already satisfied. With
    `autoOpenPrs: false` it asks first, and an attended claude session also forces a
    per-call confirmation on `open_pr`.
-5. The `tack stable` dashboard discovers PRs via `gh`.
+5. The `tack dashboard` dashboard discovers PRs via `gh`.
 
 **Coordinating parallel work (the correctness layer).** The supervisor defaults to
 **one agent per affected project** (so one PR per repo), splitting a project only
@@ -445,7 +445,7 @@ ceiling from Positioning; isolated worktrees remain the floor underneath it.
 network) is re-run by its runner with exponential backoff (`attempt` counts the
 retries); non-transient failures are left failed with the reason recorded for the
 dashboard. The agent's live `activity` (its latest tool call) is stamped as events
-stream, so `tack stable` shows what each running agent is doing now.
+stream, so `tack dashboard` shows what each running agent is doing now.
 
 `tack agent <project> "<task>"` runs a single agent inline (no supervisor) — the
 quickest way to validate the runtime pipeline.
@@ -517,15 +517,15 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 
 ---
 
-## 11. Stable view, PRs, lifecycle
+## 11. Dashboard, PRs, lifecycle
 
-- **`tack stable`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
+- **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
   liveness, refresh loop, keys `j/k x a d p z q`.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`. `O` opens the selected session's PRs.
 - **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
-  roll-up + per-ticket rows colored by status category) in `tack stable` and in
+  roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
   `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
   Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
   Track-only — never writes to Jira.
@@ -617,7 +617,7 @@ supervisor never uses them to change an existing one.
   resume-on-retry is future work.
 - Overlap detection compares declared `touches` by exact/directory-prefix match, not
   full globs. Amendments are adjudicated by the supervisor (the system routes them to
-  it via `wait_for_agents`); `tack stable` surfaces them read-only.
+  it via `wait_for_agents`); `tack dashboard` surfaces them read-only.
 - Pricing can be synced from models.dev (folded into `tack models sync`) instead of
   hand-maintained; it's the one network call Tack makes and only on demand.
 - The interactive `claude attach` escape hatch is unimplemented.

@@ -36,7 +36,7 @@ export interface SessionRow {
   awaiting_input_at: string | null;
   /** Why the supervisor is waiting (e.g. "plan"), when `awaiting_input_at` is set. */
   awaiting_reason: string | null;
-  /** When the human last looked at this session (`tack stable` selection, attach,
+  /** When the human last looked at this session (`tack dashboard` selection, attach,
    * resume). Compared against agents' `finished_at` to find unread completed work. */
   last_seen_at: string | null;
   /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
