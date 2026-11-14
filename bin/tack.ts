@@ -35,6 +35,7 @@ import { readArtifact } from "../src/artifacts/store";
 import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
+import { checkModelOffered } from "../src/runtimes/availability";
 import {
   superviseInteractive,
   attachSupervisor,
@@ -294,6 +295,18 @@ const doctor = defineCommand({
       } catch (err) {
         console.log(`${pc.cyan(kind.padEnd(7))} ${pc.red((err as Error).message)}`);
       }
+    }
+
+    // Role pins vs. what each login actually offers. A connected binary at the right
+    // version can still reject a pinned model (a ChatGPT codex login doesn't offer
+    // `gpt-5.6-sol`), and every agent on that role would then die with
+    // `model_not_found`. Read-only: report, and point at `tack models sync` to fix.
+    // Runtimes that can't list models (or a lookup that fails) are skipped silently.
+    for (const role of ROLE_KEYS) {
+      const model = config.models.find((m) => m.key === config.roles[role]);
+      if (!model) continue; // config load already rejects a dangling pin
+      const r = checkModelOffered(config, model, { role });
+      if (r.ok === false) console.log(pc.yellow(`! ${r.message}`));
     }
   },
 });
