@@ -391,8 +391,19 @@ stdout/stderr to the log, and yields parsed JSON lines.
    report) while the original supervisor stays parked. After the new session
    detaches or exits, control returns to the original caller; reporting the old
    session as detached is expected. The binding is refreshed on create and attach,
-   and the status hint doubles the prefix for both shortcuts when nested inside
-   another tmux. Without tmux, the supervisor runs directly without these shortcuts.
+   and the status hint doubles the prefix for all shortcuts when nested inside
+   another tmux. `prefix B` parks the session and opens a new interactive Tack
+   bug-fix session (`session create --tack-bug-from-env`). Both attach paths set
+   `TACK_ATTACHED_SESSION`: detach-client's `-E` does not expand tmux formats and
+   executes in the attach client's environment, so the server-wide binding can
+   identify its source. `--tack-bug-from <id>` also works outside tmux; `-m` skips
+   the optional inline readline question. Bug reports stay interactive even with
+   `-b`. A bounded digest (metadata, original prompt, contract, agents, PRs,
+   conversation/pane tail and supervisor log) is written to the new supervisor's
+   cwd as `tack-bug-report.md`, never passed in tmux argv. The short seed directs
+   the supervisor to read it first, then sync project `tack`; missing configuration
+   produces a warning in the terminal and seed. Without tmux, the supervisor runs
+   directly without these shortcuts.
 2. The supervisor picks the affected projects from their descriptions and calls
    `sync_projects` (best-effort, time-boxed fetch → detached checkout of
    `origin/<default>`, or HEAD with no origin), investigates those snapshots, calls

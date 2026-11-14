@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"The dashboard froze"}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"Checking the session"},{"type":"tool_use","id":"call1","name":"list_agents","input":{"session":"ses_source"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call1","is_error":true,"content":[{"type":"text","text":"database locked"}]}]}}
+invalid trailing record
