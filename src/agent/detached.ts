@@ -38,11 +38,11 @@ export function isTransientError(message: string | null | undefined): boolean {
  * already tees to the agent's log via the adapter; this process's own stdio is
  * captured to a sibling `.runner.log`. Returns the pid.
  */
-export function spawnAgentRunner(sessionId: string, agentId: string): number {
+export function spawnAgentRunner(sessionId: string, agentId: string, options: { resume?: boolean } = {}): number {
   mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
   const fd = openSync(join(LOGS_DIR, sessionId, `${agentId}.runner.log`), "a");
   const { command, args } = selfInvocation();
-  const child = spawn(command, [...args, "__run-agent", agentId], {
+  const child = spawn(command, [...args, "__run-agent", agentId, ...(options.resume ? ["--resume"] : [])], {
     detached: true,
     stdio: ["ignore", fd, fd],
     env: process.env,
@@ -77,7 +77,7 @@ export function spawnSupervisorRunner(sessionId: string, mode: "fresh" | "resume
 
 /** The `__run-agent` entrypoint: self-gate on declared dependencies, then drive the
  * agent to completion with transient-failure retry. */
-export async function runAgentToCompletion(agentId: string, config: TackConfig): Promise<void> {
+export async function runAgentToCompletion(agentId: string, config: TackConfig, options: { resume?: boolean } = {}): Promise<void> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
   setAgentPid(agentId, process.pid);
@@ -93,7 +93,8 @@ export async function runAgentToCompletion(agentId: string, config: TackConfig):
   // exponential backoff. A fresh runtime session loses prior conversation context —
   // acceptable for the start-of-run blips this targets; resume-on-retry is future work.
   for (let attempt = 0; ; attempt++) {
-    await drain(runAgent(agentId, config));
+    // Only the restored attempt resumes; transient retries keep their fresh-run behavior.
+    await drain(runAgent(agentId, config, { resume: options.resume && attempt === 0 }));
     const row = getAgent(agentId);
     if (!row || row.status !== "failed") return;
     if (attempt >= MAX_TRANSIENT_RETRIES || !isTransientError(row.error)) return;

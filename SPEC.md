@@ -275,7 +275,7 @@ sessions(id, title, supervisor_model, runtime, resume_ref,
          status[active|archived], cost, pid, heartbeat_at, created_at, updated_at)
 
 agents(id, session_id→sessions, project_name, worktree_path, branch,
-       status[pending|running|done|failed|stopped], model, runtime, resume_ref,
+       status[pending|running|done|failed|stopped], model, runtime, resume_ref, interrupted_at,
        cost, cost_source[runtime|pricing], tokens_input, tokens_output,
        cache_read, cache_write, pid, prompt_ref, output_ref, diff_ref,
        created_at, updated_at)
@@ -558,7 +558,18 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents + PR watcher), `archive`/`unarchive`, `delete` (kill pids, purge worktrees
-  + artifacts, cascade DB rows).
+  + artifacts, cascade DB rows). Archive stamps `agents.interrupted_at` only on
+  running/pending agents before stopping them, then hides the session. Plain stop
+  never stamps. Unarchive restores active status, clears each interruption stamp,
+  and relaunches exactly those agents as pending (including dependency gating).
+  A failed relaunch records the agent's error and continues restoring the rest.
+  Restored agents with `resume_ref` continue the runtime conversation with a short
+  continuation prompt: Claude uses `--resume`, Codex uses `exec … resume`.
+  Without a handle they run the original prompt in the same worktree. Normal
+  first runs and transient retries stay fresh. Unarchive does not launch the
+  supervisor: rejoin via `tack session resume <id>` or dashboard `enter/o`.
+  Dashboard `a` archives immediately, confirms unarchive with the interrupted
+  count, and reports the resumed count; `z` reveals archived sessions.
 
 ### PR watch
 

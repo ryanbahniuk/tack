@@ -71,6 +71,7 @@ export function prepareAgent(input: {
 export async function* runAgent(
   agentId: string,
   config: TackConfig,
+  options: { resume?: boolean } = {},
 ): AsyncGenerator<AgentEvent, { ok: boolean; agent: AgentRow }> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
@@ -111,7 +112,12 @@ export async function* runAgent(
   const resolved = resolveRuntime(config, model.runtime); // verifies the version pin
   const coordination = selfCommand(["__mcp", session.id, agent.id]);
   const logPath = join(LOGS_DIR, session.id, `${agent.id}.log`);
-  const prompt = readArtifact(agent.prompt_ref) || "Continue.";
+  // Both runtime adapters support headless resume. Pending agents that never
+  // acquired a handle still start with their original prompt in the same worktree.
+  const resume = Boolean(options.resume && agent.resume_ref);
+  const prompt = resume
+    ? "You were interrupted; continue the task where you left off."
+    : readArtifact(agent.prompt_ref) || "Continue.";
 
   setAgentStatus(agent.id, "running");
   setAgentError(agent.id, null); // clear any error from a prior (failed) attempt
@@ -134,7 +140,8 @@ export async function* runAgent(
     model,
     bin: resolved.bin,
     // Claude adopts a pre-assigned UUID; codex ignores it and reports its own.
-    sessionRef: model.runtime === "claude" ? uuid() : undefined,
+    sessionRef: resume ? agent.resume_ref! : model.runtime === "claude" ? uuid() : undefined,
+    resume,
     contextFile,
     mcpServers: [{ name: "tack", command: coordination.command, args: coordination.args }],
     logPath,
