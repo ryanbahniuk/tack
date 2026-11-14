@@ -340,7 +340,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
       return;
     } else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
-      // launching the session happens in `runStable` once this unmounts — we just
+      // launching the session happens in `runDashboard` once this unmounts — we just
       // record which session and exit.
       onLaunch({ kind: "resume", id: selected.session.id });
       exit();
@@ -716,7 +716,7 @@ function pagerInvocation(ref: string): { command: string; args: string[] } {
  * stamps `last_seen_at` so its "needs input" badge clears), c creates a fresh one,
  * and v pages an agent's output file through the user's pager.
  */
-export async function runStable(): Promise<void> {
+export async function runDashboard(): Promise<void> {
   const config = await loadConfig().catch(() => null);
   for (;;) {
     let launch: Launch | undefined;
