@@ -19,6 +19,9 @@ export function agentLive(a: AgentRow): boolean {
  * session (`stampSessionSeen`). `finished_at`/`last_seen_at` are ISO-UTC, so a plain
  * string compare orders them correctly.
  *
+ * Completed work isn't waiting on the human while siblings are still in flight:
+ * the supervisor is still consuming their results via `wait_for_agents`.
+ *
  * Pending amendments are deliberately NOT a "needs input" signal: the SYSTEM
  * orchestrates their resolution (the supervisor is surfaced them through
  * `wait_for_agents` and adjudicates with `resolve_amendment`), so they're surfaced
@@ -26,6 +29,7 @@ export function agentLive(a: AgentRow): boolean {
  */
 export function sessionNeedsInput(s: SessionRow, agents: AgentRow[]): boolean {
   if (s.awaiting_input_at) return true;
+  if (agents.some((a) => a.status === "pending" || agentLive(a))) return false;
   return agents.some(
     (a) =>
       (a.status === "done" || a.status === "failed") &&
