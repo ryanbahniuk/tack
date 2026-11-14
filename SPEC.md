@@ -531,7 +531,23 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 ## 11. Dashboard, PRs, lifecycle
 
 - **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
-  liveness, refresh loop, keys `j/k x a d p z q`.
+  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m n O J c x a d z q`.
+  At ≥140 columns it defaults to a 55% session list / 45% **Insights** split.
+  `s` cycles split → list-only → full-screen Insights; narrow terminals start with
+  the list and retain access to full-screen Insights. `[` / `]` select
+  7d / 30d / 90d / 1y / all (default 30d). Resizes update the layout.
+  Insights aggregates **all** sessions, including archived ones, into local calendar
+  day/week/month buckets: sessions, agents (including PR-fix agents), PRs opened
+  and merged, tickets linked and done, supervisor + agent cost, per-repo totals,
+  absolute deltas vs. the previous equal-length period, and daily contributions.
+  PR opening uses the link's `created_at`; merge uses GitHub's `mergedAt`, persisted
+  as `session_prs.merged_at` (legacy merged rows fall back to `updated_at`). Ticket
+  completion uses `updated_at` for current `done` rows as an approximation. Costs
+  use creation dates; repo costs include agent spend only, sorted by agent count.
+  Ranges include today through now; comparison uses the same local dates/time in
+  the preceding period. Full-screen Insights uses two columns with a repo table.
+  Unicode intensities preserve meaning without color. A grouped read every 5s
+  catches archived changes too; identical stats never trigger a repaint.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`. `O` opens the selected session's PRs.
 - **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),

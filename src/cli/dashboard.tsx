@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { existsSync } from "node:fs";
-import { Box, Text, render, useApp, useInput } from "ink";
+import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import {
   countOpenPrFeedback,
   getSession,
@@ -26,6 +26,8 @@ import { isAlive } from "../process/self";
 import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
+import { readInsights, RANGES, type InsightRange } from "./stats";
+import { Insights } from "./insights";
 
 interface View {
   session: SessionRow;
@@ -144,8 +146,44 @@ type Launch =
 /** A pending yes/no confirmation for a destructive key. */
 type Confirm = { action: "delete" | "stop"; id: string };
 
-function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
+export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
+  const [size, setSize] = useState(() => ({ columns: stdout.columns || 80, rows: stdout.rows || 24 }));
+  useEffect(() => {
+    const resize = () => setSize({ columns: stdout.columns || 80, rows: stdout.rows || 24 });
+    stdout.on("resize", resize);
+    return () => {
+      stdout.off("resize", resize);
+    };
+  }, [stdout]);
+  const [layout, setLayout] = useState<"split" | "list" | "insights">(() =>
+    (stdout.columns || 80) >= 140 ? "split" : "list",
+  );
+  const effectiveLayout = layout === "split" && size.columns < 140 ? "list" : layout;
+  const listWidth = effectiveLayout === "split" ? Math.floor(size.columns * 0.55) : size.columns;
+  const insightWidth = effectiveLayout === "split" ? size.columns - listWidth : size.columns;
+  const [range, setRange] = useState<InsightRange>("30d");
+  const [stats, setStats] = useState(() => readInsights(range, new Date(), insightWidth - 13));
+  const statsSig = useRef(JSON.stringify(stats));
+  // A slow read also catches archived-only changes that the active list's
+  // fingerprint can't see. Equal results never schedule an idle repaint.
+  useEffect(() => {
+    const tick = () => {
+      const chartWidth = effectiveLayout === "insights" && insightWidth >= 70
+        ? Math.floor(insightWidth / 2) - 13
+        : insightWidth - 13;
+      const next = readInsights(range, new Date(), chartWidth);
+      const sig = JSON.stringify(next);
+      if (sig !== statsSig.current) {
+        statsSig.current = sig;
+        setStats(next);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 5000);
+    return () => clearInterval(timer);
+  }, [range, insightWidth, effectiveLayout]);
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<View[]>(() => snapshot(false));
   // Selection is pinned to a session *id*, not a row index, so re-sorting (sessions
@@ -312,8 +350,19 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
       return;
     }
 
-    // List mode.
+    // Layout/range navigation is independent of the selected session.
+    if (input === "s") {
+      return setLayout(effectiveLayout === "split" ? "list" : effectiveLayout === "list" ? "insights" : "split");
+    }
+    if (input === "[" || input === "]") {
+      return setRange(current => {
+        const index = RANGES.indexOf(current) + (input === "]" ? 1 : -1);
+        return RANGES[Math.max(0, Math.min(RANGES.length - 1, index))]!;
+      });
+    }
     if (input === "q") return exit();
+    if (effectiveLayout === "insights") return;
+    // List mode.
     if (key.downArrow || input === "j") {
       const next = rows[Math.min(cursor + 1, rows.length - 1)];
       if (next) setCursorId(next.session.id);
@@ -408,107 +457,116 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
   return (
     <Box flexDirection="column">
       <Text bold>
-        Tack {showArchived ? "(all)" : "(active)"} · {rows.length} session{rows.length === 1 ? "" : "s"} ·{" "}
+        Tack · {effectiveLayout === "list" ? "list-only" : effectiveLayout} · {range} {showArchived ? "(all)" : "(active)"} · {rows.length} session{rows.length === 1 ? "" : "s"} ·{" "}
         <Text color="green">{liveCount} live</Text> ·{" "}
         {needsCount > 0 ? <Text color="yellow">{needsCount} need input</Text> : <Text dimColor>0 need input</Text>} ·{" "}
         <Text color="green">{usd(totalCost)}</Text> <Text dimColor>in flight</Text>
       </Text>
-      {rows.length === 0 && <Text dimColor>No sessions. Press c to create one.</Text>}
-      {rows.map((v, i) => (
-        <Box key={v.session.id} flexDirection="column">
-          <Text>
-            <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
-            <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
-            <Text bold>{v.session.id}</Text>
-            <Text dimColor> {v.session.status} </Text>
-            <Text color="green">{usd(v.cost)}</Text>
-            {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
-            {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
-            {v.amendments.length > 0 ? (
-              <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
-            ) : null}
-            {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
-            {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
-            <Text dimColor> {v.session.title ?? ""}</Text>
-          </Text>
-          {i === cursor &&
-            v.agents.map((a) => {
-              const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
-              return (
-                <Box key={a.id} flexDirection="column">
-                  <Text>
-                    {`    ├─ ${agentLabel(a, v.prs)} `}
-                    <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
-                    <Text dimColor>
-                      {" "}
-                      {a.runtime}:{a.model}
-                    </Text>
-                    <Text color="green"> {usd(a.cost)}</Text>
-                    {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
-                  </Text>
-                  {/* Live "what it's doing now" for a non-terminal agent (#4). */}
-                  {!terminal && a.activity ? (
-                    <Text dimColor>
-                      {"    │    ↳ "}
-                      {a.activity}
-                      {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
-                    </Text>
+      <Box flexDirection="row">
+        {effectiveLayout !== "insights" && (
+          <Box width={listWidth} flexShrink={0} flexDirection="column" overflowX="hidden">
+            {rows.length === 0 && <Text dimColor>No sessions. Press c to create one.</Text>}
+            {rows.map((v, i) => (
+              <Box key={v.session.id} flexDirection="column">
+                <Text>
+                  <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
+                  <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
+                  <Text bold>{v.session.id}</Text>
+                  <Text dimColor> {v.session.status} </Text>
+                  <Text color="green">{usd(v.cost)}</Text>
+                  {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
+                  {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
+                  {v.amendments.length > 0 ? (
+                    <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
                   ) : null}
-                  {/* Why it failed, inline, without opening the output file (#8). */}
-                  {a.status === "failed" && a.error ? (
-                    <Text color="red">
-                      {"    │    ✖ "}
-                      {oneLine(a.error, 100)}
-                    </Text>
-                  ) : null}
-                </Box>
-              );
-            })}
-          {i === cursor &&
-            v.prs.map((pr) => {
-              const { glyph, color, label } = prStateDisplay(pr.state);
-              const w = v.prWatch[pr.id];
-              return (
-                <Text key={pr.id}>
-                  {"    └─ PR "}
-                  {pr.number ?? "?"}{" "}
-                  <Text color={color}>
-                    {glyph} {label}
-                  </Text>
-                  {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
-                  {w && w.openFeedback > 0 ? (
-                    <Text color="yellow">
-                      {" "}
-                      {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
-                    </Text>
-                  ) : null}
-                  {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
-                  <Text underline>{pr.url}</Text>
+                  {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+                  {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
+                  <Text dimColor> {v.session.title ?? ""}</Text>
                 </Text>
-              );
-            })}
-          {i === cursor &&
-            v.tickets.map((t) => {
-              const { glyph, color } = ticketStatusDisplay(t.status_category);
-              return (
-                <Text key={t.id}>
-                  {"    └─ JIRA "}
-                  {t.key}{" "}
-                  <Text color={color}>
-                    {glyph} {t.status ?? "?"}
-                  </Text>
-                  {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
-                  {t.url ? (
-                    <>
-                      {"  "}
-                      <Text underline>{t.url}</Text>
-                    </>
-                  ) : null}
-                </Text>
-              );
-            })}
-        </Box>
-      ))}
+                {i === cursor &&
+                  v.agents.map((a) => {
+                    const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
+                    return (
+                      <Box key={a.id} flexDirection="column">
+                        <Text>
+                          {`    ├─ ${agentLabel(a, v.prs)} `}
+                          <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
+                          <Text dimColor>
+                            {" "}
+                            {a.runtime}:{a.model}
+                          </Text>
+                          <Text color="green"> {usd(a.cost)}</Text>
+                          {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
+                        </Text>
+                        {/* Live "what it's doing now" for a non-terminal agent (#4). */}
+                        {!terminal && a.activity ? (
+                          <Text dimColor>
+                            {"    │    ↳ "}
+                            {a.activity}
+                            {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
+                          </Text>
+                        ) : null}
+                        {/* Why it failed, inline, without opening the output file (#8). */}
+                        {a.status === "failed" && a.error ? (
+                          <Text color="red">
+                            {"    │    ✖ "}
+                            {oneLine(a.error, 100)}
+                          </Text>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
+                {i === cursor &&
+                  v.prs.map((pr) => {
+                    const { glyph, color, label } = prStateDisplay(pr.state);
+                    const w = v.prWatch[pr.id];
+                    return (
+                      <Text key={pr.id}>
+                        {"    └─ PR "}
+                        {pr.number ?? "?"}{" "}
+                        <Text color={color}>
+                          {glyph} {label}
+                        </Text>
+                        {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
+                        {w && w.openFeedback > 0 ? (
+                          <Text color="yellow">
+                            {" "}
+                            {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
+                          </Text>
+                        ) : null}
+                        {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
+                        <Text underline>{pr.url}</Text>
+                      </Text>
+                    );
+                  })}
+                {i === cursor &&
+                  v.tickets.map((t) => {
+                    const { glyph, color } = ticketStatusDisplay(t.status_category);
+                    return (
+                      <Text key={t.id}>
+                        {"    └─ JIRA "}
+                        {t.key}{" "}
+                        <Text color={color}>
+                          {glyph} {t.status ?? "?"}
+                        </Text>
+                        {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
+                        {t.url ? (
+                          <>
+                            {"  "}
+                            <Text underline>{t.url}</Text>
+                          </>
+                        ) : null}
+                      </Text>
+                    );
+                  })}
+              </Box>
+            ))}
+          </Box>
+        )}
+        {effectiveLayout !== "list" && (
+          <Insights stats={stats} width={insightWidth} rows={size.rows} full={effectiveLayout === "insights"} />
+        )}
+      </Box>
       <Box marginTop={1} flexDirection="column">
         {confirm ? (
           <Text color="yellow">
@@ -522,7 +580,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
             {ghMissing ? <Text dimColor>gh not found — PR status not updating</Text> : null}
             {jiraUnavailable ? <Text dimColor>jira unavailable — ticket status not updating</Text> : null}
             <Text dimColor>
-              j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive · d delete · z archived · q quit
+              s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive · d delete · z archived · q quit
             </Text>
           </>
         )}

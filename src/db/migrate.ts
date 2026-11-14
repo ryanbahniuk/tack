@@ -241,6 +241,12 @@ const migrations: Migration[] = [
       CREATE INDEX idx_agents_session_pr ON agents(session_pr_id);
     `,
   },
+  {
+    version: 7,
+    name: "pr_merged_at",
+    // Keep merge activity on its actual day rather than the latest refresh day.
+    sql: `ALTER TABLE session_prs ADD COLUMN merged_at TEXT;`,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

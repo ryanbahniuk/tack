@@ -11,6 +11,7 @@ import {
 import { sessionIdFromPrBranch } from "../worktree/worktree";
 
 interface GhPr {
+  mergedAt?: string | null;
   number: number;
   url: string;
   title: string;
@@ -152,7 +153,7 @@ function numberFromPrUrl(url: string): number | null {
 
 async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
   const proc = Bun.spawn(
-    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName,mergeable"],
+    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName,mergeable,mergedAt"],
     { cwd: repoPath, stdout: "pipe", stderr: "pipe" },
   );
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -224,6 +225,7 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
         state: pr.state.toLowerCase(),
         headBranch: pr.headRefName,
         mergeable: toMergeable(pr.mergeable),
+        mergedAt: pr.mergedAt,
       });
     }
   }
@@ -274,6 +276,7 @@ export interface GhReview {
 
 /** The subset of `gh pr view --json …` the watcher consumes. */
 export interface PrStatus {
+  mergedAt?: string | null;
   state: string; // OPEN | MERGED | CLOSED
   isDraft?: boolean;
   mergeable: PrMergeable | string | null;
@@ -319,7 +322,7 @@ export interface PrFeedbackItem {
 }
 
 const PR_STATUS_FIELDS =
-  "state,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title,comments,reviews";
+  "state,mergedAt,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title,comments,reviews";
 
 /** Fetches a PR's state, mergeability, refs, conversation comments, and reviews. */
 export async function fetchPrStatus(repoPath: string, number: number): Promise<PrStatus> {
@@ -331,6 +334,7 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
   const raw = JSON.parse(out) as Partial<PrStatus>;
   return {
     state: raw.state ?? "OPEN",
+    mergedAt: raw.mergedAt ?? null,
     isDraft: raw.isDraft ?? false,
     mergeable: raw.mergeable ?? null,
     mergeStateStatus: raw.mergeStateStatus ?? null,
