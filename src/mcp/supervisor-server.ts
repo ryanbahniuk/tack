@@ -104,6 +104,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
 
   // Not plan-gated: syncing is read-only investigation prep (it never touches the
   // user's checkouts), and the supervisor needs it BEFORE it can form a plan.
+  // `readOnlyHint` is honest here: its only writes are Tack-owned snapshot worktrees
+  // under Tack state, never a user checkout or remote. Without the hint, claude's
+  // plan mode prompted the human for it despite the server-wide auto-allow.
   server.registerTool(
     "sync_projects",
     {
@@ -116,6 +119,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       inputSchema: {
         projects: z.array(z.string()).min(1).describe("Project names from list_projects"),
       },
+      annotations: { readOnlyHint: true },
     },
     async ({ projects }) => {
       const names = [...new Set(projects)]; // a duplicate would race two syncs on one path

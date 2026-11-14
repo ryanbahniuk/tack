@@ -332,9 +332,22 @@ Adapter specifics, hidden behind the interface:
   (Bash disallowed via `disallowShell` so a delegate-only run can't shell out to
   write files); MCP via inline `--mcp-config` JSON + `--strict-mcp-config`; cost from
   the final `result` event's `total_cost_usd`. The **interactive** supervisor also
-  auto-allows the mounted MCP servers (`--allowedTools mcp__<server>`) and wires a
-  `--settings` PostToolUse hook on `ExitPlanMode` — accepting the plan runs `tack
-  __approve-plan <id>`, which opens the session's `spawn_agent` gate (see §9).
+  auto-allows the mounted MCP servers and wires a `--settings` PostToolUse hook on
+  `ExitPlanMode` — accepting the plan runs `tack __approve-plan <id>`, which opens
+  the session's `spawn_agent` gate (see §9). Plan mode was observed to keep
+  prompting for supervisor tools when any single allow layer was used alone, so the
+  auto-allow is stated four ways: `--allowedTools mcp__<server>`; a PreToolUse hook
+  returning `allow`; a `permissions.allow: ["mcp__<server>"]` rule in the same
+  `--settings` blob; and that rule pre-written by `prepareInteractive` to the
+  Tack-owned session cwd's `.claude/settings.local.json` (merged and deduped, never
+  clobbering an existing or corrupt file — the same rule the TUI's "Yes, and don't
+  ask again" would persist, next to the pre-recorded workspace trust in
+  `~/.claude.json`). On top of that, the supervisor server marks its read-only tools
+  `readOnlyHint`, including `sync_projects`, whose only writes are Tack-owned
+  snapshot worktrees. The only human gates left are plan approval and, with
+  `autoOpenPrs: false`, `open_pr`: it gets a PreToolUse `ask` hook (excluded from
+  the allow hook's matcher, and carrying the "Open a PR for this?" wording) plus a
+  `permissions.ask` rule, which outranks every allow rule (deny → ask → allow).
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's

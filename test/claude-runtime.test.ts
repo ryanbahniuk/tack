@@ -16,7 +16,7 @@ const OPEN_PR = "mcp__tack-supervisor__open_pr";
 
 type HookEntry = { matcher: string; hooks: Array<{ type: string; command: string }> };
 
-function preToolUse(over: Partial<RunOptions> = {}): HookEntry[] {
+function settingsOf(over: Partial<RunOptions> = {}): any {
   const { args } = new ClaudeRuntime().interactiveCommand({
     readOnly: true,
     model: MODEL,
@@ -27,8 +27,12 @@ function preToolUse(over: Partial<RunOptions> = {}): HookEntry[] {
     ...over,
   });
   const i = args.indexOf("--settings");
-  expect(i).toBeGreaterThan(-1);
-  const settings = JSON.parse(args[i + 1]!);
+  return i === -1 ? undefined : JSON.parse(args[i + 1]!);
+}
+
+function preToolUse(over: Partial<RunOptions> = {}): HookEntry[] {
+  const settings = settingsOf(over);
+  expect(settings).toBeDefined();
   return settings.hooks?.PreToolUse ?? [];
 }
 
@@ -78,6 +82,44 @@ describe("ClaudeRuntime.interactiveCommand auto-allow hook", () => {
       mcpServers: [{ name: "tack-supervisor", command: "tack", args: [] }],
     });
     expect(args.join(" ")).not.toContain('"permissionDecision":"allow"');
+  });
+});
+
+describe("ClaudeRuntime.interactiveCommand settings permissions", () => {
+  test("the supervisor's --settings allows the tack-supervisor server", () => {
+    expect(settingsOf().permissions.allow).toEqual(["mcp__tack-supervisor"]);
+  });
+
+  test("keeps the --allowedTools flag alongside the settings rule", () => {
+    const { args } = new ClaudeRuntime().interactiveCommand({
+      readOnly: true,
+      model: MODEL,
+      bin: "claude",
+      cwd: "/tmp/x",
+      prompt: "",
+      mcpServers: [{ name: "tack-supervisor", command: "tack", args: [] }],
+    });
+    const i = args.indexOf("--allowedTools");
+    expect(args[i + 1]).toBe("mcp__tack-supervisor");
+  });
+
+  test("no allow rule outside readOnly", () => {
+    const settings = settingsOf({ readOnly: false });
+    expect(settings?.permissions?.allow).toBeUndefined();
+  });
+
+  test("open_pr keeps its ask hook and gains an ask rule when approvalTools are set", () => {
+    const settings = settingsOf({ approvalTools: [OPEN_PR], approvalPrompt: "Open a PR for this?" });
+    // The server-wide allow stays; the ask rule outranks it (deny → ask → allow).
+    expect(settings.permissions.allow).toEqual(["mcp__tack-supervisor"]);
+    expect(settings.permissions.ask).toEqual([OPEN_PR]);
+    const ask = (settings.hooks.PreToolUse as HookEntry[]).find((e) => e.matcher === OPEN_PR);
+    expect(ask!.hooks[0]!.command).toContain('"permissionDecision":"ask"');
+    expect(ask!.hooks[0]!.command).toContain("Open a PR for this?");
+  });
+
+  test("no ask rule when approvalTools are unset (autoOpenPrs on)", () => {
+    expect(settingsOf().permissions.ask).toBeUndefined();
   });
 });
 
