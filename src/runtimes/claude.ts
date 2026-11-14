@@ -165,7 +165,8 @@ export class ClaudeRuntime implements Runtime {
     // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok. A
     // PreToolUse hook that returns an `ask` decision forces the prompt even though the
     // tool's MCP server is otherwise auto-allowed by the `--allowedTools mcp__<server>`
-    // wildcard below — the model can't open a PR without the human okaying that call.
+    // wildcard above (and the hook allow in (3), which excludes these tools) — the
+    // model can't open a PR without the human okaying that call.
     // We use a hook (not a permissions `ask` rule) so the prompt carries our own
     // wording via `permissionDecisionReason` instead of the generic "requires
     // confirmation for this tool" line.
@@ -182,6 +183,23 @@ export class ClaudeRuntime implements Runtime {
       const command = shellJoin(["printf", "%s", payload]);
       for (const tool of opts.approvalTools) {
         preToolUse.push({ matcher: tool, hooks: [{ type: "command", command }] });
+      }
+    }
+    // (3) Hook-level auto-allow for the mounted servers' tools. The server-level
+    // `--allowedTools mcp__<server>` rule above was observed NOT to be enough on its
+    // own — `check_agents` still raised a prompt in plan mode — whereas a PreToolUse
+    // `allow` decision is authoritative. Each matcher is anchored to its server and
+    // excludes that server's approval tools, so those never get an `allow` and their
+    // `ask` hook in (2) still forces the per-call human ok. Supervisor-only, like the
+    // `--allowedTools` flags it backs up.
+    if (opts.readOnly && opts.mcpServers?.length) {
+      const payload = JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+      });
+      const command = shellJoin(["printf", "%s", payload]);
+      for (const s of opts.mcpServers) {
+        const matcher = autoAllowMatcher(s.name, opts.approvalTools ?? []);
+        preToolUse.push({ matcher, hooks: [{ type: "command", command }] });
       }
     }
     const hooks: Record<string, unknown[]> = {};
@@ -330,6 +348,28 @@ function mcpConfig(
   for (const s of opts.mcpServers ?? [])
     servers[s.name] = { command: s.command, args: s.args, ...(s.env ? { env: s.env } : {}) };
   return servers;
+}
+
+/**
+ * The PreToolUse matcher (a regex) that auto-allows every tool of MCP server
+ * `server` except its approval tools. Claude names MCP tools
+ * `mcp__<server>__<tool>`, so we anchor on that prefix — a different server's
+ * same-named tool never matches — and carve the approval tools out with a
+ * negative lookahead so they never receive an `allow` that could pre-empt their
+ * `ask`. Approval tools belonging to other servers are irrelevant here and ignored.
+ */
+export function autoAllowMatcher(server: string, approvalTools: readonly string[]): string {
+  const prefix = `mcp__${server}__`;
+  const prefixRe = `^${escapeRegex(prefix)}`;
+  const excluded = approvalTools
+    .filter((t) => t.startsWith(prefix) && t.length > prefix.length)
+    .map((t) => escapeRegex(t.slice(prefix.length)));
+  if (!excluded.length) return `${prefixRe}.*`;
+  return `${prefixRe}(?!(?:${excluded.join("|")})$).*`;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Joins a command + args into a single shell string (hook commands run via `sh
