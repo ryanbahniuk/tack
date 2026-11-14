@@ -6,6 +6,7 @@ import { getSession } from "../db";
 import {
   addSharedContext,
   agentTouches,
+  approveSessionPlan,
   getAgent,
   latestSharedContext,
   listAgents,
@@ -57,16 +58,24 @@ export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`
 export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
 
 /**
- * Plain-language wording for the plan-approval prompt. Handed to the runtime via
- * the ExitPlanMode PreToolUse hook so the human sees a single approve/change
- * decision instead of Claude's native "auto-accept edits vs manually approve
- * edits" fork. That fork is meaningless here: the supervisor never edits, and the
- * agents it spawns always run headless in auto mode (see PERMISSION_ARGS in the
- * claude adapter) regardless of which branch the human would pick — so we suppress
- * it and state plainly what approving does.
+ * Plain-language wording for the plan-approval prompt. The attended claude
+ * supervisor presents its plan by calling `request_plan_approval`, which a
+ * PreToolUse hook gates behind an `ask` decision carrying this text — so the human
+ * sees one plain approve/decline question instead of Claude Code's native
+ * ExitPlanMode menu (auto-mode vs manually-approve-edits vs keep planning). That
+ * menu can't be relabelled or overridden by a hook, and its edit-mode fork is
+ * meaningless here: the supervisor never edits, and the agents it spawns always run
+ * headless in auto mode (see PERMISSION_ARGS in the claude adapter).
  */
-export const SUPERVISOR_PLAN_APPROVAL_PROMPT =
-  "Start the agents on this plan? They run autonomously in auto mode.";
+export const SUPERVISOR_PLAN_APPROVAL_PROMPT = "Proceed with implementation?";
+
+/**
+ * Fully-qualified name of the plan-approval tool, handed to the runtime as
+ * `planApprovalTool` so its PreToolUse hook (the human prompt) matches exactly this
+ * tool. Deliberately NOT in SUPERVISOR_APPROVAL_TOOLS: it gets its own hook, which
+ * also marks the session as awaiting input.
+ */
+export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__request_plan_approval`;
 
 /**
  * The supervisor's tool server. The supervisor is itself a runtime session
@@ -168,6 +177,33 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool(
+    "request_plan_approval",
+    {
+      description:
+        "Present your plan to the human for approval. Calling this shows them an approve/decline prompt " +
+        "with your summary; it returns once they approve. If they decline, revise the plan per their " +
+        "feedback and call this again. `spawn_agent` is blocked until the plan is approved.",
+      inputSchema: {
+        summary: z
+          .string()
+          .describe(
+            "Short plan summary for the human: goal in one sentence, then one line per agent (project + " +
+              "what it does), plus any real trade-off/risk.",
+          ),
+      },
+    },
+    // The `summary` arg is for the human (it's shown with the tool call they're asked
+    // to approve); the handler doesn't need it. It only executes after the human
+    // accepts the PreToolUse `ask` prompt (a decline never reaches it), so reaching it
+    // is an un-forgeable approval signal the model can't self-trigger. Sessions with no such hook (background,
+    // codex) are already approved up front, so this is then a harmless no-op.
+    async () => {
+      approveSessionPlan(sessionId);
+      return text({ approved: true, note: "Plan approved — proceed to spawn agents." });
+    },
+  );
+
+  server.registerTool(
     "spawn_agent",
     {
       description:
@@ -198,13 +234,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     async ({ project, prompt, model, touches, dependsOn }) => {
       const session = requireSession();
       // Plan-gate: agents only run once the human has approved the plan (attended
-      // sessions flip this via the ExitPlanMode hook; background sessions are
-      // pre-approved). Refuse until then so a spawn can't slip out during planning.
+      // claude sessions flip this via `request_plan_approval`; background and codex
+      // sessions are pre-approved). Refuse until then so a spawn can't slip out
+      // during planning.
       if (!session.plan_approved_at)
         throw new Error(
-          "Plan not approved yet. Present your plan and shared contract to the human and let them accept " +
-            "it before spawning any agents. Don't ask the human to change or exit any mode — just wait for " +
-            "their approval. `spawn_agent` stays blocked until then.",
+          "Plan not approved yet. Call `request_plan_approval` with your short plan summary and wait for " +
+            "the human to accept it before spawning any agents. Don't ask the human to change or exit any " +
+            "mode — the tool call is the approval. `spawn_agent` stays blocked until then.",
         );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);

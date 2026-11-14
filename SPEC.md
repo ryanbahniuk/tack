@@ -176,6 +176,7 @@ the coordination tools it needs: `list_projects`, `sync_projects` (fetches the
 affected projects and checks each default-branch tip out into a detached snapshot
 worktree under `snapshots/<sessionId>/<project>` — the only project code the
 supervisor reads), `set_shared_context`,
+`request_plan_approval` (the attended plan gate, see §9),
 `spawn_agent` (with `touches`/`dependsOn`), `check_agents`, `wait_for_agents` (blocks
 server-side so the planner doesn't burn tokens polling, and returns early with any
 `pendingAmendments` so the system routes an agent's proposal back to the supervisor
@@ -331,10 +332,15 @@ Adapter specifics, hidden behind the interface:
   --permission-prompts none --disallowedTools Edit,Write,NotebookEdit,Task,Agent,Bash`
   (Bash disallowed via `disallowShell` so a delegate-only run can't shell out to
   write files); MCP via inline `--mcp-config` JSON + `--strict-mcp-config`; cost from
-  the final `result` event's `total_cost_usd`. The **interactive** supervisor also
-  auto-allows the mounted MCP servers (`--allowedTools mcp__<server>`) and wires a
-  `--settings` PostToolUse hook on `ExitPlanMode` — accepting the plan runs `tack
-  __approve-plan <id>`, which opens the session's `spawn_agent` gate (see §9).
+  the final `result` event's `total_cost_usd`. The **interactive** supervisor
+  does NOT use plan mode (its native `ExitPlanMode` menu can't be relabelled or
+  overridden by a hook): it blocks edits via a `--settings` `permissions.deny` list
+  (`Edit`, `Write`, `NotebookEdit`, `ExitPlanMode`, `EnterPlanMode`), auto-allows the
+  mounted MCP servers (`--allowedTools mcp__<server>`), and wires a PreToolUse hook
+  on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
+  — marking the session as awaiting input and returning an `ask` decision so the
+  human sees a single "Proceed with implementation?" prompt. The tool's handler,
+  which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's
@@ -352,7 +358,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime read-only, with only its session snapshot root (plus `readAllowlist`)
    granted as read dirs — never the user's checkouts — and the supervisor MCP
    server mounted. By default this is the runtime's own **interactive** TUI (Claude
-   Code / Codex) with inherited stdio — same capability posture (plan mode, no edit
+   Code / Codex) with inherited stdio — same capability posture (no edit
    tools, only the `tack-supervisor` MCP tools), so you chat with the supervisor
    directly and follow up with `--resume` in the same live session. Since the TUI
    owns the terminal there is no event stream to persist; cost is recovered from the
@@ -365,8 +371,10 @@ stdout/stderr to the log, and yields parsed JSON lines.
    `set_shared_context`, presents its plan, and
    gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
    it refuses until the session's `plan_approved_at` is set. An attended claude
-   session flips that gate when the human accepts the plan (the `ExitPlanMode` hook →
-   `tack __approve-plan`); background runs (no human) and codex interactive sessions
+   session flips that gate when the human accepts the plan: the supervisor calls
+   `request_plan_approval` with a short summary, a PreToolUse `ask` hook prompts
+   "Proceed with implementation?", and the tool's handler (which only runs on
+   acceptance) approves the plan; background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
    a **detached** `tack __run-agent <agentId>` runner.
