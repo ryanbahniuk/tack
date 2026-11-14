@@ -1,16 +1,18 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { CONFIG_PATH, expandHome } from "../paths";
 import { ConfigSchema, type Model, type TackConfig } from "./schema";
 
 /**
  * Loads and validates the user's config. The config file is a `.ts` module that
- * `export default`s a config object (Bun imports it natively).
+ * `export default`s a config object (Bun imports it natively). The import is keyed
+ * by mtime because Bun caches modules by specifier: a command that edits the config
+ * and then reloads it (e.g. `models sync`) would otherwise get the stale copy.
  */
 export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
   if (!existsSync(path)) {
     throw new Error(`No config found at ${path}. Run \`tack init\` to create one.`);
   }
-  const mod = (await import(path)) as { default?: unknown; config?: unknown };
+  const mod = (await import(`${path}?v=${statSync(path).mtimeMs}`)) as { default?: unknown; config?: unknown };
   const raw = mod.default ?? mod.config;
   if (raw === undefined) {
     throw new Error(`Config at ${path} must \`export default\` a config object.`);
@@ -26,6 +28,15 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       const known = [...byKey.keys()].join(", ") || "(none)";
       throw new Error(`roles.${role} = "${key}" is not a defined model. Known: ${known}`);
     }
+  }
+
+  // `jira.mcpServer` must name a mounted server — a typo would otherwise surface only
+  // as a silent "jira unavailable" on the dashboard, so fail loudly here instead.
+  if (parsed.jira && !parsed.supervisorMcpServers.some((s) => s.name === parsed.jira!.mcpServer)) {
+    const known = parsed.supervisorMcpServers.map((s) => s.name).join(", ") || "(none)";
+    throw new Error(
+      `jira.mcpServer = "${parsed.jira.mcpServer}" is not a supervisorMcpServers entry. Known: ${known}`,
+    );
   }
 
   return {
@@ -44,6 +55,8 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       command: expandHome(s.command),
     })),
     prWatch: parsed.prWatch,
+    autoOpenPrs: parsed.autoOpenPrs,
+    jira: parsed.jira,
   };
 }
 

@@ -381,6 +381,21 @@ export async function addModelsToConfig(configPath: string, entries: Model[]): P
 }
 
 /**
+ * Removes the configured models whose `key` is in `keys`, rewriting the `models:`
+ * array in place and preserving the rest of the file. Callers must first re-pin any
+ * role still pointing at one of these — `loadConfig` rejects a role naming a missing
+ * model, so removing first would leave a config that no longer loads. Returns the
+ * entries actually removed.
+ */
+export async function removeModelsFromConfig(configPath: string, keys: Set<string>): Promise<Model[]> {
+  const parsed = await loadParsedConfig(configPath);
+  const removed = parsed.models.filter((m) => keys.has(m.key));
+  if (removed.length === 0) return [];
+  writeModelsBlock(configPath, parsed.models.filter((m) => !keys.has(m.key)));
+  return removed;
+}
+
+/**
  * Sets `pricing` on the configured models named in `pricingByKey` (keyed by model
  * `key`), rewriting the `models:` array in place and preserving the rest of the
  * file. Only models present in both the config and the map are touched. Returns the

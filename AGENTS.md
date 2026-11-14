@@ -40,7 +40,7 @@ src/agent/               execute.ts (prepare/run + activity/error), detached.ts 
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees + PR branch nomenclature
-src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), summarize.ts (auto-describe a repo)
+src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
 src/cli/                 stable.tsx (Ink dashboard), liveness.ts
@@ -71,10 +71,13 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
   provider, name, version, runtime, id, optional effort/pricing) and pin roles to
-  it. No code change. To make a model discoverable via `tack models sync`, also
-  add it to `MODEL_CATALOG` (`src/runtimes/catalog.ts`) — sync adds catalog
-  models for whichever runtimes resolve to a working binary (and then fills codex
-  pricing from models.dev).
+  it. No code change. Codex models are discovered live: `tack models sync` adds
+  what `codex debug models` reports for the signed-in account and prunes the rest
+  (re-pinning affected roles). For claude, which can't list models, add it to
+  `MODEL_CATALOG` (`src/runtimes/catalog.ts`) to make it discoverable — sync adds
+  catalog models for whichever runtimes resolve to a working binary (and then
+  fills codex pricing from models.dev). A runtime opts into live discovery by
+  implementing `Runtime.listModels`.
 - **Add a runtime (e.g. Bedrock):** add the kind to `RuntimeKind`
   (`src/config/schema.ts`), implement `Runtime` in `src/runtimes/`, wire it in
   `selectRuntime` (`src/runtimes/index.ts`), handle its `bin`/version in

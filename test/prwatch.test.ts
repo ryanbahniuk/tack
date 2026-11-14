@@ -200,14 +200,14 @@ describe("buildReplyBody", () => {
   });
 });
 
-describe("migration v5", () => {
+describe("migration v6", () => {
   test("applies to a fresh in-memory DB with the PR-watch schema", () => {
     const db = new Database(":memory:");
     db.exec("PRAGMA foreign_keys = ON;");
     migrate(db);
     const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map((c) => c.name);
 
-    expect((db.prepare(`SELECT MAX(version) AS v FROM _migrations`).get() as { v: number }).v).toBe(5);
+    expect((db.prepare(`SELECT MAX(version) AS v FROM _migrations`).get() as { v: number }).v).toBe(6);
     expect(cols("session_prs")).toEqual(expect.arrayContaining(["mergeable", "base_branch", "head_sha", "checked_at"]));
     expect(cols("sessions")).toContain("pr_watch_pid");
     expect(cols("agents")).toEqual(expect.arrayContaining(["kind", "session_pr_id", "post_fixed_at"]));
@@ -250,6 +250,6 @@ describe("migration v5", () => {
 
     // Re-running is a no-op.
     migrate(db);
-    expect((db.prepare(`SELECT COUNT(*) AS n FROM _migrations`).get() as { n: number }).n).toBe(5);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM _migrations`).get() as { n: number }).n).toBe(6);
   });
 });

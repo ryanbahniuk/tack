@@ -87,9 +87,9 @@ export function buildAgentContext(parts: AgentContextParts): string {
           "",
           "When your task is complete, commit ALL of your changes to your worktree branch",
           "with clear messages (several commits are fine). Do NOT open a pull request and do",
-          "NOT push — the supervisor reviews every agent's work, summarizes it for the human,",
-          "and opens PRs itself once approved. Anything you leave uncommitted risks being",
-          "left out, so make sure your working tree is clean before you finish.",
+          "NOT push — the supervisor reviews every agent's work and opens the PRs itself.",
+          "Anything you leave uncommitted risks being left out, so make sure your working",
+          "tree is clean before you finish.",
         ].join("\n"),
   );
 
