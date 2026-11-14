@@ -9,6 +9,7 @@ interface GhPr {
   title: string;
   state: string; // OPEN | MERGED | CLOSED
   headRefName: string;
+  mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
 }
 
 export interface DiscoverResult {
@@ -91,7 +92,7 @@ function numberFromPrUrl(url: string): number | null {
 
 async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
   const proc = Bun.spawn(
-    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName"],
+    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName,mergeable"],
     { cwd: repoPath, stdout: "pipe", stderr: "pipe" },
   );
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -158,6 +159,7 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
         title: pr.title,
         state: pr.state.toLowerCase(),
         headBranch: pr.headRefName,
+        mergeable: pr.mergeable ? pr.mergeable.toLowerCase() : null,
       });
     }
   }

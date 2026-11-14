@@ -149,6 +149,15 @@ const migrations: Migration[] = [
       ALTER TABLE agents ADD COLUMN depends_on TEXT;
     `,
   },
+  {
+    version: 5,
+    name: "session_pr_mergeable",
+    // GitHub's actual merge-conflict status for a PR, so the dashboard can badge
+    // real conflicts (and clear the badge once they're resolved) instead of listing
+    // predicted cross-agent file collisions. Lowercased `gh` mergeable value:
+    // `mergeable` | `conflicting` | `unknown`. NULL = never fetched.
+    sql: `ALTER TABLE session_prs ADD COLUMN mergeable TEXT;`,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

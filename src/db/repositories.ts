@@ -110,6 +110,8 @@ export interface SessionPrRow {
   title: string | null;
   state: string | null;
   head_branch: string | null;
+  /** Lowercased GitHub mergeable status (`mergeable` | `conflicting` | `unknown`); null = never fetched. */
+  mergeable: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -469,6 +471,8 @@ export function upsertSessionPr(input: {
   title?: string | null;
   state?: string | null;
   headBranch?: string | null;
+  /** Omitted/null keeps any previously-fetched value (see COALESCE below). */
+  mergeable?: string | null;
 }): void {
   const db = getDb();
   const now = nowIso();
@@ -476,8 +480,11 @@ export function upsertSessionPr(input: {
     .prepare(`SELECT id FROM session_prs WHERE session_id = ? AND url = ?`)
     .get(input.sessionId, input.url) as { id: string } | null;
   if (existing) {
+    // `mergeable` is COALESCEd so callers that don't know it (e.g. the `open_pr`
+    // tool, right after `gh pr create`) never wipe a value the poll already fetched.
     db.prepare(
-      `UPDATE session_prs SET agent_id = ?, project_name = ?, number = ?, title = ?, state = ?, head_branch = ?, updated_at = ?
+      `UPDATE session_prs SET agent_id = ?, project_name = ?, number = ?, title = ?, state = ?, head_branch = ?,
+         mergeable = COALESCE(?, mergeable), updated_at = ?
        WHERE id = ?`,
     ).run(
       input.agentId ?? null,
@@ -486,14 +493,15 @@ export function upsertSessionPr(input: {
       input.title ?? null,
       input.state ?? null,
       input.headBranch ?? null,
+      input.mergeable ?? null,
       now,
       existing.id,
     );
     return;
   }
   db.prepare(
-    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, mergeable, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     shortId("pr"),
     input.sessionId,
@@ -504,6 +512,7 @@ export function upsertSessionPr(input: {
     input.title ?? null,
     input.state ?? null,
     input.headBranch ?? null,
+    input.mergeable ?? null,
     now,
     now,
   );
