@@ -118,25 +118,36 @@ export class ClaudeRuntime implements Runtime {
 
   /**
    * The interactive counterpart to `run`: the real `claude` TUI with the same
-   * read-only supervisor posture (plan mode, no edit/subagent tools) and the same
-   * mounted MCP servers, context, and add-dirs. We drop the headless `-p`
-   * streaming flags (and `--permission-prompts none`) so a human is genuinely in
-   * the loop, but keep the capability boundary identical: it can read and drive
-   * the `tack-supervisor` tools, never edit code directly.
+   * read-only supervisor posture (no edit/subagent tools) and the same mounted MCP
+   * servers, context, and add-dirs. We drop the headless `-p` streaming flags (and
+   * `--permission-prompts none`) so a human is genuinely in the loop, but keep the
+   * capability boundary identical: it can read and drive the `tack-supervisor`
+   * tools, never edit code directly. Unlike the headless path it does NOT run in
+   * `--permission-mode plan`: plan mode ends in Claude Code's native ExitPlanMode
+   * menu, which no hook can relabel or replace. Instead edits are blocked by a
+   * `permissions.deny` list in `--settings`, and the plan is approved through Tack's
+   * own `planApprovalTool` prompt.
    */
   interactiveCommand(opts: RunOptions): InteractiveSpec {
     const m = opts.model;
     const args = ["--model", m.id];
+    // A single --settings blob carrying the session's edit block and human gates.
+    const settings: { permissions?: { deny: string[] }; hooks?: unknown } = {};
     if (opts.readOnly) {
-      args.push("--permission-mode", "plan");
+      // Pin the default mode explicitly so a user-level `defaultMode` (e.g. plan) can't
+      // reintroduce the native ExitPlanMode menu, then block the native edit tools (and
+      // plan mode itself) via deny rules rather than plan mode.
+      args.push("--permission-mode", "default");
+      settings.permissions = { deny: [...INTERACTIVE_READONLY_DENY] };
       // With `disallowShell`, Bash is forbidden too so the supervisor can't route
       // around its no-write posture by shelling out (e.g. `echo … > plan.md`) — it
       // plans via its `tack-supervisor` tools and the chat, never by writing files.
       args.push("--disallowedTools", readOnlyDisallowed(opts));
       // Auto-allow the mounted Tack MCP servers so their read/coordinate calls don't
       // each raise a permission prompt — the ONE human gate we want is the plan
-      // approval (ExitPlanMode), after which spawn_agent proceeds. `spawn_agent` is
-      // still held before approval by its own plan-gate, not by a per-call prompt.
+      // approval (`planApprovalTool`, forced to prompt by its own hook below), after
+      // which spawn_agent proceeds. `spawn_agent` is still held before approval by
+      // its own server-side plan-gate, not by a per-call prompt.
       for (const s of opts.mcpServers ?? []) args.push("--allowedTools", `mcp__${s.name}`);
     }
     if (m.effort) args.push("--effort", m.effort);
@@ -144,31 +155,23 @@ export class ClaudeRuntime implements Runtime {
     else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
-    // A single --settings blob carrying the session's human gates, all wired as hooks:
-    const settings: { hooks?: unknown } = {};
-    // (1) Track the plan-approval decision through the session's lifecycle:
-    //  - PreToolUse on ExitPlanMode fires when the plan is presented (before the human
-    //    decides) → mark the session as awaiting input. This re-arms every iteration.
-    //  - PostToolUse fires only after acceptance (rejection / "keep planning" never
-    //    completes the tool), so it's an un-forgeable human signal the model can't
-    //    self-trigger → flip the plan-approval gate and clear the awaiting flag.
+    // Human gates, all wired as PreToolUse hooks that return an `ask` decision. That
+    // forces a prompt even though the tool's MCP server is otherwise auto-allowed by
+    // the `--allowedTools mcp__<server>` wildcard above. We use hooks (not permissions
+    // `ask` rules) so each prompt carries our own wording via
+    // `permissionDecisionReason` instead of the generic "requires confirmation" line.
     const preToolUse: unknown[] = [];
-    const postToolUse: unknown[] = [];
-    if (opts.onPlanPresented) {
+    // (1) Plan approval: the hook fires when the plan is presented (before the human
+    // decides) → mark the session as awaiting input (re-arms every iteration) and
+    // emit the "Proceed with implementation?" ask. The tool's handler, which flips
+    // the plan-approval gate, only runs if the human accepts — an un-forgeable
+    // signal the model can't self-trigger.
+    if (opts.onPlanPresented && opts.planApprovalTool) {
       const command = shellJoin([opts.onPlanPresented.command, ...opts.onPlanPresented.args]);
-      preToolUse.push({ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] });
+      preToolUse.push({ matcher: opts.planApprovalTool, hooks: [{ type: "command", command }] });
     }
-    if (opts.onPlanApproved) {
-      const command = shellJoin([opts.onPlanApproved.command, ...opts.onPlanApproved.args]);
-      postToolUse.push({ matcher: "ExitPlanMode", hooks: [{ type: "command", command }] });
-    }
-    // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok. A
-    // PreToolUse hook that returns an `ask` decision forces the prompt even though the
-    // tool's MCP server is otherwise auto-allowed by the `--allowedTools mcp__<server>`
-    // wildcard below — the model can't open a PR without the human okaying that call.
-    // We use a hook (not a permissions `ask` rule) so the prompt carries our own
-    // wording via `permissionDecisionReason` instead of the generic "requires
-    // confirmation for this tool" line.
+    // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok — the
+    // model can't open a PR without the human okaying that call.
     if (opts.approvalTools?.length) {
       const reason = opts.approvalPrompt ?? "Approve this action?";
       const payload = JSON.stringify({
@@ -184,10 +187,7 @@ export class ClaudeRuntime implements Runtime {
         preToolUse.push({ matcher: tool, hooks: [{ type: "command", command }] });
       }
     }
-    const hooks: Record<string, unknown[]> = {};
-    if (preToolUse.length) hooks.PreToolUse = preToolUse;
-    if (postToolUse.length) hooks.PostToolUse = postToolUse;
-    if (Object.keys(hooks).length > 0) settings.hooks = hooks;
+    if (preToolUse.length) settings.hooks = { PreToolUse: preToolUse };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(
       "--mcp-config",
@@ -299,15 +299,24 @@ export class ClaudeRuntime implements Runtime {
 }
 
 /**
+ * The interactive read-only supervisor's `permissions.deny` list. Without plan mode
+ * (see `interactiveCommand`) nothing else stops the native edit tools, so they're
+ * denied outright. ExitPlanMode/EnterPlanMode are denied too: plan approval goes
+ * through Tack's own `planApprovalTool`, and letting the model enter plan mode would
+ * bring back the native ExitPlanMode menu we're replacing.
+ */
+const INTERACTIVE_READONLY_DENY = ["Edit", "Write", "NotebookEdit", "ExitPlanMode", "EnterPlanMode"];
+
+/**
  * The `--disallowedTools` list for a read-only run. We deliberately do NOT list
- * the native edit tools (Edit/Write/NotebookEdit): a read-only run is always in
- * `--permission-mode plan`, which already blocks every file edit — and does so
- * gracefully, intercepting the call and steering the model to ExitPlanMode.
- * Hard-disallowing those tools instead turns that graceful block into a jarring
- * "No such tool available: Write. Write is disabled for this session" error that
- * surfaces to the human right before the plan. So we only disallow what plan mode
- * does NOT cover: the subagent tools (named "Task" or "Agent" across CLI
- * versions), plus Bash when the caller forbids shelling out entirely.
+ * the native edit tools (Edit/Write/NotebookEdit) here: a headless read-only run is
+ * in `--permission-mode plan`, which already blocks every file edit gracefully
+ * (intercepting the call and steering the model back to planning), and the
+ * interactive supervisor denies them via `INTERACTIVE_READONLY_DENY` in its
+ * `--settings`. Hard-disallowing them instead surfaces a jarring "No such tool
+ * available: Write. Write is disabled for this session" error to the human. So we
+ * only disallow what neither covers: the subagent tools (named "Task" or "Agent"
+ * across CLI versions), plus Bash when the caller forbids shelling out entirely.
  */
 function readOnlyDisallowed(opts: RunOptions): string {
   const base = ["Task", "Agent"];

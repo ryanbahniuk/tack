@@ -31,7 +31,7 @@ export interface SessionRow {
    * yet approved. Background sessions are stamped up front — no human in the loop. */
   plan_approved_at: string | null;
   /** Ephemeral "supervisor is blocked on a human decision" toggle (e.g. a plan
-   * presented via ExitPlanMode). Set when it blocks, cleared when it proceeds, so it
+   * presented via `request_plan_approval`). Set when it blocks, cleared when it proceeds, so it
    * re-arms every iteration. null = not currently waiting. See `awaiting_reason`. */
   awaiting_input_at: string | null;
   /** Why the supervisor is waiting (e.g. "plan"), when `awaiting_input_at` is set. */
@@ -240,9 +240,9 @@ export function setSessionCost(id: string, usd: number): void {
 
 /**
  * Marks a session's plan as approved (idempotent — the first approval time wins),
- * opening the `spawn_agent` gate. Called by the interactive supervisor's
- * ExitPlanMode hook when the human accepts the plan, and up front for background
- * sessions (which have no human to approve). */
+ * opening the `spawn_agent` gate. Called by the `request_plan_approval` tool's
+ * handler (which only runs once the human accepts the plan prompt), and up front
+ * for background and codex sessions (which have no such hook). */
 export function approveSessionPlan(id: string): void {
   // Approval always means the human resolved the plan decision, so clear the
   // ephemeral awaiting flag in the same write (the plan gate itself stays latched).

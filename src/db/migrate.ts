@@ -99,7 +99,7 @@ const migrations: Migration[] = [
     version: 2,
     name: "session_plan_approval",
     // The plan-approval gate for `spawn_agent`: an attended supervisor must get the
-    // human's approval (via the runtime's ExitPlanMode) before any agent runs. Null
+    // human's approval (via `request_plan_approval`) before any agent runs. Null
     // means unapproved; a timestamp means approved. Background (headless) sessions
     // are stamped up front since there is no human in the loop.
     sql: `ALTER TABLE sessions ADD COLUMN plan_approved_at TEXT;`,
@@ -111,7 +111,7 @@ const migrations: Migration[] = [
     //
     // `awaiting_input_at`/`awaiting_reason` are an EPHEMERAL toggle, not a latch
     // like `plan_approved_at`: set when the supervisor blocks on a human decision
-    // (e.g. a plan presented via ExitPlanMode) and cleared when it proceeds, so it
+    // (e.g. a plan presented via `request_plan_approval`) and cleared when it proceeds, so it
     // re-arms on every plan iteration. NULL = not currently waiting.
     //
     // `last_seen_at` (session) + `finished_at` (agent) back the "unread completed
