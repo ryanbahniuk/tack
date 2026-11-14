@@ -55,6 +55,7 @@ import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor, openInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
+import { runPrWatcher } from "../src/prwatch/watch";
 import {
   ensureRuntimeInstalled,
   fetchPricingCatalog,
@@ -1186,6 +1187,13 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__watch-prs") {
+  // The session's detached PR watcher (spawned by `spawnPrWatcher`): polls open PRs,
+  // spawns fix agents, pushes + replies. Exits on its own when nothing is left to watch.
+  const [, , , sessionId] = process.argv;
+  const config = await loadConfig();
+  await runPrWatcher(sessionId!, config);
+  process.exit(0);
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse/ExitPlanMode hook when a plan is
   // presented for approval. Two jobs: (1) mark the session as awaiting the human's

@@ -1,8 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readArtifact, writeAmendmentArtifact } from "../artifacts/store";
-import { createAmendment, latestSharedContext, listAgents } from "../db";
+import { readArtifact, writeAmendmentArtifact, writePrFeedbackArtifact } from "../artifacts/store";
+import {
+  createAmendment,
+  getAgent,
+  latestSharedContext,
+  listAgentPrFeedback,
+  listAgents,
+  recordPrFeedbackDecision,
+} from "../db";
 
 /**
  * The Tack coordination MCP server — the cross-runtime shared-state bus. Each
@@ -72,6 +79,75 @@ export async function runCoordinationServer(sessionId: string, agentId: string):
       };
     },
   );
+
+  // PR-fix agents only: the channel through which a fix agent hands its per-comment
+  // verdicts back to the PR watcher. The agent never talks to GitHub; the watcher
+  // reads these rows after the run, pushes, and posts each reply.
+  if (getAgent(agentId)?.kind === "pr_fix") {
+    server.registerTool(
+      "report_pr_feedback",
+      {
+        description:
+          "Report your decision and reply for each PR review item you were asked to handle, by its sourceId. " +
+          "Call once before finishing, covering EVERY item. decision: 'fixed' (you changed code and committed), " +
+          "'declined' (relevant but not justified / you disagree), or 'not_applicable' (not actionable, e.g. " +
+          "informational or bot noise). reply: 1-3 plain sentences saying what you did or why not. Tack posts the " +
+          "replies on GitHub after pushing your commits — do not push or call gh yourself.",
+        inputSchema: {
+          items: z
+            .array(
+              z.object({
+                sourceId: z.string().describe("The item's sourceId from your task"),
+                decision: z.enum(["fixed", "declined", "not_applicable"]),
+                reply: z.string().min(1).describe("1-3 sentences: what you did, or why not"),
+              }),
+            )
+            .min(1),
+        },
+      },
+      async ({ items }) => {
+        // Only this agent's own still-open rows are addressable; anything else is a
+        // typo or a hallucinated id, and we reject the whole call (recording nothing)
+        // so the agent can correct it and retry rather than half-apply.
+        const mine = listAgentPrFeedback(agentId).filter((f) => f.handled_at === null);
+        const byId = new Map(mine.map((f) => [f.source_id, f]));
+        const unknown = items.filter((i) => !byId.has(i.sourceId)).map((i) => i.sourceId);
+        if (unknown.length > 0) {
+          throw new Error(
+            `Unknown sourceId(s): ${unknown.join(", ")}. Valid ids for your task: ${[...byId.keys()].join(", ") || "(none)"}`,
+          );
+        }
+        for (const item of items) {
+          const row = byId.get(item.sourceId)!;
+          const ref = writePrFeedbackArtifact(sessionId, row.session_pr_id, row.source_id, "reply", item.reply);
+          recordPrFeedbackDecision(row.id, item.decision, ref);
+        }
+        const reported = new Set(items.map((i) => i.sourceId));
+        const missing = [...byId.keys()].filter((id) => !reported.has(id) && byId.get(id)!.decision === "pending");
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ok: true,
+                  recorded: items.length,
+                  ...(missing.length
+                    ? {
+                        unreported: missing,
+                        note: "These items have no decision yet; report them too (unreported items are declined without a reply).",
+                      }
+                    : {}),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      },
+    );
+  }
 
   await server.connect(new StdioServerTransport());
 }

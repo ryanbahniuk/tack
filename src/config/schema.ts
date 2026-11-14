@@ -130,6 +130,31 @@ export const McpServerSchema = z.object({
 });
 export type McpServer = z.infer<typeof McpServerSchema>;
 
+/**
+ * PR watch: each session with open PRs runs a background watcher that polls them
+ * every `intervalSeconds`. New review feedback (bots included) or a merge conflict
+ * spawns a `pr_fix` agent; afterwards Tack pushes its commits (`autoPush`, always
+ * non-force) and replies to each comment on GitHub (`reply`). `maxFixRunsPerDay`
+ * caps fix runs per PR in any rolling 24h window — failed runs count — so a PR that
+ * keeps attracting comments (or keeps failing) can't loop unbounded.
+ */
+export const PrWatchSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    intervalSeconds: z.number().min(60).default(300),
+    autoPush: z.boolean().default(true),
+    reply: z.boolean().default(true),
+    maxFixRunsPerDay: z.number().int().nonnegative().default(5),
+  })
+  .default({
+    enabled: true,
+    intervalSeconds: 300,
+    autoPush: true,
+    reply: true,
+    maxFixRunsPerDay: 5,
+  });
+export type PrWatch = z.infer<typeof PrWatchSchema>;
+
 export const ConfigSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
   models: z.array(ModelSchema).default([]),
@@ -140,6 +165,8 @@ export const ConfigSchema = z.object({
   readAllowlist: z.array(z.string()).default([]),
   /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
   supervisorMcpServers: z.array(McpServerSchema).default([]),
+  /** Background PR polling + auto-fix (see `PrWatchSchema`). */
+  prWatch: PrWatchSchema,
 });
 
 /** Shape accepted from a user's config file. */
@@ -153,6 +180,7 @@ export interface TackConfig {
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
+  prWatch: PrWatch;
 }
 
 /** Identity helper for config authoring: `export default defineConfig({...})`. */

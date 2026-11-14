@@ -72,6 +72,19 @@ export default ({
     //   env: { CONFLUENCE_CLOUD_ID: "a40b7113-0103-4597-b693-76b66e0a4614", CONFLUENCE_SITE_URL: "https://chime.atlassian.net" },
     // },
   ],
+
+  // PR watch: every session with open PRs polls them in the background. New review
+  // comments (bots included) or a merge conflict spawn a fix agent (roles.agent) that
+  // fixes what's warranted — or merges the base branch to resolve the conflict — and
+  // then Tack pushes (never force) and replies to each comment explaining what it did.
+  // \`maxFixRunsPerDay\` caps fix runs per PR per rolling 24h. All fields optional.
+  prWatch: {
+    // enabled: true,          // false = never start a watcher
+    // intervalSeconds: 300,   // poll cadence (min 60)
+    // autoPush: true,         // push fix commits to the PR branch
+    // reply: true,            // post a reply on each handled comment
+    // maxFixRunsPerDay: 5,
+  },
 });
 `;
 

@@ -62,6 +62,23 @@ export function writeAmendmentArtifact(
 }
 
 /**
+ * Writes a PR-watch feedback artifact — the ingested GitHub comment body, or the fix
+ * agent's reply to it — and returns its ref path. Keyed by PR + GitHub source id
+ * (sanitized; node ids are base64-ish) so the path is deterministic and known before
+ * the `pr_feedback` row exists.
+ */
+export function writePrFeedbackArtifact(
+  sessionId: string,
+  sessionPrId: string,
+  sourceId: string,
+  kind: "body" | "reply",
+  body: string,
+): string {
+  const safe = sourceId.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return write(join(ARTIFACTS_DIR, sessionId, "pr-feedback", sessionPrId, `${safe}.${kind}.md`), body);
+}
+
+/**
  * Materializes a session-scoped context file to be handed to a runtime BY PATH
  * (`--append-system-prompt-file` / codex base-instructions). Kept separate from
  * artifacts because these are the injection surface, not a durable record.

@@ -93,17 +93,94 @@ export function createWorktree(repo: string, sessionId: string, agentId: string)
   return { repo, path, branch, base };
 }
 
+/**
+ * Creates a worktree for a PR-fix agent: instead of forking off the repo's HEAD
+ * like `createWorktree`, it forks off the PR's CURRENT remote head, so the fix agent
+ * builds on exactly what reviewers are looking at (including any commits pushed
+ * since the PR opened). The local branch keeps the usual `tack/<ses>/<agent>` name;
+ * the watcher later pushes it (non-force) onto the PR branch. The fork point is
+ * pinned like any other worktree, so "did the agent commit anything?" is simply
+ * HEAD != base.
+ */
+export function createPrWorktree(repo: string, sessionId: string, agentId: string, prBranch: string): Worktree {
+  assertRepoRoot(repo);
+  const root = sessionWorktreesRoot(sessionId);
+  mkdirSync(root, { recursive: true });
+  const path = join(root, agentId);
+  const branch = `tack/${sessionId}/${agentId}`;
+  // Explicit refspec so the remote-tracking ref is updated regardless of the repo's
+  // fetch config (equivalent to `git fetch origin <prBranch>` with default config).
+  git(["fetch", "origin", `+refs/heads/${prBranch}:refs/remotes/origin/${prBranch}`], repo);
+  const start = `refs/remotes/origin/${prBranch}`;
+  const base = git(["rev-parse", start], repo);
+  // --no-track: the local branch name differs from the PR branch, and we never want
+  // a stray `git push`/`git pull` inside the worktree to act on the PR — the watcher
+  // owns pushing.
+  git(["worktree", "add", "--no-track", "-b", branch, path, base], repo);
+  git(["update-ref", baseRef(branch), base], repo);
+  return { repo, path, branch, base };
+}
+
+/** Reattaches to a worktree that already exists at the expected path (resume /
+ * retry), recovering its pinned fork point. Null when there's nothing to reuse. */
+function reuseWorktree(repo: string, sessionId: string, agentId: string): Worktree | null {
+  const path = join(sessionWorktreesRoot(sessionId), agentId);
+  if (!existsSync(path)) return null;
+  const branch = `tack/${sessionId}/${agentId}`;
+  // Recover the pinned fork point; fall back to the worktree's own HEAD only if a
+  // legacy worktree predates base-ref recording (yields today's HEAD-only diff).
+  const base = readBaseRef(repo, branch) ?? git(["rev-parse", "HEAD"], path);
+  return { repo, path, branch, base };
+}
+
 /** Reuses an existing worktree at the expected path, else creates one (resume-safe). */
 export function ensureWorktree(repo: string, sessionId: string, agentId: string): Worktree {
-  const path = join(sessionWorktreesRoot(sessionId), agentId);
-  if (existsSync(path)) {
-    const branch = `tack/${sessionId}/${agentId}`;
-    // Recover the pinned fork point; fall back to the worktree's own HEAD only if a
-    // legacy worktree predates base-ref recording (yields today's HEAD-only diff).
-    const base = readBaseRef(repo, branch) ?? git(["rev-parse", "HEAD"], path);
-    return { repo, path, branch, base };
+  return reuseWorktree(repo, sessionId, agentId) ?? createWorktree(repo, sessionId, agentId);
+}
+
+/** `ensureWorktree` for a PR-fix agent: reuse on resume/retry (so a retried run keeps
+ * its partial commits), else fork fresh off the PR's remote head. */
+export function ensurePrWorktree(repo: string, sessionId: string, agentId: string, prBranch: string): Worktree {
+  return reuseWorktree(repo, sessionId, agentId) ?? createPrWorktree(repo, sessionId, agentId, prBranch);
+}
+
+// Async (`Bun.spawn`) git helpers for the PR watcher, which runs on a timer and so
+// must never block on `spawnSync` (see src/prwatch/watch.ts).
+
+async function gitAsync(args: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, out: out.trim(), err: err.trim() };
+}
+
+/** The pinned fork point of a `tack/…` branch, or null if none was recorded. */
+export async function worktreeBase(repo: string, branch: string): Promise<string | null> {
+  const r = await gitAsync(["rev-parse", "--verify", "--quiet", baseRef(branch)], repo);
+  return r.code === 0 && r.out ? r.out : null;
+}
+
+/** The current HEAD commit of a worktree, or null if it can't be read. */
+export async function worktreeHead(worktreePath: string): Promise<string | null> {
+  if (!existsSync(worktreePath)) return null;
+  const r = await gitAsync(["rev-parse", "HEAD"], worktreePath);
+  return r.code === 0 && r.out ? r.out : null;
+}
+
+/** Async twin of `commitWorktree` for the watcher's post-fix safety net: commits
+ * anything left uncommitted, returning false when the tree was already clean.
+ * Throws with git's reason if the commit itself fails. */
+export async function commitWorktreeAsync(worktreePath: string, message: string): Promise<boolean> {
+  const status = await gitAsync(["status", "--porcelain"], worktreePath);
+  if (status.code !== 0 || status.out === "") return false;
+  for (const args of [["add", "-A"], ["commit", "-m", message]]) {
+    const r = await gitAsync(args, worktreePath);
+    if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.err || r.out}`);
   }
-  return createWorktree(repo, sessionId, agentId);
+  return true;
 }
 
 function tryGit(args: string[], cwd: string): void {
