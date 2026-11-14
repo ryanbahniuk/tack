@@ -25,7 +25,6 @@ import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
 import { isAlive } from "../process/self";
 import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
-import { sessionFileCollisions, type FileCollision } from "../supervisor/conflicts";
 import type { TackConfig } from "../config/schema";
 
 interface View {
@@ -39,8 +38,6 @@ interface View {
   needsInput: boolean;
   /** Pending amendment proposals awaiting the human's adjudication. */
   amendments: AmendmentRow[];
-  /** Files more than one agent changed in the same project (cross-branch collisions). */
-  conflicts: FileCollision[];
   /** PR-watch state per session PR id: comments Tack hasn't finished with yet, and
    * whether a pr_fix agent is currently working on the PR. */
   prWatch: Record<string, { openFeedback: number; fixing: boolean }>;
@@ -53,7 +50,7 @@ function rank(v: View): number {
   return (v.needsInput ? 2 : 0) + (v.live ? 1 : 0);
 }
 
-function snapshot(showArchived: boolean, config: TackConfig | null): View[] {
+function snapshot(showArchived: boolean): View[] {
   return listSessions(showArchived)
     .map((session) => {
       const agents = listAgents(session.id);
@@ -69,9 +66,6 @@ function snapshot(showArchived: boolean, config: TackConfig | null): View[] {
         // completed agent work.
         needsInput: sessionNeedsInput(session, agents),
         amendments: listPendingAmendments(session.id),
-        // Cross-agent file collisions; cached in `conflicts.ts` so this is cheap on
-        // the 1s poll. Needs project paths, so only when config loaded.
-        conflicts: config ? sessionFileCollisions(agents, config) : [],
         prWatch: Object.fromEntries(
           prs.map((pr) => [
             pr.id,
@@ -97,7 +91,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:${v.conflicts.length}:` +
+        `${v.session.id}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -153,7 +147,7 @@ type Confirm = { action: "delete" | "stop"; id: string };
 function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
   const [showArchived, setShowArchived] = useState(false);
-  const [rows, setRows] = useState<View[]>(() => snapshot(false, config));
+  const [rows, setRows] = useState<View[]>(() => snapshot(false));
   // Selection is pinned to a session *id*, not a row index, so re-sorting (sessions
   // float as they start needing input) and deletions never move the highlight onto
   // the wrong session under the human's cursor.
@@ -173,7 +167,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
 
   const sigRef = useRef("");
   const refresh = () => {
-    const next = snapshot(showArchived, config);
+    const next = snapshot(showArchived);
     sigRef.current = signature(next);
     setRows(next);
   };
@@ -185,7 +179,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
   // changes, so an idle board doesn't repaint 60×/minute.
   useEffect(() => {
     const tick = () => {
-      const next = snapshot(showArchived, config);
+      const next = snapshot(showArchived);
       const sig = signature(next);
       if (sig !== sigRef.current) {
         sigRef.current = sig;
@@ -195,7 +189,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
     tick();
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [showArchived, config]);
+  }, [showArchived]);
 
   // Kept fresh so the refresh effect below (which only fires on mount + every 60s,
   // not on every 1s snapshot) always sees the sessions currently on screen.
@@ -433,9 +427,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
             {v.amendments.length > 0 ? (
               <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
             ) : null}
-            {v.conflicts.length > 0 ? (
-              <Text color="red"> ⚠ {v.conflicts.length} conflict{v.conflicts.length === 1 ? "" : "s"}</Text>
-            ) : null}
+            {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
             {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
             <Text dimColor> {v.session.title ?? ""}</Text>
           </Text>
@@ -473,18 +465,6 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
               );
             })}
           {i === cursor &&
-            v.conflicts.length > 0 && (
-              <Box flexDirection="column">
-                {v.conflicts.map((c) => (
-                  <Text key={`${c.project}:${c.file}`} color="red">
-                    {"    ⚠ "}
-                    <Text dimColor>{c.project}/</Text>
-                    {c.file} <Text dimColor>— {c.agents.join(", ")}</Text>
-                  </Text>
-                ))}
-              </Box>
-            )}
-          {i === cursor &&
             v.prs.map((pr) => {
               const { glyph, color, label } = prStateDisplay(pr.state);
               const w = v.prWatch[pr.id];
@@ -495,7 +475,7 @@ function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: 
                   <Text color={color}>
                     {glyph} {label}
                   </Text>
-                  {pr.mergeable === "CONFLICTING" ? <Text color="red"> ⚠ conflict</Text> : null}
+                  {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
                   {w && w.openFeedback > 0 ? (
                     <Text color="yellow">
                       {" "}
@@ -674,6 +654,13 @@ function prStateDisplay(state: string | null): { glyph: string; color: string; l
   if (state === "draft") return { glyph: "◌", color: "gray", label: "draft" };
   if (state === "closed") return { glyph: "✖", color: "red", label: "closed" };
   return { glyph: "·", color: "gray", label: state ?? "" };
+}
+
+/** Real merge conflicts, per GitHub's mergeability (refreshed by the PR poll) — not
+ *  predicted cross-agent file collisions, so the badge clears once the PR's conflicts
+ *  are resolved. Only open/draft PRs count: a merged or closed PR's status is moot. */
+function prHasConflicts(pr: SessionPrRow): boolean {
+  return pr.mergeable === "CONFLICTING" &&(pr.state === "open" || pr.state === "draft");
 }
 
 /** Compact per-session PR summary for the collapsed session line: all merged gets

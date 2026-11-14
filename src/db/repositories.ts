@@ -545,6 +545,8 @@ export function upsertSessionPr(input: {
   title?: string | null;
   state?: string | null;
   headBranch?: string | null;
+  /** Omitted/null keeps any previously-fetched value (see COALESCE below). */
+  mergeable?: PrMergeable | null;
 }): void {
   const db = getDb();
   const now = nowIso();
@@ -555,8 +557,11 @@ export function upsertSessionPr(input: {
     db.prepare(
       // `agent_id` is COALESCEd, not overwritten: the first writer (open_pr, which
       // knows the real producing agent) wins. The dashboard's discovery refresh only
-      // has a best-effort guess and must never clobber the true link.
-      `UPDATE session_prs SET agent_id = COALESCE(agent_id, ?), project_name = ?, number = ?, title = ?, state = ?, head_branch = ?, updated_at = ?
+      // has a best-effort guess and must never clobber the true link. `mergeable` is
+      // COALESCEd too, so callers that don't know it (e.g. `open_pr`, right after
+      // `gh pr create`) never wipe a value a poll already fetched.
+      `UPDATE session_prs SET agent_id = COALESCE(agent_id, ?), project_name = ?, number = ?, title = ?, state = ?, head_branch = ?,
+         mergeable = COALESCE(?, mergeable), updated_at = ?
        WHERE id = ?`,
     ).run(
       input.agentId ?? null,
@@ -565,14 +570,15 @@ export function upsertSessionPr(input: {
       input.title ?? null,
       input.state ?? null,
       input.headBranch ?? null,
+      input.mergeable ?? null,
       now,
       existing.id,
     );
     return;
   }
   db.prepare(
-    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO session_prs (id, session_id, agent_id, project_name, number, url, title, state, head_branch, mergeable, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     shortId("pr"),
     input.sessionId,
@@ -583,6 +589,7 @@ export function upsertSessionPr(input: {
     input.title ?? null,
     input.state ?? null,
     input.headBranch ?? null,
+    input.mergeable ?? null,
     now,
     now,
   );

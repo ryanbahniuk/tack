@@ -16,6 +16,14 @@ interface GhPr {
   title: string;
   state: string; // OPEN | MERGED | CLOSED
   headRefName: string;
+  mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
+}
+
+/** Normalizes gh's mergeable string into the stored enum (null when absent). Shared
+ * by the dashboard's discovery refresh and the PR watcher so both write the same values. */
+export function toMergeable(v: string | null | undefined): PrMergeable | null {
+  if (v === "MERGEABLE" || v === "CONFLICTING" || v === "UNKNOWN") return v;
+  return v ? "UNKNOWN" : null;
 }
 
 export interface DiscoverResult {
@@ -144,7 +152,7 @@ function numberFromPrUrl(url: string): number | null {
 
 async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
   const proc = Bun.spawn(
-    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName"],
+    ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName,mergeable"],
     { cwd: repoPath, stdout: "pipe", stderr: "pipe" },
   );
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -215,6 +223,7 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
         title: pr.title,
         state: pr.state.toLowerCase(),
         headBranch: pr.headRefName,
+        mergeable: toMergeable(pr.mergeable),
       });
     }
   }

@@ -25,7 +25,6 @@ import {
   type AgentRow,
   type AgentStatus,
   type PrFeedbackRow,
-  type PrMergeable,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
@@ -40,6 +39,7 @@ import {
   postIssueComment,
   postReviewThreadReply,
   pushBranch,
+  toMergeable,
   type PrFeedbackItem,
 } from "../projects/prs";
 import { commitWorktreeAsync, worktreeBase, worktreeHead } from "../worktree/worktree";
@@ -82,12 +82,6 @@ type Log = (msg: string) => void;
  * including drafts and rows whose state hasn't been polled yet). */
 export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
   return pr.state !== "merged" && pr.state !== "closed";
-}
-
-/** Normalizes gh's mergeable string into the stored enum (null when absent). */
-function toMergeable(v: string | null | undefined): PrMergeable | null {
-  if (v === "MERGEABLE" || v === "CONFLICTING" || v === "UNKNOWN") return v;
-  return v ? "UNKNOWN" : null;
 }
 
 /**
