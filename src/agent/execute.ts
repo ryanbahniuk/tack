@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import type { Model, Project, TackConfig } from "../config/schema";
-import { resolveModel } from "../config/load";
+import { modelForRole, resolveModel, roleModelKeys } from "../config/load";
 import {
   createAgent,
   getAgent,
@@ -79,14 +79,14 @@ export async function* runAgent(
   if (!session) throw new Error(`Agent ${agentId} has no session`);
   const project = config.projects.find((p) => p.name === agent.project_name);
   if (!project) throw new Error(`Agent ${agentId} references unknown project "${agent.project_name}"`);
-  const model = resolveModel(config, agent.model ?? config.roles.agent);
+  const model = agent.model ? resolveModel(config, agent.model) : modelForRole(config, "agent");
 
   // Backstop for spawns that don't go through `spawn_agent`'s check (PR-watch fix
   // agents, `tack agent`, retries): a model the login doesn't offer fails the agent
   // right away — before a worktree or a runtime run — with the remediation inline,
   // instead of a late `model_not_found` buried in the log. Unknown never blocks.
   const offered = checkModelOffered(config, model, {
-    role: model.key === config.roles.agent ? "agent" : undefined,
+    role: roleModelKeys(config, "agent").includes(model.key) ? "agent" : undefined,
   });
   if (offered.ok === false) {
     setAgentError(agent.id, offered.message);

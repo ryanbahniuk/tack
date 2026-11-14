@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import { isAlive, selfInvocation } from "../process/self";
 import type { Model, Project, TackConfig } from "../config/schema";
-import { resolveModel } from "../config/load";
+import { modelForRole } from "../config/load";
 import {
   assignPrFeedback,
   countPrFixRunsSince,
@@ -347,7 +347,7 @@ export function spawnPrFixAgent(
   const agent = prepareAgent({
     session,
     project,
-    model: opts.model ?? resolveModel(config, config.roles.agent),
+    model: opts.model ?? modelForRole(config, "agent"),
     prompt,
     kind: "pr_fix",
     sessionPrId: pr.id,

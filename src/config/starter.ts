@@ -26,6 +26,10 @@ export default ({
     },
   ],
 
+  // Roles accept one key or a non-empty list, e.g. agent: ["gpt-6.1-sol", "opus-5"].
+  // Multiple distinct keys mean a uniform random pick per use; supervisor picks
+  // persist for the session (including resume), worker picks for the agent.
+  // Summary calls pick each time; a single key always uses that model.
   roles: {
     supervisor: "opus-5",
     agent: "gpt-6.1-sol",

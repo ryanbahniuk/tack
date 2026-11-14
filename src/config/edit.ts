@@ -162,22 +162,31 @@ export async function setRuntimeVersionsInConfig(
  * line in the object's existing key order. */
 function serializeRoles(roles: Roles, indent: string): string {
   const inner = indent + "  ";
-  const lines = (Object.keys(roles) as (keyof Roles)[]).map((k) => `${inner}${k}: ${JSON.stringify(roles[k])},`);
+  const lines = (Object.keys(roles) as (keyof Roles)[]).map((k) => {
+    const value = roles[k];
+    const keys = Array.isArray(value) ? value : [value];
+    const literal = keys.length === 1 ? JSON.stringify(keys[0]) : `[${keys.map((key) => JSON.stringify(key)).join(", ")}]`;
+    return `${inner}${k}: ${literal},`;
+  });
   return `roles: {\n${lines.join("\n")}\n${indent}}`;
 }
 
 /**
- * Pins `role` to the model `key` in the config file, preserving the rest of the file
+ * Pins `role` to one or more model keys, preserving the rest of the config file
  * (comments, other blocks, indentation). The current roles are read back from the
  * parsed config and the one role is swapped, so untouched roles keep their pins; only
- * the `roles:` block is rewritten in place. Returns the role's previous key (equal to
- * `key` when nothing changed). Validation that `role`/`key` are legal lives with the
- * caller, which has the loaded config to check the model exists.
+ * the `roles:` block is rewritten in place. Returns the role's previous string or list.
+ * Validation that the role and keys are legal lives with the caller, which has
+ * the loaded config to check that every model exists.
  */
-export async function setRoleInConfig(configPath: string, role: keyof Roles, key: string): Promise<string> {
+export async function setRoleInConfig(
+  configPath: string,
+  role: keyof Roles,
+  keyOrKeys: string | string[],
+): Promise<string | string[]> {
   const parsed = await loadParsedConfig(configPath);
   const previous = parsed.roles[role];
-  const next: Roles = { ...parsed.roles, [role]: key };
+  const next: Roles = { ...parsed.roles, [role]: keyOrKeys };
 
   const src = readFileSync(configPath, "utf8");
   const masked = maskNonCode(src);

@@ -70,8 +70,12 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 ## Common extensions
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
-  provider, name, version, runtime, id, optional effort/pricing) and pin roles to
-  it. No code change. Codex models are discovered live: `tack models sync` adds
+  provider, name, version, runtime, id, optional effort/pricing) and assign roles to
+  it. Each role accepts a key or non-empty list, e.g. `agent: ["gpt-6.1-sol", "opus-5"]`.
+  Loading normalizes roles to distinct `string[]`; use `modelForRole` for a uniform
+  random pick or `roleModelKeys` for membership. One key always uses that model.
+  Supervisor picks persist for the session (including resume), agent picks persist
+  at spawn, and summary calls pick each time. No code change. Codex models are discovered live: `tack models sync` adds
   what `codex debug models` reports for the signed-in account and prunes the rest
   (re-pinning affected roles). For claude, which can't list models, add it to
   `MODEL_CATALOG` (`src/runtimes/catalog.ts`) to make it discoverable — sync adds

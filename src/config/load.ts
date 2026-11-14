@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { CONFIG_PATH, expandHome } from "../paths";
-import { ConfigSchema, type Model, type TackConfig } from "./schema";
+import { ConfigSchema, type Model, type ResolvedRoles, type TackConfig } from "./schema";
 
 /**
  * Loads and validates the user's config. The config file is a `.ts` module that
@@ -20,13 +20,17 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
 
   const parsed = ConfigSchema.parse(raw);
 
-  // Every role must name a defined model, and codex models must carry pricing to
-  // yield a cost — catch both at load time, not mid-run.
+  // Normalize once so all consumers see ordered, distinct candidate keys.
+  const roles = Object.fromEntries(
+    Object.entries(parsed.roles).map(([role, value]) => [role, [...new Set(Array.isArray(value) ? value : [value])]]),
+  ) as ResolvedRoles;
   const byKey = new Map(parsed.models.map((m) => [m.key, m]));
-  for (const [role, key] of Object.entries(parsed.roles)) {
-    if (!byKey.has(key)) {
-      const known = [...byKey.keys()].join(", ") || "(none)";
-      throw new Error(`roles.${role} = "${key}" is not a defined model. Known: ${known}`);
+  for (const [role, keys] of Object.entries(roles)) {
+    for (const key of keys) {
+      if (!byKey.has(key)) {
+        const known = [...byKey.keys()].join(", ") || "(none)";
+        throw new Error(`roles.${role} = "${key}" is not a defined model. Known: ${known}`);
+      }
     }
   }
 
@@ -42,7 +46,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
   return {
     projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
     models: parsed.models,
-    roles: parsed.roles,
+    roles,
     runtimes: {
       claude: expandBin(parsed.runtimes.claude),
       codex: expandBin(parsed.runtimes.codex),
@@ -78,7 +82,13 @@ export function resolveModel(config: TackConfig, key: string): Model {
   return model;
 }
 
-/** Resolves the model pinned to a functional role. */
-export function modelForRole(config: TackConfig, role: keyof TackConfig["roles"]): Model {
-  return resolveModel(config, config.roles[role]);
+/** Returns the distinct candidate keys for a functional role, in config order. */
+export function roleModelKeys(config: TackConfig, role: keyof ResolvedRoles): string[] {
+  return config.roles[role];
+}
+
+/** Picks uniformly among a role's models; a single candidate is always used. */
+export function modelForRole(config: TackConfig, role: keyof ResolvedRoles, rng = Math.random): Model {
+  const keys = roleModelKeys(config, role);
+  return resolveModel(config, keys.length === 1 ? keys[0]! : keys[Math.floor(rng() * keys.length)]!);
 }

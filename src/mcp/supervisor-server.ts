@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadConfig, resolveModel } from "../config/load";
+import { loadConfig, modelForRole, resolveModel } from "../config/load";
 import { getSession } from "../db";
 import {
   addSharedContext,
@@ -235,7 +235,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       inputSchema: {
         project: z.string().describe("Project name from list_projects"),
         prompt: z.string().describe("The task for the agent, self-contained"),
-        model: z.string().optional().describe("Model name; defaults to the configured agent model"),
+        model: z.string().optional().describe("Model key; defaults to roles.agent (picked at random when several are set)"),
         touches: z
           .array(z.string())
           .optional()
@@ -261,7 +261,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         );
       const proj = config.projects.find((p) => p.name === project);
       if (!proj) throw new Error(`Unknown project "${project}"`);
-      const m = resolveModel(config, model ?? config.roles.agent);
+      const m = model ? resolveModel(config, model) : modelForRole(config, "agent");
       // Fail fast on a model the runtime's login doesn't offer (e.g. a codex model a
       // ChatGPT login rejects with `model_not_found`): refuse here, before a worktree
       // or agent row exists, rather than spawn an agent that's certain to die. Unknown
@@ -404,7 +404,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           .string()
           .optional()
           .describe("Extra guidance for the fix agent: what to change or why the last run failed"),
-        model: z.string().optional().describe("Model name; defaults to the configured agent model"),
+        model: z.string().optional().describe("Model key; defaults to roles.agent (picked at random when several are set)"),
       },
     },
     async ({ pr: ref, prompt, model }) => {
@@ -434,7 +434,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             `(${cap.runs} so far, failed runs included). Report this to the human instead of retrying.`,
         );
 
-      const m = resolveModel(config, model ?? config.roles.agent);
+      const m = model ? resolveModel(config, model) : modelForRole(config, "agent");
       // Same fail-fast as spawn_agent — the very failure fix_pr is often called to
       // recover from is a fix run that died on a model the login doesn't offer.
       const offered = checkModelOffered(config, m, { role: model ? undefined : "agent" });
