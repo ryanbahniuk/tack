@@ -168,3 +168,28 @@ describe("autoAllowMatcher", () => {
     expect(autoAllowMatcher("s", ["mcp__other__open_pr"])).toBe("^mcp__s__.*");
   });
 });
+
+describe("ClaudeRuntime.interactiveCommand prompt hook", () => {
+  test("adds UserPromptSubmit while keeping all PreToolUse gates", () => {
+    const gates = {
+      approvalTools: [OPEN_PR],
+      planApprovalTool: PLAN_APPROVAL,
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+    };
+    const settings = settingsOf({
+      ...gates,
+      onUserPrompt: { command: "/path with spaces/tack", args: ["__approve-prompt", "ses_x"] },
+    });
+    expect(settings.hooks.PreToolUse).toEqual(settingsOf(gates).hooks.PreToolUse);
+    const entries = settings.hooks.UserPromptSubmit;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].hooks[0]).toEqual({
+      type: "command",
+      command: "'/path with spaces/tack' '__approve-prompt' 'ses_x'",
+    });
+  });
+
+  test("omits UserPromptSubmit when no command is supplied", () => {
+    expect(settingsOf().hooks.UserPromptSubmit).toBeUndefined();
+  });
+});

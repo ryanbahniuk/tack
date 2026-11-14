@@ -10,6 +10,7 @@ import type {
   Runtime,
 } from "./types";
 import { streamJson } from "./proc";
+import { APPROVE_PROMPT_MARKER } from "../supervisor/approve-prompt";
 
 /**
  * Autonomous, unattended permission posture for agents running in an isolated
@@ -134,7 +135,7 @@ export class ClaudeRuntime implements Runtime {
     // A single --settings blob carrying the session's edit block and human gates.
     const settings: {
       permissions?: { deny?: string[]; allow?: string[]; ask?: string[] };
-      hooks?: unknown;
+      hooks?: Record<string, unknown>;
     } = {};
     if (opts.readOnly) {
       // Pin the default mode explicitly so a user-level `defaultMode` (e.g. plan) can't
@@ -237,6 +238,13 @@ export class ClaudeRuntime implements Runtime {
         ...(ask.length ? { ask } : {}),
       };
     if (preToolUse.length) settings.hooks = { PreToolUse: preToolUse };
+    if (opts.onUserPrompt) {
+      const command = shellJoin([opts.onUserPrompt.command, ...opts.onUserPrompt.args]);
+      settings.hooks = {
+        ...settings.hooks,
+        UserPromptSubmit: [{ hooks: [{ type: "command", command }] }],
+      };
+    }
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(
       "--mcp-config",
@@ -270,6 +278,20 @@ export class ClaudeRuntime implements Runtime {
    * interactive path needs this.
    */
   prepareInteractive(opts: RunOptions): void {
+    if (opts.onUserPrompt) {
+      // The supervisor cwd is Tack-owned; refresh the command on resume as well.
+      const commands = join(opts.cwd, ".claude", "commands");
+      mkdirSync(commands, { recursive: true });
+      writeFileSync(join(commands, "approve.md"), [
+        "---",
+        "description: Approve the supervisor's plan (use if the approval prompt didn't appear)",
+        "---",
+        "",
+        APPROVE_PROMPT_MARKER,
+        "The human has approved your plan via /approve. Proceed to spawn agents per the plan.",
+        "",
+      ].join("\n"));
+    }
     recordWorkspaceTrust(opts.cwd);
     if (opts.readOnly) mergeLocalAllowRules(opts.cwd, supervisorAllowRules(opts));
   }

@@ -345,6 +345,14 @@ Adapter specifics, hidden behind the interface:
   — marking the session as awaiting input and returning an `ask` decision so the
   human sees a single "Proceed with implementation?" prompt. The tool's handler,
   which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
+  If the prompt never appears, the human can type `/approve` in the session or run
+  `tack session approve <session>` themselves, then return to the session. Tack
+  refreshes `.claude/commands/approve.md` on every attended Claude launch (including
+  resume); a UserPromptSubmit hook recognizes the command or its expanded marker
+  and opens the plan gate, adding context so the supervisor proceeds to spawn agents.
+  Both escape hatches preserve the first approval timestamp and clear the
+  awaiting-input flag; neither adds a supervisor-callable approval path. A plain
+  chat "yes" is never approval.
   Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
   excluded from the allow hook and backed by `permissions.ask` rules, which
   outrank server-wide allow rules. Their ask hooks supply the prompt wording.

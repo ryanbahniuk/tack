@@ -43,6 +43,7 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -796,6 +797,22 @@ const requireSession = (id: string) => {
   }
 };
 
+const sessionApprove = defineCommand({
+  meta: { name: "approve", description: "Approve a session's plan when the in-session approval prompt didn't appear" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const approvedAt = getSession(id)!.plan_approved_at;
+    if (approvedAt) {
+      console.log(pc.dim(`Session ${id} was already approved at ${approvedAt}.`));
+      return;
+    }
+    approveSessionPlan(id);
+    console.log(pc.green(`Approved plan for ${id}. Go back to the session; the supervisor can now spawn agents.`));
+  },
+});
+
 const archive = defineCommand({
   meta: { name: "archive", description: "Archive a session (hide from the default view)" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1233,9 +1250,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, retitle, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, retitle, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1350,6 +1367,25 @@ if (hidden === "__mcp") {
   } catch (err) {
     console.error(`title-session ${sessionId}: ${(err as Error).message}`);
   }
+} else if (hidden === "__approve-prompt") {
+  // Only the harness runs this on submitted prompts. Fail open so malformed input
+  // or a missing session never interrupts ordinary chat or leaks junk to stdout.
+  try {
+    const sessionId = process.argv[3];
+    const input = JSON.parse(await Bun.stdin.text());
+    if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
+      approveSessionPlan(sessionId);
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: "The human approved the plan via /approve; plan_approved_at is set. Proceed to spawn agents.",
+        },
+      }));
+    }
+  } catch {
+    // Approval is best-effort; never block the human's prompt.
+  }
+  process.exit(0);
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse hook on `request_plan_approval`
   // when a plan is presented for approval. Two jobs: (1) mark the session as awaiting

@@ -228,6 +228,7 @@ export async function superviseInteractive(opts: {
   const awaitHook = usesPlanHook
     ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
     : undefined;
+  const approveHook = usesPlanHook ? selfCommand(["__approve-prompt", session.id]) : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
 
   // The human is now looking at this session (creating/resuming it), so anything
@@ -269,6 +270,7 @@ export async function superviseInteractive(opts: {
     ],
     planApprovalTool: awaitHook ? SUPERVISOR_PLAN_APPROVAL_TOOL : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
+    onUserPrompt: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even
     // after plan approval. With it on (default), open_pr rides the server-wide allow.
     ...(config.autoOpenPrs

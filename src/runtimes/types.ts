@@ -87,6 +87,11 @@ export interface RunOptions {
    * accept. Only the attended read-only supervisor sets this.
    */
   onPlanPresented?: { command: string; args: string[] };
+  /**
+   * UserPromptSubmit hook command for the human's /approve escape hatch. Only the
+   * attended plan-gated supervisor sets this; it never runs on model tool calls.
+   */
+  onUserPrompt?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;
