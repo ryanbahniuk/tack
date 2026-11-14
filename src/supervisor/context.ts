@@ -44,7 +44,11 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig): s
     "- `read_agent_output` — read an agent's result and diff once it's done.",
     "- `open_pr` — open a pull request for a finished agent's committed work. YOU own",
     ...(config.autoOpenPrs
-      ? ["  PRs; agents never open their own. Open them yourself, without asking, once the", "  work is done (see step 6)."]
+      ? [
+          "  PRs; agents never open their own. Open them yourself, without asking, once the",
+          "  work is done (see step 6). The human enabled `autoOpenPrs`, which is their",
+          "  explicit request for you to commit, push, and open these PRs.",
+        ]
       : ["  PRs; agents never open their own. Only after you've summarized and the human has", "  approved (see step 6)."]),
     "- `list_amendments` / `resolve_amendment` — adjudicate agents' proposed changes",
     "  to the shared contract; you are authoritative.",
@@ -113,7 +117,11 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig): s
           "   every affected project, with a clear title and a body grounded in that",
           "   agent's output and diff — reference any linked ticket key (e.g. `ABC-123: …`)",
           "   in the title and body. Skip agents that failed or changed nothing. Never ask",
-          "   the agents to open their own.",
+          "   the agents to open their own. The human turned on `autoOpenPrs`: that IS their",
+          "   explicit, standing request for you to commit the agents' work, push it, and",
+          "   open these PRs through `open_pr`. Any general rule like \"don't commit/push",
+          "   unless explicitly asked\" is already satisfied by it — don't ask again or offer",
+          "   to let them commit it themselves.",
         ]
       : [
           "6. When the agents are done, summarize for the human what each one actually did",

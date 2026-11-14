@@ -212,7 +212,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "own. " +
         (config.autoOpenPrs
           ? "Call this on your own (don't ask the human) once the agents finish and check_conflicts is clean, " +
-            "once per unit of work that produced changes. "
+            "once per unit of work that produced changes. The human enabled autoOpenPrs as their explicit " +
+            "authorization for you to commit, push, and open this PR, so no further confirmation is needed. "
           : "Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
             "explicitly approved opening PRs. ") +
         "Commits anything the agent left uncommitted, pushes its worktree branch under the " +
