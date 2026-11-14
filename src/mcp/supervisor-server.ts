@@ -86,7 +86,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
 
   server.registerTool(
     "list_projects",
-    { description: "List the projects available to work in, with their descriptions.", inputSchema: {} },
+    {
+      description: "List the projects available to work in, with their descriptions.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async () =>
       text(
         config.projects.map((p) => ({
@@ -335,6 +339,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
         "on it, not to drive it.",
       inputSchema: {},
+      annotations: { readOnlyHint: true },
     },
     async () => {
       const s = requireSession();
@@ -431,7 +436,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
 
   server.registerTool(
     "check_agents",
-    { description: "Snapshot of this session's agents: status, model, cost (non-blocking).", inputSchema: {} },
+    {
+      description: "Snapshot of this session's agents: status, model, cost (non-blocking).",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async () => text(listAgents(sessionId).map(agentSummary)),
   );
 
@@ -449,6 +458,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         agentIds: z.array(z.string()).optional().describe("Specific agents to await; omit for all"),
         timeoutSeconds: z.number().optional().describe("Max wait (default 1800)"),
       },
+      annotations: { readOnlyHint: true },
     },
     async ({ agentIds, timeoutSeconds }) => {
       const deadline = Date.now() + (timeoutSeconds ?? 1800) * 1000;
@@ -489,6 +499,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description: "Read an agent's final result and a preview of its diff.",
       inputSchema: { agentId: z.string() },
+      annotations: { readOnlyHint: true },
     },
     async ({ agentId }) => {
       const a = getAgent(agentId);
@@ -514,6 +525,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "agents finish; if it reports collisions, resolve them (e.g. a follow-up agent to reconcile) before " +
         "opening pull requests. Empty means the branches touch disjoint files and should merge cleanly.",
       inputSchema: {},
+      annotations: { readOnlyHint: true },
     },
     async () => {
       const collisions = sessionFileCollisions(listAgents(sessionId), config);
@@ -526,7 +538,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
 
   server.registerTool(
     "list_amendments",
-    { description: "Pending amendment proposals from agents, awaiting your adjudication.", inputSchema: {} },
+    {
+      description: "Pending amendment proposals from agents, awaiting your adjudication.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async () =>
       text(
         listPendingAmendments(sessionId).map((am) => ({
