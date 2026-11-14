@@ -345,6 +345,10 @@ Adapter specifics, hidden behind the interface:
   — marking the session as awaiting input and returning an `ask` decision so the
   human sees a single "Proceed with implementation?" prompt. The tool's handler,
   which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
+  If the prompt never appears, the human can run `tack session approve <session>`
+  themselves, then return to the session so the supervisor can spawn agents.
+  This CLI escape hatch preserves the first approval timestamp and clears the
+  awaiting-input flag; it adds no supervisor-callable approval path.
   Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
   excluded from the allow hook and backed by `permissions.ask` rules, which
   outrank server-wide allow rules. Their ask hooks supply the prompt wording.

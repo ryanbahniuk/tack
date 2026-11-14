@@ -796,6 +796,22 @@ const requireSession = (id: string) => {
   }
 };
 
+const sessionApprove = defineCommand({
+  meta: { name: "approve", description: "Approve a session's plan when the in-session approval prompt didn't appear" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const approvedAt = getSession(id)!.plan_approved_at;
+    if (approvedAt) {
+      console.log(pc.dim(`Session ${id} was already approved at ${approvedAt}.`));
+      return;
+    }
+    approveSessionPlan(id);
+    console.log(pc.green(`Approved plan for ${id}. Go back to the session; the supervisor can now spawn agents.`));
+  },
+});
+
 const archive = defineCommand({
   meta: { name: "archive", description: "Archive a session (hide from the default view)" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1233,9 +1249,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, retitle, list, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, retitle, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

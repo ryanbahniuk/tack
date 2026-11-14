@@ -182,6 +182,7 @@ tack stable
 tack session list                  # list sessions and cost
 tack session show <session>        # agents, PRs, cost, and pending amendments
 tack session context <session>     # the shared contract + version history (--all for bodies)
+tack session approve <session>     # approve the plan if the in-session prompt never appeared
 tack session stop <session>        # stop a session and its agents
 tack session archive <session>     # hide from the default view
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
