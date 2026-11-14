@@ -120,7 +120,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Delegate a task to a new agent in the given project. The agent runs autonomously in its own " +
         "worktree; this returns immediately with the agent id. Use wait_for_agents to await completion.\n\n" +
         "Each agent becomes one PR, so default to ONE agent per project. Every agent branches from the " +
-        "project's HEAD, not a sibling's branch, so work that must happen in order within a project belongs " +
+        "project's default branch, not a sibling's branch, so work that must happen in order within a project belongs " +
         "to a single agent.\n\n" +
         "Declare `touches` (the files/dirs this unit will modify) and `dependsOn` (agent ids that must finish " +
         "first) so Tack can coordinate parallel work: overlapping touch-sets in the same project are reported " +
@@ -165,7 +165,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // Warn (don't block) when this unit's declared touch-set overlaps a sibling in
       // the same project that hasn't finished — that work belongs to one agent, and the
       // supervisor must reconcile the pair before PRs. `dependsOn` wouldn't fix it:
-      // every worktree forks from the project's HEAD, so the later agent wouldn't see
+      // every worktree forks from the project's default branch, so the later agent wouldn't see
       // the earlier one's changes and the two PRs would still collide. Only non-terminal siblings matter: a finished
       // agent's work is already captured and won't be edited concurrently.
       const overlap = touches?.length
@@ -192,7 +192,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
                 "likely collide. Overlapping work in one project belongs to a single agent; don't spawn more " +
                 "like this. For these, run check_conflicts once they finish and reconcile any collision with a " +
                 "follow-up agent before opening PRs. `dependsOn` won't help: every agent branches from the " +
-                "project's HEAD, not a sibling's branch.",
+                "project's default branch, not a sibling's branch.",
               overlaps: overlap,
             }
           : {}),

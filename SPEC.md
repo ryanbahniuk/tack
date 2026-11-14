@@ -369,7 +369,10 @@ stdout/stderr to the log, and yields parsed JSON lines.
 **Coordinating parallel work (the correctness layer).** The supervisor defaults to
 **one agent per affected project** (so one PR per repo), splitting a project only
 into genuinely independent units that each merit their own PR. Every worktree
-forks from the project's HEAD — not from a sibling's branch — so ordered work within
+forks from the project's remote default branch (`origin/HEAD`, else `origin/main` /
+`origin/master`, fetched best-effort first; local HEAD only when there is no origin),
+so agent branches and their PRs start from current upstream code even when the
+user's checkout is stale — and never from a sibling's branch — so ordered work within
 one project must go to a single agent; a same-project `dependsOn` would wait but
 never see its prerequisite's changes. `spawn_agent` takes an optional `touches`
 (the files/dirs a unit will modify) and `dependsOn` (sibling agent ids that must
