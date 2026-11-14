@@ -1,6 +1,21 @@
 import { appendFileSync, mkdirSync, openSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 
+/**
+ * How a streamed subprocess ended, returned as `streamJson`'s completion value. The
+ * stderr tail lets a caller explain a failure (e.g. a CLI rejecting an argument and
+ * exiting before it emits a single JSON line) instead of reporting a bare exit code.
+ */
+export interface StreamExit {
+  code: number;
+  /** The last ~2KB of the child's stderr, verbatim (may be empty). */
+  stderrTail: string;
+}
+
+/** Bound on `StreamExit.stderrTail` — enough for a usage error or a stack's last
+ * frames without holding a chatty CLI's whole stderr in memory. */
+const STDERR_TAIL_CHARS = 2048;
+
 export interface SpawnResult {
   /** Yields one parsed JSON object per newline-delimited stdout line. Non-JSON
    * lines are teed to the log but skipped. */
@@ -24,7 +39,7 @@ export async function* streamJson(
      * (e.g. Claude Code) that read it from stdin when stdin isn't a TTY. */
     stdin?: string;
   },
-): AsyncGenerator<unknown, number> {
+): AsyncGenerator<unknown, StreamExit> {
   mkdirSync(dirname(opts.logPath), { recursive: true });
   const logFd = openSync(opts.logPath, "a");
   appendFileSync(logFd, `\n$ ${cmd.join(" ")}\n`);
@@ -39,10 +54,15 @@ export async function* streamJson(
     signal: opts.signal,
   });
 
-  // Drain stderr into the log without blocking the stdout reader.
+  // Drain stderr into the log without blocking the stdout reader, keeping a bounded
+  // tail for the completion value.
+  let stderrTail = "";
   const stderrDone = (async () => {
+    const decoder = new TextDecoder();
     for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
-      appendFileSync(logFd, Buffer.from(chunk).toString("utf8"));
+      const text = decoder.decode(chunk, { stream: true });
+      appendFileSync(logFd, text);
+      stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS);
     }
   })();
 
@@ -75,8 +95,8 @@ export async function* streamJson(
     const code = await proc.exited;
     await stderrDone;
     // Returned as the generator's completion value so callers can distinguish a
-    // clean run from a crash — a `for await` loop simply ignores it.
-    return code;
+    // clean run from a crash (and say why) — a `for await` loop simply ignores it.
+    return { code, stderrTail };
   } finally {
     closeSync(logFd);
   }
