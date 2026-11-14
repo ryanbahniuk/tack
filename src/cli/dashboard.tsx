@@ -62,8 +62,8 @@ function snapshot(showArchived: boolean): View[] {
         tickets: listSessionJiraTickets(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
-        // Waiting on the human: a plan to approve, a pending amendment, or unread
-        // completed agent work.
+        // Waiting on the human: a plan to approve, or unread completed agent work
+        // once nothing is still in flight.
         needsInput: sessionNeedsInput(session, agents),
         amendments: listPendingAmendments(session.id),
         prWatch: Object.fromEntries(
