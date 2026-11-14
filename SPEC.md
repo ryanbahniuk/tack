@@ -374,6 +374,17 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime's transcript once it exits (claude sums per-message `usage` × pricing;
    codex reads its rollout's cumulative token count). `--background` keeps the
    headless, detached, streamed runner for unattended runs.
+   When tmux is available, the interactive TUI runs in `tack-<sessionId>` on
+   Tack's private server (`tmux -L tack`). `prefix d` detaches with the live state
+   intact; `tack session resume <session>` reattaches. `prefix N` (capital N)
+   runs `detach-client -E` with the shell-quoted Tack self command followed by
+   `session create`. This replaces the attach client with a normal create child,
+   preserving its full lifecycle (DB row, tmux session, cost recovery, outcome
+   report) while the original supervisor stays parked. After the new session
+   detaches or exits, control returns to the original caller; reporting the old
+   session as detached is expected. The binding is refreshed on create and attach,
+   and the status hint doubles the prefix for both shortcuts when nested inside
+   another tmux. Without tmux, the supervisor runs directly without these shortcuts.
 2. The supervisor picks the affected projects from their descriptions and calls
    `sync_projects` (best-effort, time-boxed fetch → detached checkout of
    `origin/<default>`, or HEAD with no origin), investigates those snapshots, calls
