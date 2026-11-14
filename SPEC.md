@@ -337,11 +337,19 @@ Adapter specifics, hidden behind the interface:
   does NOT use plan mode (its native `ExitPlanMode` menu can't be relabelled or
   overridden by a hook): it blocks edits via a `--settings` `permissions.deny` list
   (`Edit`, `Write`, `NotebookEdit`, `ExitPlanMode`, `EnterPlanMode`), auto-allows the
-  mounted MCP servers (`--allowedTools mcp__<server>`), and wires a PreToolUse hook
+  mounted MCP servers through four layers (`--allowedTools mcp__<server>`, a
+  PreToolUse `allow` hook, `permissions.allow` in `--settings`, and the same rule
+  merged and deduped into the Tack-owned cwd's `.claude/settings.local.json`
+  without clobbering existing or corrupt files), and wires a PreToolUse hook
   on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
   — marking the session as awaiting input and returning an `ask` decision so the
   human sees a single "Proceed with implementation?" prompt. The tool's handler,
   which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
+  Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
+  excluded from the allow hook and backed by `permissions.ask` rules, which
+  outrank server-wide allow rules. Their ask hooks supply the prompt wording.
+  The supervisor server also marks its read-only tools `readOnlyHint`, including
+  `sync_projects`, whose only writes are Tack-owned snapshot worktrees.
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
   <id> -a never -s <workspace-write|read-only>`; session id captured from
   `session_meta`; cost computed from the final `token_count` × pricing. Codex's

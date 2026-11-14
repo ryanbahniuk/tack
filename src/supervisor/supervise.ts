@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR, TACK_HOME } from "../paths";
 import type { TackConfig } from "../config/schema";
+import type { RunOptions } from "../runtimes/types";
 import { modelForRole, resolveModel } from "../config/load";
 import {
   approveSessionPlan,
@@ -249,7 +250,7 @@ export async function superviseInteractive(opts: {
   // if the user closes the TUI abruptly. Codex has no id yet — see below.
   if (sessionRef) setSessionResumeRef(session.id, sessionRef);
 
-  const spec = runtime.interactiveCommand({
+  const runOpts: RunOptions = {
     prompt,
     cwd,
     model,
@@ -274,11 +275,13 @@ export async function superviseInteractive(opts: {
       ? {}
       : { approvalTools: SUPERVISOR_APPROVAL_TOOLS, approvalPrompt: SUPERVISOR_APPROVAL_PROMPT }),
     logPath: join(LOGS_DIR, session.id, "supervisor.log"),
-  });
+  };
+  const spec = runtime.interactiveCommand(runOpts);
 
-  // Pre-record trust for the freshly-created session cwd so the runtime's TUI
-  // doesn't stop to ask before it can start (see Runtime.prepareInteractive).
-  runtime.prepareInteractive?.(cwd);
+  // Pre-record trust (and the read-only MCP auto-allow) for the freshly-created
+  // session cwd so the runtime's TUI doesn't stop to ask before it can start, or on
+  // each supervisor tool call (see Runtime.prepareInteractive).
+  runtime.prepareInteractive?.(runOpts);
 
   // Launch inside tmux when it's available so the session can be detached and
   // reattached with its live state intact: create it detached (with a status-bar

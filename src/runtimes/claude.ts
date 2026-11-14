@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -132,7 +132,10 @@ export class ClaudeRuntime implements Runtime {
     const m = opts.model;
     const args = ["--model", m.id];
     // A single --settings blob carrying the session's edit block and human gates.
-    const settings: { permissions?: { deny: string[] }; hooks?: unknown } = {};
+    const settings: {
+      permissions?: { deny?: string[]; allow?: string[]; ask?: string[] };
+      hooks?: unknown;
+    } = {};
     if (opts.readOnly) {
       // Pin the default mode explicitly so a user-level `defaultMode` (e.g. plan) can't
       // reintroduce the native ExitPlanMode menu, then block the native edit tools (and
@@ -148,19 +151,16 @@ export class ClaudeRuntime implements Runtime {
       // approval (`planApprovalTool`, forced to prompt by its own hook below), after
       // which spawn_agent proceeds. `spawn_agent` is still held before approval by
       // its own server-side plan-gate, not by a per-call prompt.
-      for (const s of opts.mcpServers ?? []) args.push("--allowedTools", `mcp__${s.name}`);
+      // Layer (a) of four; see `supervisorAllowRules` for the remaining safeguards.
+      for (const rule of supervisorAllowRules(opts)) args.push("--allowedTools", rule);
     }
     if (m.effort) args.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) args.push("--resume", opts.sessionRef);
     else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
-    // Human gates, all wired as PreToolUse hooks that return an `ask` decision. That
-    // forces a prompt even though the tool's MCP server is otherwise auto-allowed by
-    // the `--allowedTools mcp__<server>` wildcard above (and the hook allow in (3),
-    // which excludes these tools). We use hooks (not permissions
-    // `ask` rules) so each prompt carries our own wording via
-    // `permissionDecisionReason` instead of the generic "requires confirmation" line.
+    // Human gates use PreToolUse ask hooks for their plain-language wording.
+    // Settings ask rules back them up against the server-wide allow rules below.
     const preToolUse: unknown[] = [];
     // (1) Plan approval: the hook fires when the plan is presented (before the human
     // decides) → mark the session as awaiting input (re-arms every iteration) and
@@ -173,6 +173,10 @@ export class ClaudeRuntime implements Runtime {
     }
     // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok — the
     // model can't open a PR without the human okaying that call.
+    // We use a hook so the prompt carries our own wording via
+    // `permissionDecisionReason` instead of the generic "requires confirmation for
+    // this tool" line; a permissions `ask` rule in (4) backs it up so the prompt is
+    // guaranteed even against the server-wide allow rules.
     if (opts.approvalTools?.length) {
       const reason = opts.approvalPrompt ?? "Approve this action?";
       const payload = JSON.stringify({
@@ -190,11 +194,10 @@ export class ClaudeRuntime implements Runtime {
     }
     // (3) Hook-level auto-allow for the mounted servers' tools. The server-level
     // `--allowedTools mcp__<server>` rule above was observed NOT to be enough on its
-    // own — `check_agents` still raised a prompt — whereas a PreToolUse `allow`
-    // decision is authoritative. Each matcher is anchored to its server and excludes
-    // that server's gated tools (the approval tools and the plan-approval tool), so
-    // those never get an `allow` and their `ask` hooks in (1)/(2) still force the
-    // human ok. Supervisor-only, like the `--allowedTools` flags it backs up.
+    // own — `check_agents` still raised a prompt — so this hook is layer (b).
+    // It too proved insufficient for `sync_projects` in plan mode; see (4).
+    // Exclude both approval tools and the plan-approval tool so an allow decision
+    // never pre-empts their human gates. This applies only to the supervisor.
     if (opts.readOnly && opts.mcpServers?.length) {
       const payload = JSON.stringify({
         hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
@@ -207,6 +210,32 @@ export class ClaudeRuntime implements Runtime {
         preToolUse.push({ matcher, hooks: [{ type: "command", command }] });
       }
     }
+    // (4) The same server-wide allow as a settings `permissions.allow` rule —
+    // auto-allow layer (c). `--allowedTools` plus the hook in (3) still let plan mode
+    // prompt for `sync_projects` (then a tool without `readOnlyHint`), so we also
+    // state the allow the way the TUI's own "Yes, and don't ask again" persists it:
+    // as a settings rule. Layer (d) is that same rule pre-written to the session
+    // cwd's `.claude/settings.local.json` by `prepareInteractive`.
+    // The approval tools and plan-approval tool also get `permissions.ask` rules. Permission rules
+    // resolve deny → ask → allow, so an `ask` rule beats every server-wide `allow`
+    // above regardless of which source it came from — a guarantee that open_pr still
+    // prompts that doesn't depend on how the `ask` hook in (2) ranks against rules.
+    // The hooks in (1)/(2) supply the plain-language prompt wording.
+    // (`supervisorAllowRules` is empty outside read-only; the `ask` rule follows
+    // `approvalTools` wherever it's set, like its hook.)
+    const allow = supervisorAllowRules(opts);
+    const ask = [
+      ...new Set([
+        ...(opts.approvalTools ?? []),
+        ...(opts.onPlanPresented && opts.planApprovalTool ? [opts.planApprovalTool] : []),
+      ]),
+    ];
+    if (allow.length || ask.length)
+      settings.permissions = {
+        ...settings.permissions,
+        ...(allow.length ? { allow } : {}),
+        ...(ask.length ? { ask } : {}),
+      };
     if (preToolUse.length) settings.hooks = { PreToolUse: preToolUse };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(
@@ -221,32 +250,28 @@ export class ClaudeRuntime implements Runtime {
   }
 
   /**
-   * Pre-record workspace trust for `cwd` so the interactive TUI doesn't stop to
-   * ask "trust this folder?" on launch. Claude shows that dialog the first time
-   * it runs interactively in a directory it hasn't seen, and every supervisor
-   * session gets a brand-new `~/.tack/supervisor/ses_<id>` cwd — so without this
-   * it would prompt at the start of every session. Tack creates and owns these
-   * directories, so we set the same per-project flag the dialog would write
-   * (`~/.claude.json` -> `projects[cwd].hasTrustDialogAccepted`). Headless `-p`
-   * runs skip the dialog entirely, so only the interactive path needs this.
+   * One-time prep for the interactive TUI in `opts.cwd`, so nothing but Tack's own
+   * human gates interrupts the session. Every supervisor session gets a brand-new,
+   * Tack-owned `~/.tack/supervisor/ses_<id>` cwd, which claude has never seen:
+   *
+   *  - Workspace trust. Claude shows a "trust this folder?" dialog the first time it
+   *    runs interactively in an unknown directory, so we set the same per-project
+   *    flag the dialog would write (`~/.claude.json` ->
+   *    `projects[cwd].hasTrustDialogAccepted`).
+   *  - MCP auto-allow (read-only only). We write the mounted servers' allow rules to
+   *    `<cwd>/.claude/settings.local.json` — exactly what a human picking "Yes, and
+   *    don't ask again for … commands in <cwd>" on an MCP prompt would persist. This
+   *    is layer (d) of the supervisor's auto-allow (see `interactiveCommand`): it's
+   *    the shape claude's own UI produces, so it's the layer most likely to hold if
+   *    the flag/hook/settings layers fall short again.
+   *
+   * Both writes merge into whatever is already there and never clobber a corrupt
+   * file. Headless `-p` runs show neither dialog nor prompt, so only the
+   * interactive path needs this.
    */
-  prepareInteractive(cwd: string): void {
-    const file = join(homedir(), ".claude.json");
-    let config: any = {};
-    if (existsSync(file)) {
-      try {
-        config = JSON.parse(readFileSync(file, "utf8"));
-      } catch {
-        // Corrupt/unreadable — don't clobber it; claude will handle the dialog.
-        return;
-      }
-    }
-    if (typeof config !== "object" || config === null) return;
-    const projects = (config.projects ??= {});
-    const entry = (projects[cwd] ??= {});
-    if (entry.hasTrustDialogAccepted === true) return;
-    entry.hasTrustDialogAccepted = true;
-    writeFileSync(file, JSON.stringify(config, null, 2));
+  prepareInteractive(opts: RunOptions): void {
+    recordWorkspaceTrust(opts.cwd);
+    if (opts.readOnly) mergeLocalAllowRules(opts.cwd, supervisorAllowRules(opts));
   }
 
   /**
@@ -316,6 +341,80 @@ export class ClaudeRuntime implements Runtime {
     // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }
+}
+
+/**
+ * The server-wide permission rules (`mcp__<server>`, which covers every tool of
+ * that server) that auto-allow the read-only supervisor's mounted MCP servers.
+ * Empty outside read-only: agents run headless in auto mode and never prompt.
+ *
+ * The auto-allow is stated four ways because, in `--permission-mode plan`, layers
+ * were observed to fall short one at a time: (a) `--allowedTools`, (b) a PreToolUse
+ * `allow` hook, (c) a `permissions.allow` rule in the `--settings` blob, and (d) the
+ * same rule pre-written to the session cwd's `.claude/settings.local.json` (see
+ * `interactiveCommand` / `prepareInteractive`). Separately, the supervisor server
+ * marks its genuinely read-only tools `readOnlyHint`. The interactive supervisor
+ * now uses default mode with explicit edit denies, retaining these allow layers
+ * so routine coordination tools stay prompt-free.
+ * Gated tools are NOT carved out of these rules: their `permissions.ask` rule
+ * outranks any allow rule (deny → ask → allow), and their `ask` hook supplies the
+ * prompt wording.
+ */
+export function supervisorAllowRules(opts: RunOptions): string[] {
+  if (!opts.readOnly) return [];
+  return [...new Set((opts.mcpServers ?? []).map((s) => `mcp__${s.name}`))];
+}
+
+/** Sets `~/.claude.json` -> `projects[cwd].hasTrustDialogAccepted` (see
+ * `prepareInteractive`). Leaves a corrupt/non-object file alone. */
+function recordWorkspaceTrust(cwd: string): void {
+  const file = join(homedir(), ".claude.json");
+  let config: any = {};
+  if (existsSync(file)) {
+    try {
+      config = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      // Corrupt/unreadable — don't clobber it; claude will handle the dialog.
+      return;
+    }
+  }
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return;
+  const projects = (config.projects ??= {});
+  const entry = (projects[cwd] ??= {});
+  if (entry.hasTrustDialogAccepted === true) return;
+  entry.hasTrustDialogAccepted = true;
+  writeFileSync(file, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Merges `rules` into `<cwd>/.claude/settings.local.json` -> `permissions.allow`,
+ * deduped and preserving every existing key and entry. Bails without writing when
+ * the file (or its `permissions` / `allow`) isn't the shape claude expects: it's
+ * not ours to repair, and the other auto-allow layers still apply.
+ */
+function mergeLocalAllowRules(cwd: string, rules: readonly string[]): void {
+  if (!rules.length) return;
+  const dir = join(cwd, ".claude");
+  const file = join(dir, "settings.local.json");
+  let settings: any = {};
+  if (existsSync(file)) {
+    try {
+      settings = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return; // corrupt — don't clobber
+    }
+  }
+  const isObj = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isObj(settings)) return;
+  if (settings.permissions !== undefined && !isObj(settings.permissions)) return;
+  const permissions = (settings.permissions ??= {});
+  if (permissions.allow !== undefined && !Array.isArray(permissions.allow)) return;
+  const allow: unknown[] = (permissions.allow ??= []);
+  const missing = rules.filter((r) => !allow.includes(r));
+  if (!missing.length) return;
+  allow.push(...missing);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
 }
 
 /**
