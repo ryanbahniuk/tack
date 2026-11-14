@@ -5,6 +5,7 @@ import {
   countOpenPrFeedback,
   getSession,
   listAgents,
+  listInterruptedAgents,
   listPendingAmendments,
   listSessionJiraTickets,
   listSessionPrs,
@@ -143,8 +144,10 @@ type Launch =
   | { kind: "create" }
   | { kind: "output"; ref: string; title: string };
 
-/** A pending yes/no confirmation for a destructive key. */
-type Confirm = { action: "delete" | "stop"; id: string };
+/** A pending yes/no confirmation for stopping, deleting, or restoring work. */
+type Confirm =
+  | { action: "delete" | "stop"; id: string }
+  | { action: "unarchive"; id: string; count: number };
 
 export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
@@ -297,14 +300,18 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     // Quit is the one gesture that works from everywhere.
     if (key.ctrl && input === "c") return exit();
 
-    // A pending confirmation swallows the next keypress: y/enter commits, anything
-    // else cancels. Keeps a single fat-fingered `d` from deleting a session's
+    // A pending confirmation swallows the next keypress: y commits, anything
+    // else cancels (stop/delete also accept enter). Keeps a stray `d` from deleting a session's
     // worktrees and artifacts irreversibly.
     if (confirm) {
-      if (input === "y" || input === "Y" || key.return) {
+      if (input === "y" || input === "Y" || (key.return && confirm.action !== "unarchive")) {
         if (confirm.action === "delete") {
           deleteSession(confirm.id);
           setNotice(`deleted ${confirm.id}`);
+        } else if (confirm.action === "unarchive") {
+          const { resumedAgents } = unarchiveSession(confirm.id);
+          setCursorId(confirm.id);
+          setNotice(`unarchived ${confirm.id} · resumed ${resumedAgents.length} agent(s) · enter to rejoin supervisor`);
         } else {
           stopSession(confirm.id);
           setNotice(`stopped ${confirm.id}`);
@@ -428,9 +435,13 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
     } else if (input === "a") {
-      if (selected.session.status === "archived") unarchiveSession(selected.session.id);
-      else archiveSession(selected.session.id);
-      refresh();
+      if (selected.session.status === "archived") {
+        setConfirm({ action: "unarchive", id: selected.session.id, count: listInterruptedAgents(selected.session.id).length });
+      } else {
+        archiveSession(selected.session.id);
+        setNotice(`archived ${selected.session.id} · z to show archived, a to restore`);
+        refresh();
+      }
     } else if (input === "d") {
       setConfirm({ action: "delete", id: selected.session.id });
     }
@@ -572,7 +583,9 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
           <Text color="yellow">
             {confirm.action === "delete"
               ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
-              : `Stop ${confirm.id} and its agents? (y/N)`}
+              : confirm.action === "unarchive"
+                ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
+                : `Stop ${confirm.id} and its agents? (y/N)`}
           </Text>
         ) : (
           <>
@@ -580,7 +593,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
             {ghMissing ? <Text dimColor>gh not found — PR status not updating</Text> : null}
             {jiraUnavailable ? <Text dimColor>jira unavailable — ticket status not updating</Text> : null}
             <Text dimColor>
-              s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive · d delete · z archived · q quit
+              s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit
             </Text>
           </>
         )}

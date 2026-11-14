@@ -184,7 +184,9 @@ tack session show <session>        # agents, PRs, cost, and pending amendments
 tack session context <session>     # the shared contract + version history (--all for bodies)
 tack session approve <session>     # approve a stuck plan (or type /approve in the Claude session)
 tack session stop <session>        # stop a session and its agents
-tack session archive <session>     # hide from the default view
+tack session archive <session>     # stop + hide, remembering interrupted agents
+tack session unarchive <session>   # restore + resume interrupted agents
+tack session resume <session>      # rejoin the supervisor
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
@@ -194,6 +196,12 @@ full-screen Insights. Narrow terminals start with the list; `s` still opens Insi
 Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
 The header shows the current layout and range. Existing session keys still work
 in the list: `j/k`, `enter/o`, `v`, `m`, `n`, `O`, `J`, `c`, `x`, `a`, `d`, `z`, `q`.
+Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
+immediate; unarchiving asks for confirmation and resumes only the agents archive
+interrupted. Agents with a runtime session handle continue their conversation;
+others start with their original prompt in the same worktree. A plain `x`/`stop`
+does not mark agents for restoration. Unarchive leaves the supervisor for you to
+rejoin with `enter/o` or `tack session resume <session>`.
 
 Insights includes archived sessions regardless of the list's `z` filter. It shows
 sessions, agents, PRs opened/merged, tickets linked/done, cost, changes against the

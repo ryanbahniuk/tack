@@ -88,12 +88,12 @@ describe("insight aggregation", () => {
 describe("merged_at persistence and migration", () => {
   test("v7 upgrades an existing v6 table without rewriting its data; rerun is safe", () => {
     const db = fixture();
-    // Reconstruct the pre-v7 schema, preserving legacy rows.
-    db.exec("ALTER TABLE session_prs DROP COLUMN merged_at; DELETE FROM _migrations WHERE version = 7");
+    // Reconstruct the pre-v7 schema, removing later columns while preserving legacy rows.
+    db.exec("ALTER TABLE session_prs DROP COLUMN merged_at; DELETE FROM _migrations WHERE version >= 7; ALTER TABLE agents DROP COLUMN interrupted_at");
     migrate(db);
     expect(db.query("SELECT merged_at FROM session_prs WHERE id = 'p'").get()).toEqual({ merged_at: null });
     expect(db.query("SELECT COUNT(*) AS n FROM session_prs").get()).toEqual({ n: 2 });
-    expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 7 });
+    expect(db.query("SELECT MAX(version) AS v FROM _migrations WHERE version <= 7").get()).toEqual({ v: 7 });
     migrate(db);
     db.close();
   });

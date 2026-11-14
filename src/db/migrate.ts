@@ -247,6 +247,12 @@ const migrations: Migration[] = [
     // Keep merge activity on its actual day rather than the latest refresh day.
     sql: `ALTER TABLE session_prs ADD COLUMN merged_at TEXT;`,
   },
+  {
+    version: 8,
+    name: "agent_interrupted_at",
+    // Archive remembers which agents to relaunch when the session is restored.
+    sql: `ALTER TABLE agents ADD COLUMN interrupted_at TEXT;`,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

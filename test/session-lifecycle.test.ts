@@ -1,0 +1,92 @@
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, migrate, setAgentStatus } from "../src/db";
+import * as detached from "../src/agent/detached";
+import * as tmux from "../src/session/tmux";
+import { archiveSession, stopSession, unarchiveSession } from "../src/session/lifecycle";
+
+const sessions: string[] = [];
+const mocks: Array<{ mockRestore(): void }> = [];
+afterEach(() => {
+  for (const mock of mocks.splice(0)) mock.mockRestore();
+  for (const id of sessions.splice(0)) deleteSession(id);
+});
+
+function fixture() {
+  const session = createSession({});
+  sessions.push(session.id);
+  const agents = (["running", "pending", "done", "failed", "stopped"] as const).map(status => {
+    const a = createAgent({ sessionId: session.id, projectName: "test" });
+    setAgentStatus(a.id, status);
+    return getAgent(a.id)!;
+  });
+  mocks.push(spyOn(tmux, "tmuxKillSession").mockImplementation(() => {}));
+  return { session, agents };
+}
+
+describe("archive restoration", () => {
+  test("archive stamps running/pending agents before stopping, preserving terminal agents", () => {
+    const { session, agents } = fixture();
+    archiveSession(session.id);
+    expect(getSession(session.id)?.status).toBe("archived");
+    expect(listInterruptedAgents(session.id).map(a => a.id)).toEqual(agents.slice(0, 2).map(a => a.id));
+    expect(listAgents(session.id).map(a => a.status)).toEqual(["stopped", "stopped", "done", "failed", "stopped"]);
+    expect(getAgent(agents[0]!.id)?.interrupted_at).toBeString();
+  });
+
+  test("plain stop does not stamp or make agents eligible for unarchive", () => {
+    const { session } = fixture();
+    stopSession(session.id);
+    expect(listAgents(session.id).every(a => a.interrupted_at === null)).toBe(true);
+    const spawn = spyOn(detached, "spawnAgentRunner").mockReturnValue(123);
+    mocks.push(spawn);
+    expect(unarchiveSession(session.id)).toEqual({ resumedAgents: [] });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  test("unarchive relaunches exactly interrupted agents as pending and clears stamps", () => {
+    const { session, agents } = fixture();
+    archiveSession(session.id);
+    const spawn = spyOn(detached, "spawnAgentRunner").mockImplementation((sessionId, agentId, options) => {
+      expect(sessionId).toBe(session.id);
+      expect(getSession(sessionId)?.status).toBe("active");
+      expect(agents.slice(0, 2).every(a => getAgent(a.id)?.status === "pending")).toBe(true);
+      expect(getAgent(agentId)).toMatchObject({ status: "pending", interrupted_at: null, finished_at: null });
+      expect(options).toEqual({ resume: true });
+      return 123;
+    });
+    mocks.push(spawn);
+    expect(unarchiveSession(session.id)).toEqual({ resumedAgents: agents.slice(0, 2).map(a => a.id) });
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(listInterruptedAgents(session.id)).toEqual([]);
+    expect(listAgents(session.id).map(a => a.status)).toEqual(["pending", "pending", "done", "failed", "stopped"]);
+    expect(unarchiveSession(session.id)).toEqual({ resumedAgents: [] });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  test("one failed launch records the error and does not prevent later launches", () => {
+    const { session, agents } = fixture();
+    archiveSession(session.id);
+    const spawn = spyOn(detached, "spawnAgentRunner").mockImplementation((_, id) => {
+      if (id === agents[0]!.id) throw new Error("runner unavailable");
+      return 123;
+    });
+    mocks.push(spawn);
+    expect(unarchiveSession(session.id)).toEqual({ resumedAgents: [agents[1]!.id] });
+    expect(getAgent(agents[0]!.id)).toMatchObject({ status: "failed", error: "runner unavailable", interrupted_at: null });
+    expect(getAgent(agents[1]!.id)).toMatchObject({ status: "pending", interrupted_at: null });
+  });
+});
+
+test("v8 upgrades an existing database, preserves agents, and is idempotent", () => {
+  const db = new Database(":memory:");
+  migrate(db);
+  db.exec("ALTER TABLE agents DROP COLUMN interrupted_at; DELETE FROM _migrations WHERE version = 8");
+  db.exec("INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then')");
+  db.exec("INSERT INTO agents (id, session_id, project_name, status, created_at, updated_at) VALUES ('a', 's', 'test', 'stopped', 'then', 'then')");
+  migrate(db);
+  expect(db.query("SELECT id, interrupted_at FROM agents").all()).toEqual([{ id: "a", interrupted_at: null }]);
+  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 8 });
+  migrate(db);
+  db.close();
+});

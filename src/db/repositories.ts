@@ -56,6 +56,8 @@ export interface AgentRow {
   model: string | null;
   runtime: RuntimeKind | null;
   resume_ref: string | null;
+  /** Work interrupted by archive, awaiting restoration. */
+  interrupted_at: string | null;
   cost: number;
   cost_source: CostSource | null;
   tokens_input: number;
@@ -381,6 +383,22 @@ export function getAgent(id: string): AgentRow | null {
 export function listAgents(sessionId: string): AgentRow[] {
   return getDb()
     .prepare(`SELECT * FROM agents WHERE session_id = ? ORDER BY created_at ASC`)
+    .all(sessionId) as AgentRow[];
+}
+
+/** Only archive marks interrupted work; ordinary stops must stay stopped. */
+export function markAgentInterrupted(id: string): void {
+  const now = nowIso();
+  getDb().prepare(`UPDATE agents SET interrupted_at = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'pending')`).run(now, now, id);
+}
+
+export function clearAgentInterrupted(id: string): void {
+  getDb().prepare(`UPDATE agents SET interrupted_at = NULL, updated_at = ? WHERE id = ?`).run(nowIso(), id);
+}
+
+export function listInterruptedAgents(sessionId: string): AgentRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM agents WHERE session_id = ? AND interrupted_at IS NOT NULL ORDER BY created_at ASC`)
     .all(sessionId) as AgentRow[];
 }
 

@@ -830,8 +830,9 @@ const unarchive = defineCommand({
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
     requireSession(String(args.session));
-    unarchiveSession(String(args.session));
-    console.log(pc.dim(`unarchived ${args.session}`));
+    const { resumedAgents } = unarchiveSession(String(args.session));
+    console.log(pc.dim(`unarchived ${args.session} · resumed ${resumedAgents.length} agent(s)`));
+    console.log(pc.dim(`Rejoin the supervisor with tack session resume ${args.session}`));
   },
 });
 
@@ -1376,7 +1377,7 @@ if (hidden === "__mcp") {
 } else if (hidden === "__run-agent") {
   const [, , , agentId] = process.argv;
   const config = await loadConfig();
-  await runAgentToCompletion(agentId!, config);
+  await runAgentToCompletion(agentId!, config, { resume: process.argv[4] === "--resume" });
 } else if (hidden === "__run-supervisor") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
