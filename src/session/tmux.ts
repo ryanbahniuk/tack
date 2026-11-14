@@ -12,6 +12,7 @@ import type { InteractiveSpec } from "../runtimes/types";
  * Prefix N parks the current session and opens a new one: `detach-client -E`
  * replaces the attach client with `tack session create`, so its caller owns the
  * normal create lifecycle (DB row, tmux session, cost recovery, outcome report).
+ * Prefix B parks it and opens a Tack bug-fix session with evidence from this session.
  *
  * tmux is optional. Without it the TUI still runs (spawned directly), you just
  * can't leave and come back.
@@ -31,6 +32,7 @@ const TMUX_SOCKET = "tack";
 
 /** Capital N in the prefix table opens a new session on Tack's private server. */
 export const TMUX_NEW_SESSION_KEY = "N";
+export const TMUX_TACK_BUG_KEY = "B";
 
 /** argv (after the `tmux` binary) for a command on Tack's dedicated server: the
  * `-L <socket>` selector followed by the rest of the command. */
@@ -43,10 +45,24 @@ function tmuxArgs(...rest: string[]): string[] {
  * Replacing the client preserves the caller's normal child lifecycle while the
  * original supervisor stays parked in its existing tmux session. */
 export function tmuxNewSessionBindingArgs(invocation: ReturnType<typeof selfCommand>): string[] {
+  return tmuxBindingArgs(TMUX_NEW_SESSION_KEY, invocation);
+}
+
+/** detach-client passes args_get(E) straight to server_client_exec (no format
+ * expansion); client.c executes it with execl, inheriting the attach client env.
+ * See https://github.com/tmux/tmux/blob/master/cmd-detach-client.c,
+ * server-client.c (copies the command unchanged), client.c (execl), and
+ * https://man.openbsd.org/tmux#detach-client. Use a
+ * client-scoped id rather than baking one into this server-wide binding. */
+export function tmuxTackBugBindingArgs(invocation: ReturnType<typeof selfCommand>): string[] {
+  return tmuxBindingArgs(TMUX_TACK_BUG_KEY, invocation);
+}
+
+function tmuxBindingArgs(key: string, invocation: ReturnType<typeof selfCommand>): string[] {
   const command = [invocation.command, ...invocation.args]
     .map((arg) => `'${arg.replaceAll("'", "'\\''")}'`)
     .join(" ");
-  return tmuxArgs("bind-key", TMUX_NEW_SESSION_KEY, "detach-client", "-E", command);
+  return tmuxArgs("bind-key", key, "detach-client", "-E", command);
 }
 
 /** Install or refresh the server-wide binding. Tack owns this server, so rebinding
@@ -55,6 +71,7 @@ export function tmuxNewSessionBindingArgs(invocation: ReturnType<typeof selfComm
 export function tmuxBindNewSessionKey(): void {
   try {
     spawnSync("tmux", tmuxNewSessionBindingArgs(selfCommand(["session", "create"])), { stdio: "ignore" });
+    spawnSync("tmux", tmuxTackBugBindingArgs(selfCommand(["session", "create", "--tack-bug-from-env"])), { stdio: "ignore" });
   } catch {
     /* tmux absent or server unavailable */
   }
@@ -89,7 +106,7 @@ export function tmuxHasSession(name: string): boolean {
 
 /**
  * Ensure a detached tmux session exists for `sessionId` running `spec`, and paint
- * its status bar with detach, new-session and resume hints. Returns false if tmux
+ * its status bar with detach, new-session, bug-report and resume hints. Returns false if tmux
  * fails to create it (so the caller can fall back to a direct spawn). Idempotent: an existing
  * session is left running as-is — its status was set at creation.
  *
@@ -140,14 +157,14 @@ export function insideTmux(): boolean {
 
 /**
  * Build the status hint for the current attach context. Nested tmux needs the
- * prefix doubled for both shortcuts to reach Tack's inner session. */
+ * prefix doubled for all shortcuts to reach Tack's inner session. */
 export function statusHintText(sessionId: string, prefix: string, nested: boolean): string {
   const keys = nested ? `${prefix} ${prefix}` : prefix;
-  return ` #[bold]tack#[default] ${sessionId}  ·  detach: ${keys} d  ·  new session: ${keys} ${TMUX_NEW_SESSION_KEY}  ·  resume: tack session resume ${sessionId} `;
+  return ` #[bold]tack#[default] ${sessionId}  ·  detach: ${keys} d  ·  new session: ${keys} ${TMUX_NEW_SESSION_KEY}  ·  tack bug: ${keys} ${TMUX_TACK_BUG_KEY}  ·  resume: tack session resume ${sessionId} `;
 }
 
 /**
- * Paint a session's status bar with detach, new-session and resume hints for the
+ * Paint a session's status bar with detach, new-session, bug-report and resume hints for the
  * current attach context: nested (inside tmux) needs the prefix doubled to reach the inner
  * session. Session-scoped (`-t <name>`), so it never touches the user's other tmux
  * sessions. Re-applied at each attach, since the same session can be reattached from
@@ -198,4 +215,23 @@ export function tmuxClientEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
   delete env.TMUX;
   delete env.TMUX_PANE;
   return env;
+}
+
+/** Best-effort transcript fallback on Tack's server, capped again by the digest. */
+export function tmuxCapturePane(sessionId: string, lines = 300): string {
+  try {
+    const target = `=${tmuxSessionName(sessionId)}`;
+    // capture-pane takes a pane target. Some tmux versions reject a bare session
+    // name here ("can't find pane"); the colon explicitly selects that exact
+    // session's active window/pane, without falling back to another session.
+    for (const pane of [target, `${target}:`]) {
+      const out = spawnSync("tmux", tmuxArgs("capture-pane", "-p", "-J", "-S", `-${lines}`, "-t", pane), {
+        encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 3000,
+      });
+      if (out.status === 0) return out.stdout;
+    }
+    return "";
+  } catch {
+    return "";
+  }
 }

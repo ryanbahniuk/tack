@@ -193,8 +193,12 @@ Run `tack --help` (or `tack <command> --help`) for the full command list.
 With tmux installed, interactive supervisors stay live when you detach with
 `prefix d`; use `tack session resume <session>` to reattach. Press `prefix N`
 (capital N) to park the current supervisor and open a new Tack session with the
-normal create lifecycle. When nested inside your own tmux, press the prefix twice
-before `d` or `N`. The status bar shows the keys for your current attach context.
+normal create lifecycle. Press `prefix B` (capital B) to park it and report a bug
+in Tack itself in a new session, with a bounded digest of the source session.
+Enter an optional description inline, or use
+`tack session create --tack-bug-from <sessionId> -m "what went wrong"` from any terminal.
+Bug reports always open interactively, including with `-b`. When nested inside your
+own tmux, press the prefix twice before `d`, `N`, or `B`. The status bar shows the keys for your current attach context.
 
 ## Development
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
+import { createInterface } from "node:readline/promises";
+import { tackBugSeed, writeTackBugReport } from "../src/session/bug-report";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
@@ -917,11 +919,18 @@ const GO_FOLLOWUP_TEMPLATE = `<!-- Follow up with the supervisor: a course corre
 const sessionCreate = defineCommand({
   meta: { name: "create", description: "Create a session: plan and coordinate agents for a problem" },
   args: {
+    "tack-bug-from": { type: "string", description: "Report a Tack bug from this session in a new interactive session (interactive even with -b)" },
+    "tack-bug-from-env": { type: "boolean", description: "Report a Tack bug from TACK_ATTACHED_SESSION (interactive even with -b)" },
     message: { type: "string", alias: "m", description: "Seed the first message inline (foreground) or the problem to solve (--background)" },
     background: { type: "boolean", alias: "b", description: "Run the supervisor headless & detached instead of interactively; watch it with `tack dashboard`" },
   },
   async run({ args }) {
-    const background = Boolean(args.background);
+    const bugSourceId = args["tack-bug-from"] ?? (args["tack-bug-from-env"] ? process.env.TACK_ATTACHED_SESSION : undefined);
+    if (args["tack-bug-from-env"] && !bugSourceId) throw new Error("TACK_ATTACHED_SESSION is not set");
+    if (bugSourceId !== undefined) requireSession(String(bugSourceId));
+    const bugSource = bugSourceId !== undefined ? getSession(String(bugSourceId))! : undefined;
+    // Bug reports always use the attended create lifecycle, including with -b.
+    const background = Boolean(args.background) && !bugSource;
     const message = args.message !== undefined ? String(args.message).trim() : undefined;
 
     // Foreground (default) drops you into the runtime's own interactive TUI as the
@@ -933,9 +942,24 @@ const sessionCreate = defineCommand({
     const config = await ensureCwdProject(await loadConfig());
     // A seed is optional interactively: `-m` sends the first message, otherwise you
     // land in an idle TUI and type it yourself.
-    const prompt = message ?? "";
+    let prompt = message ?? "";
+    if (bugSource) {
+      let description = message;
+      if (description === undefined) {
+        const terminal = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          description = await terminal.question(`What went wrong in ${bugSource.id}? (optional, Enter to skip) `);
+        } finally {
+          terminal.close();
+        }
+      }
+      const hasTack = config.projects.some(project => project.name === "tack");
+      if (!hasTack) console.log(pc.yellow("Warning: no configured project is named tack."));
+      prompt = tackBugSeed(bugSource.id, description, hasTack);
+    }
     const model = modelForRole(config, "supervisor");
     const session = createSupervisorSession(prompt, config);
+    if (bugSource) writeTackBugReport(session.id, bugSource);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
     // Title from the seed now — before superviseInteractive blocks on the TUI. With
     // no seed, the first shared contract titles it instead (see set_shared_context).

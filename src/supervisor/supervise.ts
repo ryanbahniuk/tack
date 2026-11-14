@@ -298,8 +298,8 @@ export async function superviseInteractive(opts: {
   const proc = Bun.spawn([command, ...args], {
     cwd,
     // Under tmux the pane already carries spec.env (applied at create); the attach
-    // client just needs $TMUX stripped so it can nest if we're inside tmux already.
-    env: useTmux ? tmuxClientEnv() : { ...process.env, ...spec.env },
+    // client needs $TMUX stripped for nesting and its own source id for prefix B.
+    env: useTmux ? { ...tmuxClientEnv(), TACK_ATTACHED_SESSION: session.id } : { ...process.env, ...spec.env },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -339,7 +339,7 @@ export async function attachSupervisor(
   // not — since this session may have been created in the other context.
   tmuxSetStatusHint(sessionId);
   const proc = Bun.spawn(["tmux", ...tmuxAttachArgs(name)], {
-    env: tmuxClientEnv(),
+    env: { ...tmuxClientEnv(), TACK_ATTACHED_SESSION: sessionId },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
