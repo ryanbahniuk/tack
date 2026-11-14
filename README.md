@@ -190,6 +190,12 @@ tack session delete <session>      # kill pids, purge worktrees + artifacts, cas
 
 Run `tack --help` (or `tack <command> --help`) for the full command list.
 
+With tmux installed, interactive supervisors stay live when you detach with
+`prefix d`; use `tack session resume <session>` to reattach. Press `prefix N`
+(capital N) to park the current supervisor and open a new Tack session with the
+normal create lifecycle. When nested inside your own tmux, press the prefix twice
+before `d` or `N`. The status bar shows the keys for your current attach context.
+
 ## Development
 
 ```bash
