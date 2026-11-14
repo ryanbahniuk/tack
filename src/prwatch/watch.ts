@@ -1,0 +1,392 @@
+import { spawn } from "node:child_process";
+import { mkdirSync, openSync } from "node:fs";
+import { join } from "node:path";
+import { LOGS_DIR } from "../paths";
+import { isAlive, selfInvocation } from "../process/self";
+import type { Project, TackConfig } from "../config/schema";
+import { resolveModel } from "../config/load";
+import {
+  assignPrFeedback,
+  countPrFixRunsSince,
+  getSession,
+  insertPrFeedback,
+  listAgentPrFeedback,
+  listPrFixAgents,
+  listSessionPrs,
+  listUnassignedPrFeedback,
+  markAgentPostFixed,
+  markPrFeedbackHandled,
+  prFeedbackSourceIds,
+  releaseAgentPrFeedback,
+  setAgentError,
+  setAgentStatus,
+  setSessionPrStatus,
+  setSessionPrWatchPid,
+  type AgentRow,
+  type AgentStatus,
+  type PrFeedbackRow,
+  type SessionPrRow,
+  type SessionRow,
+} from "../db";
+import { readArtifact, writePrFeedbackArtifact } from "../artifacts/store";
+import { prepareAgent } from "../agent/execute";
+import { spawnAgentRunner } from "../agent/detached";
+import {
+  buildReplyBody,
+  fetchPrStatus,
+  fetchReviewThreads,
+  normalizeFeedback,
+  postIssueComment,
+  postReviewThreadReply,
+  pushBranch,
+  toMergeable,
+  type PrFeedbackItem,
+} from "../projects/prs";
+import { commitWorktreeAsync, worktreeBase, worktreeHead } from "../worktree/worktree";
+import { buildPrFixPrompt } from "./prompt";
+import { nowIso } from "../util/id";
+
+export { buildPrFixPrompt } from "./prompt";
+
+/**
+ * PR watch — the per-session background loop that keeps a session's open PRs
+ * healthy after the supervisor opens them.
+ *
+ * One detached process per session (`tack __watch-prs <sessionId>`, pid in
+ * `sessions.pr_watch_pid`) polls every `prWatch.intervalSeconds`. For each PR that
+ * isn't merged/closed it persists GitHub's status, and when there's NEW feedback
+ * (review threads, review bodies, conversation comments — bots included) or a merge
+ * conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
+ * finishes, the watcher (never the agent) pushes its commits non-force onto the PR
+ * branch and replies to each comment with the agent's verdict.
+ *
+ * Invariants:
+ *  - At most one fix agent per PR in flight; the next tick waits for it.
+ *  - Every GitHub comment is ingested once (`pr_feedback` UNIQUE(pr, source)), and
+ *    Tack's own replies carry `PR_WATCH_MARKER` so they're never ingested.
+ *  - The post-fix step is latched per agent (`agents.post_fixed_at`) and per item
+ *    (`pr_feedback.handled_at`), so a crash mid-step resumes without double-posting.
+ *  - Fix runs per PR are capped per rolling 24h (`maxFixRunsPerDay`), failures
+ *    included, and failed items are never retried automatically — no loops.
+ *  - Every `gh`/git call is async and best-effort: a failure is logged and the loop
+ *    carries on (next PR, next tick). Nothing throws out of the loop.
+ */
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const DAY_MS = 24 * 60 * 60 * 1000;
+const ACTIVE: ReadonlySet<AgentStatus> = new Set(["pending", "running"]);
+
+type Log = (msg: string) => void;
+
+/** Whether the watcher should still be looking at a PR (anything not merged/closed,
+ * including drafts and rows whose state hasn't been polled yet). */
+export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
+  return pr.state !== "merged" && pr.state !== "closed";
+}
+
+/**
+ * Starts the session's PR watcher as a detached background process, mirroring
+ * `spawnSupervisorRunner`: it outlives the caller (the supervisor's `open_pr`, or the
+ * dashboard) and logs to `logs/<ses>/pr-watch.log`. A no-op (returns null) when PR
+ * watch is disabled, the session isn't active, or a watcher is already alive.
+ * Returns the new pid otherwise.
+ */
+export function spawnPrWatcher(sessionId: string, config: TackConfig): number | null {
+  if (!config.prWatch.enabled) return null;
+  const session = getSession(sessionId);
+  if (!session || session.status !== "active") return null;
+  if (isAlive(session.pr_watch_pid)) return null;
+
+  mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
+  const fd = openSync(join(LOGS_DIR, sessionId, "pr-watch.log"), "a");
+  const { command, args } = selfInvocation();
+  const child = spawn(command, [...args, "__watch-prs", sessionId], {
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    env: process.env,
+  });
+  child.unref();
+  if (child.pid === undefined) throw new Error(`Failed to spawn PR watcher for session ${sessionId}`);
+  setSessionPrWatchPid(sessionId, child.pid);
+  return child.pid;
+}
+
+/**
+ * The `__watch-prs` entrypoint: loops one pass per interval until the session is
+ * gone/archived or none of its PRs are open any more, then clears its pid. Each
+ * pass is wrapped so one bad tick (gh down, auth expired) never kills the watcher.
+ */
+export async function runPrWatcher(sessionId: string, config: TackConfig): Promise<void> {
+  const log: Log = (msg) => console.log(`[${nowIso()}] ${msg}`);
+
+  // Self-dedupe: the dashboard and open_pr can race to spawn. Whoever finds a live
+  // watcher that isn't itself steps aside.
+  const initial = getSession(sessionId);
+  if (initial && initial.pr_watch_pid !== process.pid && isAlive(initial.pr_watch_pid)) {
+    log(`another watcher (pid ${initial.pr_watch_pid}) is running for ${sessionId}; exiting`);
+    return;
+  }
+  setSessionPrWatchPid(sessionId, process.pid);
+
+  const release = () => {
+    try {
+      if (getSession(sessionId)?.pr_watch_pid === process.pid) setSessionPrWatchPid(sessionId, null);
+    } catch {
+      /* session deleted underneath us */
+    }
+  };
+  // stop/archive SIGTERM us; clear the pid on the way out so the next spawn is clean.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, () => {
+      log(`${sig} — exiting`);
+      release();
+      process.exit(0);
+    });
+  }
+
+  const intervalMs = config.prWatch.intervalSeconds * 1000;
+  log(`watching PRs for ${sessionId} every ${config.prWatch.intervalSeconds}s`);
+  try {
+    for (;;) {
+      const session = getSession(sessionId);
+      if (!session || session.status !== "active") {
+        log("session gone or no longer active; exiting");
+        break;
+      }
+      if (session.pr_watch_pid !== process.pid && isAlive(session.pr_watch_pid)) {
+        log(`superseded by watcher pid ${session.pr_watch_pid}; exiting`);
+        break;
+      }
+      if (!listSessionPrs(sessionId).some(isWatchablePr)) {
+        log("no open PRs remain; exiting");
+        break;
+      }
+      try {
+        await watchPass(session, config, log);
+      } catch (err) {
+        log(`pass failed: ${(err as Error).message}`);
+      }
+      await sleep(intervalMs);
+    }
+  } finally {
+    release();
+  }
+}
+
+/** One tick over every watchable PR in the session. Per-PR failures are isolated. */
+async function watchPass(session: SessionRow, config: TackConfig, log: Log): Promise<void> {
+  for (const pr of listSessionPrs(session.id).filter(isWatchablePr)) {
+    try {
+      await watchPr(session, pr, config, log);
+    } catch (err) {
+      log(`PR #${pr.number ?? "?"}: ${(err as Error).message}`);
+    }
+  }
+}
+
+async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig, log: Log): Promise<void> {
+  const tag = `PR #${pr.number ?? "?"}`;
+  const project = config.projects.find((p) => p.name === pr.project_name);
+  if (!project) return log(`${tag}: project "${pr.project_name ?? "?"}" not in config; skipping`);
+  if (pr.number === null) return log(`${tag}: no PR number recorded; skipping`);
+
+  // 1. Poll and persist status. A draft stays "draft" (the dashboard's vocabulary);
+  // gh reports it as OPEN + isDraft.
+  const status = await fetchPrStatus(project.path, pr.number);
+  const state = status.state.toLowerCase();
+  const mergeable = toMergeable(status.mergeable);
+  setSessionPrStatus(pr.id, {
+    state: state === "open" && status.isDraft ? "draft" : state,
+    mergeable,
+    baseBranch: status.baseRefName,
+    headSha: status.headRefOid,
+    title: status.title,
+  });
+
+  // 2. Nothing to do on a finished PR.
+  if (state === "merged" || state === "closed") return;
+
+  // 3. One fix at a time per PR. A non-terminal fix agent whose runner died (crash,
+  // reboot) would block the PR forever, so it's failed here and post-fixed below.
+  const fixes = listPrFixAgents(pr.id);
+  if (fixes.some((a) => ACTIVE.has(a.status) && isAlive(a.pid))) return;
+  for (const a of fixes) {
+    if (ACTIVE.has(a.status)) {
+      setAgentError(a.id, "PR-fix runner exited before finishing");
+      setAgentStatus(a.id, "failed");
+      log(`${tag}: fix agent ${a.id} runner is gone; marked failed`);
+    }
+  }
+
+  // 4. Finish any completed fix run that hasn't been pushed/replied yet.
+  const unfinished = listPrFixAgents(pr.id).filter((a) => !ACTIVE.has(a.status) && !a.post_fixed_at);
+  if (unfinished.length > 0) {
+    for (const a of unfinished) await postFix(a, pr, project, config, log);
+    return;
+  }
+
+  // 5. New feedback or a conflict → a fix run. UNKNOWN mergeability means GitHub is
+  // still computing it; it's simply not a conflict yet and the next tick re-checks.
+  const conflict = mergeable === "CONFLICTING";
+  const threads = await fetchReviewThreads(project.path, pr.number);
+  const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
+  // Items released back to pending (a rejected push / stopped run) also need a fix.
+  const released = listUnassignedPrFeedback(pr.id);
+  if (!conflict && fresh.length === 0 && released.length === 0) return;
+
+  const runs = countPrFixRunsSince(pr.id, new Date(Date.now() - DAY_MS).toISOString());
+  if (runs >= config.prWatch.maxFixRunsPerDay) {
+    return log(
+      `${tag}: ${fresh.length + released.length} item(s)${conflict ? " + conflict" : ""} waiting, but the daily cap ` +
+        `(${config.prWatch.maxFixRunsPerDay} fix runs/24h) is reached; will retry later`,
+    );
+  }
+
+  for (const item of fresh) {
+    insertPrFeedback({
+      sessionPrId: pr.id,
+      sourceId: item.sourceId,
+      sourceKind: item.kind,
+      author: item.author,
+      authorIsBot: item.isBot,
+      url: item.url,
+      path: item.path ?? null,
+      line: item.line ?? null,
+      inReplyTo: item.inReplyTo ?? null,
+      bodyRef: writePrFeedbackArtifact(session.id, pr.id, item.sourceId, "body", item.body),
+    });
+  }
+  const rows = listUnassignedPrFeedback(pr.id);
+  const prompt = buildPrFixPrompt({
+    pr: { number: pr.number, title: status.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
+    conflict,
+    baseBranch: status.baseRefName ?? pr.base_branch,
+    items: rows.map((r) => feedbackItem(r, pr)),
+  });
+  const agent = prepareAgent({
+    session,
+    project,
+    model: resolveModel(config, config.roles.agent),
+    prompt,
+    kind: "pr_fix",
+    sessionPrId: pr.id,
+  });
+  assignPrFeedback(
+    rows.map((r) => r.id),
+    agent.id,
+  );
+  spawnAgentRunner(session.id, agent.id);
+  log(`${tag}: spawned fix agent ${agent.id} (${rows.length} item(s)${conflict ? ", merge conflict" : ""})`);
+}
+
+/** Rehydrates a stored feedback row (body from disk) into the prompt's item shape. */
+function feedbackItem(r: PrFeedbackRow, pr: SessionPrRow): PrFeedbackItem {
+  return {
+    sourceId: r.source_id,
+    kind: r.source_kind,
+    author: r.author ?? "ghost",
+    body: readArtifact(r.body_ref),
+    url: r.url ?? pr.url,
+    ...(r.path ? { path: r.path } : {}),
+    ...(r.line !== null ? { line: r.line } : {}),
+    ...(r.in_reply_to ? { inReplyTo: r.in_reply_to } : {}),
+    isBot: r.author_is_bot === 1,
+  };
+}
+
+/**
+ * The post-fix step for one finished fix agent: push its commits, then reply to each
+ * item it reported on. Idempotent — items already `handled_at` are skipped and the
+ * agent is latched with `post_fixed_at` at the end, so a crash midway resumes
+ * cleanly on the next tick (re-pushing an already-pushed sha is a no-op).
+ */
+async function postFix(
+  agent: AgentRow,
+  pr: SessionPrRow,
+  project: Project,
+  config: TackConfig,
+  log: Log,
+): Promise<void> {
+  const tag = `PR #${pr.number ?? "?"} fix ${agent.id}`;
+  const items = listAgentPrFeedback(agent.id);
+
+  // Stopped by the human (session stop): nothing reached the PR, so hand its items
+  // back for a later run rather than declaring them handled.
+  if (agent.status === "stopped") {
+    const n = releaseAgentPrFeedback(agent.id);
+    markAgentPostFixed(agent.id);
+    return log(`${tag}: was stopped; released ${n} item(s) back to pending`);
+  }
+
+  // Failed: mark its items failed (terminal — never retried automatically, so a
+  // comment that reliably breaks the agent can't loop), keep the error legible.
+  if (agent.status === "failed") {
+    for (const f of items) if (!f.handled_at) markPrFeedbackHandled(f.id, { decision: "failed" });
+    if (!agent.error) setAgentError(agent.id, "PR fix run failed");
+    markAgentPostFixed(agent.id);
+    return log(`${tag}: failed; marked ${items.filter((f) => !f.handled_at).length} item(s) failed`);
+  }
+
+  // Done: push first, so replies can cite the commit that reached the PR.
+  let pushedSha: string | null = null;
+  if (agent.worktree_path && agent.branch && pr.head_branch) {
+    try {
+      await commitWorktreeAsync(agent.worktree_path, `Tack: finalize PR fix ${agent.id}`);
+    } catch (err) {
+      log(`${tag}: safety-net commit failed: ${(err as Error).message}`);
+    }
+    const head = await worktreeHead(agent.worktree_path);
+    const base = await worktreeBase(project.path, agent.branch);
+    if (head && head !== base) {
+      if (config.prWatch.autoPush) {
+        const push = await pushBranch(project.path, agent.branch, pr.head_branch);
+        if (!push.ok) {
+          // Someone moved the PR branch since we forked (or the remote refused).
+          // Never force: release the items so the next tick re-forks off the new head.
+          const n = releaseAgentPrFeedback(agent.id);
+          markAgentPostFixed(agent.id);
+          return log(`${tag}: push rejected (${push.error}); released ${n} item(s) to retry next tick`);
+        }
+        pushedSha = head.slice(0, 7);
+        log(`${tag}: pushed ${pushedSha} to ${pr.head_branch}`);
+      } else {
+        log(`${tag}: autoPush is off; commits left on ${agent.branch}`);
+      }
+    }
+  }
+
+  for (const f of items) {
+    if (f.handled_at) continue;
+    // Never reported by the agent: declined, no reply (nothing to say on its behalf).
+    if (f.decision === "pending" || !f.reply_ref) {
+      markPrFeedbackHandled(f.id, { decision: f.decision === "pending" ? "declined" : undefined });
+      continue;
+    }
+    if (!config.prWatch.reply) {
+      markPrFeedbackHandled(f.id);
+      continue;
+    }
+    const body = buildReplyBody({
+      kind: f.source_kind,
+      author: f.author,
+      isBot: f.author_is_bot === 1,
+      original: readArtifact(f.body_ref),
+      reply: readArtifact(f.reply_ref),
+      fixSha: f.decision === "fixed" ? pushedSha : null,
+    });
+    try {
+      const url =
+        f.source_kind === "review_thread" && f.in_reply_to
+          ? await postReviewThreadReply(project.path, pr.number!, f.in_reply_to, body)
+          : await postIssueComment(project.path, pr.number!, body);
+      markPrFeedbackHandled(f.id, { replyUrl: url });
+    } catch (err) {
+      // Best-effort: log and mark handled anyway — retrying a reply that may have
+      // partially landed risks a duplicate, which is worse than a missing reply.
+      log(`${tag}: reply to ${f.source_id} failed: ${(err as Error).message}`);
+      markPrFeedbackHandled(f.id);
+    }
+  }
+  markAgentPostFixed(agent.id);
+  log(`${tag}: post-fix complete (${items.length} item(s))`);
+}

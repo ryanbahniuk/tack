@@ -181,12 +181,65 @@ const migrations: Migration[] = [
   },
   {
     version: 6,
-    name: "session_pr_mergeable",
-    // GitHub's actual merge-conflict status for a PR, so the dashboard can badge
-    // real conflicts (and clear the badge once they're resolved) instead of listing
-    // predicted cross-agent file collisions. Lowercased `gh` mergeable value:
-    // `mergeable` | `conflicting` | `unknown`. NULL = never fetched.
-    sql: `ALTER TABLE session_prs ADD COLUMN mergeable TEXT;`,
+    name: "pr_watch",
+    // PR watch (see src/prwatch/watch.ts): a per-session background process polls
+    // the session's open PRs, and on new review feedback or a merge conflict spawns a
+    // `pr_fix` agent, then pushes its commits and replies on GitHub.
+    //
+    //  - `session_prs` gains the polled GitHub status: `mergeable` (MERGEABLE |
+    //    CONFLICTING | UNKNOWN — UNKNOWN means GitHub hasn't computed it yet, so the
+    //    watcher just retries next tick), the `base_branch` a conflict is resolved
+    //    against, the `head_sha` last seen, and `checked_at` (last successful poll).
+    //  - `sessions.pr_watch_pid` is the watcher process, so the dashboard / open_pr
+    //    can tell whether one is already running and lifecycle can SIGTERM it.
+    //  - `agents.kind` distinguishes a normal agent (NULL) from a `pr_fix` agent, and
+    //    `session_pr_id` ties a fix agent to the PR it's fixing. `post_fixed_at` is the
+    //    watcher's idempotency latch for a fix agent's post-fix step (push + replies):
+    //    once stamped, the step never re-runs, so Tack can't double-push or
+    //    double-post — even for a conflict-only run that has no feedback rows to latch on.
+    //  - `pr_feedback` is one row per GitHub comment Tack has taken in as input. The
+    //    comment body and Tack's reply live on disk (`body_ref` / `reply_ref`), never
+    //    inline. UNIQUE(session_pr_id, source_id) is what makes "already seen"
+    //    durable: a comment is ingested once, whatever happens to it afterwards.
+    //    `in_reply_to` is the root comment id of a review thread, because GitHub's
+    //    replies endpoint only accepts a thread's top-level comment. `author_is_bot`
+    //    is captured at ingest (gh's bot shapes vary) so a reply never @-mentions — and
+    //    thereby re-summons — a review bot.
+    sql: `
+      ALTER TABLE session_prs ADD COLUMN mergeable TEXT;
+      ALTER TABLE session_prs ADD COLUMN base_branch TEXT;
+      ALTER TABLE session_prs ADD COLUMN head_sha TEXT;
+      ALTER TABLE session_prs ADD COLUMN checked_at TEXT;
+      ALTER TABLE sessions ADD COLUMN pr_watch_pid INTEGER;
+      ALTER TABLE agents ADD COLUMN kind TEXT;
+      ALTER TABLE agents ADD COLUMN session_pr_id TEXT;
+      ALTER TABLE agents ADD COLUMN post_fixed_at TEXT;
+
+      CREATE TABLE pr_feedback (
+        id            TEXT PRIMARY KEY,
+        session_pr_id TEXT NOT NULL REFERENCES session_prs(id) ON DELETE CASCADE,
+        source_id     TEXT NOT NULL,        -- GitHub comment/review id
+        source_kind   TEXT NOT NULL,        -- review_thread | review | issue_comment
+        author        TEXT,
+        author_is_bot INTEGER NOT NULL DEFAULT 0, -- 1 = bot/app account (still feedback)
+        url           TEXT,
+        path          TEXT,                 -- review_thread only
+        line          INTEGER,              -- review_thread only
+        in_reply_to   TEXT,                 -- review_thread: the thread's root comment id
+        body_ref      TEXT,                 -- file: the comment body
+        fix_agent_id  TEXT,                 -- the pr_fix agent handling it (NULL = unassigned)
+        decision      TEXT NOT NULL DEFAULT 'pending', -- pending | fixed | declined | not_applicable | failed
+        reply_ref     TEXT,                 -- file: the agent's reply text
+        reply_url     TEXT,                 -- the posted reply on GitHub
+        created_at    TEXT NOT NULL,
+        handled_at    TEXT,                 -- when Tack finished with it (replied / gave up)
+        UNIQUE (session_pr_id, source_id)
+      );
+
+      CREATE INDEX idx_pr_feedback_pr ON pr_feedback(session_pr_id);
+      CREATE INDEX idx_pr_feedback_agent ON pr_feedback(fix_agent_id);
+      CREATE INDEX idx_agents_session_pr ON agents(session_pr_id);
+    `,
   },
 ];
 

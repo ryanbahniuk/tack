@@ -16,13 +16,15 @@ import {
   setAgentStatus,
   setAgentUsage,
   setAgentWorktree,
+  getSessionPr,
+  type AgentKind,
   type AgentRow,
   type SessionRow,
 } from "../db";
 import { getDb } from "../db";
 import { readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
-import { ensureWorktree, worktreeDiff } from "../worktree/worktree";
+import { ensurePrWorktree, ensureWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
@@ -39,6 +41,10 @@ export function prepareAgent(input: {
   touches?: string[];
   /** Sibling agent ids that must finish before this agent starts. */
   dependsOn?: string[];
+  /** `pr_fix` for a PR-watch fix agent (forks off the PR head, not repo HEAD). */
+  kind?: AgentKind | null;
+  /** The session PR a `pr_fix` agent is fixing. */
+  sessionPrId?: string | null;
 }): AgentRow {
   const agent = createAgent({
     sessionId: input.session.id,
@@ -47,6 +53,8 @@ export function prepareAgent(input: {
     runtime: input.model.runtime,
     touches: input.touches ?? null,
     dependsOn: input.dependsOn ?? null,
+    kind: input.kind ?? null,
+    sessionPrId: input.sessionPrId ?? null,
   });
   const promptRef = writeAgentArtifact(input.session.id, agent.id, "prompt", input.prompt);
   getDb().prepare(`UPDATE agents SET prompt_ref = ? WHERE id = ?`).run(promptRef, agent.id);
@@ -71,7 +79,7 @@ export async function* runAgent(
   if (!project) throw new Error(`Agent ${agentId} references unknown project "${agent.project_name}"`);
   const model = resolveModel(config, agent.model ?? config.roles.agent);
 
-  const worktree = ensureWorktree(project.path, session.id, agent.id);
+  const worktree = agentWorktree(agent, project.path);
   setAgentWorktree(agent.id, worktree.path, worktree.branch);
 
   const shared = latestSharedContext(session.id);
@@ -80,6 +88,7 @@ export async function* runAgent(
     agentId: agent.id,
     projectName: project.name,
     sharedContext: shared ? readArtifact(shared.body_ref) : undefined,
+    kind: agent.kind,
   });
 
   const runtime = selectRuntime(model.runtime);
@@ -159,6 +168,23 @@ export async function* runAgent(
   setAgentStatus(agent.id, ok ? "done" : "failed");
 
   return { ok, agent: getAgent(agent.id)! };
+}
+
+/**
+ * The worktree an agent runs in. A normal agent forks off the repo's HEAD; a
+ * `pr_fix` agent forks off its PR's current remote head (looked up via
+ * `session_pr_id`), so its commits land on top of what reviewers see and can be
+ * pushed onto the PR branch as a fast-forward. Both reuse an existing worktree on
+ * resume/retry.
+ */
+function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
+  if (agent.kind === "pr_fix") {
+    const pr = agent.session_pr_id ? getSessionPr(agent.session_pr_id) : null;
+    if (!pr?.head_branch)
+      throw new Error(`PR-fix agent ${agent.id} has no PR head branch to work on (session_pr_id=${agent.session_pr_id})`);
+    return ensurePrWorktree(repoPath, agent.session_id, agent.id, pr.head_branch);
+  }
+  return ensureWorktree(repoPath, agent.session_id, agent.id);
 }
 
 /**

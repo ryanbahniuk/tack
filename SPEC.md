@@ -281,12 +281,22 @@ amendments(id, session_id→sessions, proposed_by→agents, proposal_ref,
            status[pending|accepted|rejected], resolution_ref, created_at, resolved_at)
 
 session_prs(id, session_id→sessions, agent_id, project_name, number, url, title,
-            state, head_branch, created_at, updated_at, UNIQUE(session_id, url))
+            state, head_branch, mergeable, base_branch, head_sha, checked_at,
+            created_at, updated_at, UNIQUE(session_id, url))
+
+pr_feedback(id, session_pr_id→session_prs, source_id,
+            source_kind[review_thread|review|issue_comment], author, author_is_bot,
+            url, path, line, in_reply_to, body_ref, fix_agent_id,
+            decision[pending|fixed|declined|not_applicable|failed], reply_ref,
+            reply_url, created_at, handled_at, UNIQUE(session_pr_id, source_id))
 
 session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, status,
                      status_category[new|indeterminate|done], created_at,
                      updated_at, UNIQUE(session_id, key))
 ```
+
+`sessions` also carries `pr_watch_pid`; `agents` carries `kind` (NULL | `pr_fix`),
+`session_pr_id`, and `post_fixed_at` (see §11 PR watch).
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
 bodies) is a `*_ref` path, never inline text.
@@ -409,6 +419,7 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
+  prWatch: { enabled: true, intervalSeconds: 300, autoPush: true, reply: true, maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
   jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
@@ -470,8 +481,40 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
   Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
-  agents), `archive`/`unarchive`, `delete` (kill pids, purge worktrees + artifacts,
-  cascade DB rows).
+  agents + PR watcher), `archive`/`unarchive`, `delete` (kill pids, purge worktrees
+  + artifacts, cascade DB rows).
+
+### PR watch
+
+Once a session has open PRs, a detached watcher (`tack __watch-prs <session>`,
+`src/prwatch/watch.ts`, pid in `sessions.pr_watch_pid`, log at
+`logs/<ses>/pr-watch.log`) polls them every `prWatch.intervalSeconds`. `open_pr`
+starts it; the dashboard's 60s refresh restarts it for any active session with an
+open PR and a dead watcher. It exits when the session is archived/gone or no PR is
+open; `stop`/`archive` SIGTERM it.
+
+Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
+closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
+completed; otherwise gather **new** feedback — unresolved review-thread comments,
+non-empty review bodies, conversation comments, bots included, minus anything
+already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
+if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn a
+`pr_fix` agent, subject to `maxFixRunsPerDay` per PR (failed runs count).
+
+The **fix agent** forks off the PR's current remote head (`createPrWorktree`), is
+told to judge each item (fix what's relevant and justified, decline the rest),
+resolve a conflict by `git merge origin/<base>` (never rebase), commit, and call
+`report_pr_feedback` with a decision + 1-3 sentence reply per item. It never pushes
+or calls `gh`.
+
+The **post-fix step** (watcher): safety-net commit; if HEAD moved and `autoPush`,
+push **non-force** onto the PR branch — a rejected push releases the items back to
+pending for a fresh run off the new head; then, if `reply`, post each reply (thread
+reply, or a conversation comment addressing the author and quoting the original),
+always ending with the marker so Tack never ingests itself. Unreported items become
+`declined` with no reply; a failed run marks its items `failed` (never retried
+automatically). It's latched per item (`handled_at`) and per agent
+(`post_fixed_at`), so it never double-posts.
 
 ---
 
@@ -504,7 +547,7 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   back to it.
 - **Bedrock** becomes a third runtime once approved (open-weight models); the
   model→runtime abstraction already anticipates it.
-- No automated test suite yet. The runner retries a failed *run* whose error looks
+- The automated suite (`bun test`) covers pure logic only. The runner retries a failed *run* whose error looks
   transient (§9 Resilience), but a hard-*killed* agent process (SIGKILL, OOM) is
   still only marked dead via liveness, not auto-respawned. Retry re-runs in the
   worktree with a fresh runtime session, so it loses prior conversation context;

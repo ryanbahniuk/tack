@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 import type { TackConfig } from "../config/schema";
-import { listAgents, listSessionPrs, upsertSessionPr, type SessionPrRow } from "../db";
+import {
+  listAgents,
+  listSessionPrs,
+  upsertSessionPr,
+  type PrFeedbackKind,
+  type PrMergeable,
+  type SessionPrRow,
+} from "../db";
 import { sessionIdFromPrBranch } from "../worktree/worktree";
 
 interface GhPr {
@@ -10,6 +17,13 @@ interface GhPr {
   state: string; // OPEN | MERGED | CLOSED
   headRefName: string;
   mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
+}
+
+/** Normalizes gh's mergeable string into the stored enum (null when absent). Shared
+ * by the dashboard's discovery refresh and the PR watcher so both write the same values. */
+export function toMergeable(v: string | null | undefined): PrMergeable | null {
+  if (v === "MERGEABLE" || v === "CONFLICTING" || v === "UNKNOWN") return v;
+  return v ? "UNKNOWN" : null;
 }
 
 export interface DiscoverResult {
@@ -50,6 +64,57 @@ export interface OpenPrResult {
   headBranch: string;
 }
 
+/** Result of an async subprocess: exit code plus captured output. */
+interface ProcResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Runs a command asynchronously (`Bun.spawn`) and captures its output. Everything
+ * PR watch does runs on a timer (the watcher loop, the dashboard's refresh), so it
+ * must never block on `spawnSync`. Never throws for a non-zero exit — callers decide
+ * — but a missing binary still surfaces as a rejected spawn, which callers catch.
+ */
+async function run(cmd: string[], cwd: string): Promise<ProcResult> {
+  const proc = Bun.spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+/** Runs `cmd`, returning stdout, or throwing a one-line reason on failure. */
+async function runOk(cmd: string[], cwd: string, what: string): Promise<string> {
+  const r = await run(cmd, cwd);
+  if (r.code !== 0) throw new Error(`${what} failed: ${lastLine(r.stderr || r.stdout)}`);
+  return r.stdout;
+}
+
+/**
+ * Pushes a local branch to `refs/heads/<remoteBranch>` on origin — ALWAYS non-force.
+ * Shared by `openSessionPr` (first push of an agent's work) and the PR watcher
+ * (pushing a fix agent's commits onto an existing PR branch). A non-fast-forward
+ * means someone else moved the PR branch since we forked; we report that back as a
+ * rejection rather than overwrite their work. Never throws.
+ */
+export async function pushBranch(
+  repoPath: string,
+  localBranch: string,
+  remoteBranch: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const r = await run(["git", "push", "origin", `${localBranch}:refs/heads/${remoteBranch}`], repoPath);
+    if (r.code === 0) return { ok: true };
+    return { ok: false, error: lastLine(r.stderr || r.stdout) };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 /**
  * Opens a PR for an agent's committed work on the supervisor's behalf: pushes the
  * agent's worktree branch to the remote under the `tack/pr/<sessionId>/…`
@@ -57,23 +122,18 @@ export interface OpenPrResult {
  * The supervisor — not agents — owns this step, so it can summarize and get the
  * human's approval first. Throws with a one-line reason on failure to report.
  */
-export function openSessionPr(input: OpenPrInput): OpenPrResult {
+export async function openSessionPr(input: OpenPrInput): Promise<OpenPrResult> {
   if (!ghAvailable())
     throw new Error("`gh` CLI not found or not on PATH — cannot open a PR. Install and authenticate gh first.");
-  const push = spawnSync(
-    "git",
-    ["push", "origin", `${input.localBranch}:refs/heads/${input.prBranch}`],
-    { cwd: input.repoPath, encoding: "utf8" },
-  );
-  if (push.status !== 0) throw new Error(`git push failed: ${lastLine(push.stderr || push.stdout)}`);
+  const push = await pushBranch(input.repoPath, input.localBranch, input.prBranch);
+  if (!push.ok) throw new Error(`git push failed: ${push.error}`);
 
   const args = ["pr", "create", "--head", input.prBranch, "--title", input.title, "--body", input.body];
   if (input.base) args.push("--base", input.base);
   if (input.draft) args.push("--draft");
-  const create = spawnSync("gh", args, { cwd: input.repoPath, encoding: "utf8" });
-  if (create.status !== 0) throw new Error(`gh pr create failed: ${lastLine(create.stderr || create.stdout)}`);
+  const stdout = await runOk(["gh", ...args], input.repoPath, "gh pr create");
 
-  const url = firstUrl(create.stdout ?? "");
+  const url = firstUrl(stdout);
   return { url, number: numberFromPrUrl(url), headBranch: input.prBranch };
 }
 
@@ -124,9 +184,13 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
   // Which projects did each session touch, and via which agent (most recent wins)?
   // Inverted to project -> session -> agent so we can issue one `gh pr list` per
   // project and fan its results back out to whichever sessions own those branches.
+  // The agent is only a best-effort guess used when a PR is first discovered (an
+  // existing row keeps its real producing agent — see `upsertSessionPr`), and PR-fix
+  // agents are skipped: they never produce a PR, they only amend an existing one.
   const sessionsByProject = new Map<string, Map<string, string>>();
   for (const sessionId of sessionIds) {
     for (const a of listAgents(sessionId)) {
+      if (a.kind === "pr_fix") continue;
       if (!sessionsByProject.has(a.project_name)) sessionsByProject.set(a.project_name, new Map());
       sessionsByProject.get(a.project_name)!.set(sessionId, a.id);
     }
@@ -159,10 +223,344 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
         title: pr.title,
         state: pr.state.toLowerCase(),
         headBranch: pr.headRefName,
-        mergeable: pr.mergeable ? pr.mergeable.toLowerCase() : null,
+        mergeable: toMergeable(pr.mergeable),
       });
     }
   }
 
   return { prs: union(), skipped, ghMissing: false };
+}
+
+// ---------------------------------------------------------------------------
+// PR watch: status, review threads, feedback normalization, replies
+// ---------------------------------------------------------------------------
+
+/**
+ * The literal marker Tack puts in every reply it posts. Any comment containing it is
+ * Tack's own and is never ingested as feedback — that's what keeps the watcher from
+ * replying to itself in a loop.
+ */
+export const PR_WATCH_MARKER = "<!-- tack:pr-watch -->";
+
+/** A GitHub actor as `gh` reports it (shape differs slightly between `gh pr view`
+ * and GraphQL; every field is optional so either parses). */
+export interface GhAuthor {
+  login?: string;
+  /** `gh pr view` marks bot authors this way on recent versions. */
+  is_bot?: boolean;
+  /** GraphQL: `Bot` for app/bot accounts. */
+  __typename?: string;
+}
+
+/** An issue-level (conversation) comment from `gh pr view --json comments`. */
+export interface GhIssueComment {
+  id: string;
+  author?: GhAuthor | null;
+  body?: string | null;
+  url?: string | null;
+  /** Hidden by a maintainer (outdated/spam/resolved) — not live feedback. */
+  isMinimized?: boolean;
+}
+
+/** A submitted review from `gh pr view --json reviews` (its summary body; inline
+ * comments arrive separately as review threads). */
+export interface GhReview {
+  id: string;
+  author?: GhAuthor | null;
+  body?: string | null;
+  state?: string | null;
+  url?: string | null;
+}
+
+/** The subset of `gh pr view --json …` the watcher consumes. */
+export interface PrStatus {
+  state: string; // OPEN | MERGED | CLOSED
+  isDraft?: boolean;
+  mergeable: PrMergeable | string | null;
+  mergeStateStatus?: string | null;
+  baseRefName: string | null;
+  headRefOid: string | null;
+  headRefName: string | null;
+  url: string;
+  title: string | null;
+  comments: GhIssueComment[];
+  reviews: GhReview[];
+}
+
+export interface ReviewThreadComment {
+  databaseId: number;
+  author?: GhAuthor | null;
+  body?: string | null;
+  path?: string | null;
+  line?: number | null;
+  url?: string | null;
+}
+
+export interface ReviewThread {
+  isResolved: boolean;
+  comments: { nodes: ReviewThreadComment[] };
+}
+
+/** One normalized piece of PR feedback — the unit a fix agent decides on and Tack
+ * replies to. `sourceId` is GitHub's id for the comment (review-thread comments use
+ * the numeric databaseId, which the REST replies endpoint needs). */
+export interface PrFeedbackItem {
+  sourceId: string;
+  kind: PrFeedbackKind;
+  author: string;
+  body: string;
+  url: string;
+  path?: string;
+  line?: number;
+  /** review_thread only: the thread's root comment id (what a reply attaches to). */
+  inReplyTo?: string;
+  /** Whether the author is a bot/app (bots are still included as feedback). */
+  isBot?: boolean;
+}
+
+const PR_STATUS_FIELDS =
+  "state,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title,comments,reviews";
+
+/** Fetches a PR's state, mergeability, refs, conversation comments, and reviews. */
+export async function fetchPrStatus(repoPath: string, number: number): Promise<PrStatus> {
+  const out = await runOk(
+    ["gh", "pr", "view", String(number), "--json", PR_STATUS_FIELDS],
+    repoPath,
+    "gh pr view",
+  );
+  const raw = JSON.parse(out) as Partial<PrStatus>;
+  return {
+    state: raw.state ?? "OPEN",
+    isDraft: raw.isDraft ?? false,
+    mergeable: raw.mergeable ?? null,
+    mergeStateStatus: raw.mergeStateStatus ?? null,
+    baseRefName: raw.baseRefName ?? null,
+    headRefOid: raw.headRefOid ?? null,
+    headRefName: raw.headRefName ?? null,
+    url: raw.url ?? "",
+    title: raw.title ?? null,
+    comments: Array.isArray(raw.comments) ? raw.comments : [],
+    reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
+  };
+}
+
+// owner/name per repo path. A repo's GitHub identity doesn't change mid-process, and
+// the watcher asks every tick, so cache the in-flight promise (a failure is evicted
+// so the next tick retries).
+const ghRepoCache = new Map<string, Promise<{ owner: string; name: string }>>();
+
+/** Resolves `{ owner, name }` of the GitHub repo at `repoPath` (cached per path). */
+export function ghRepo(repoPath: string): Promise<{ owner: string; name: string }> {
+  let p = ghRepoCache.get(repoPath);
+  if (!p) {
+    p = runOk(["gh", "repo", "view", "--json", "owner,name"], repoPath, "gh repo view").then((out) => {
+      const r = JSON.parse(out) as { owner?: { login?: string }; name?: string };
+      if (!r.owner?.login || !r.name) throw new Error("gh repo view returned no owner/name");
+      return { owner: r.owner.login, name: r.name };
+    });
+    p.catch(() => ghRepoCache.delete(repoPath));
+    ghRepoCache.set(repoPath, p);
+  }
+  return p;
+}
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+          comments(first: 50) {
+            nodes { databaseId author { login __typename } body path line url }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/** Fetches a PR's inline review threads (with resolution state) via GraphQL — the
+ * one piece `gh pr view --json` doesn't expose. */
+export async function fetchReviewThreads(repoPath: string, number: number): Promise<ReviewThread[]> {
+  const { owner, name } = await ghRepo(repoPath);
+  const out = await runOk(
+    [
+      "gh",
+      "api",
+      "graphql",
+      "-f",
+      `query=${REVIEW_THREADS_QUERY}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-F",
+      `number=${number}`,
+    ],
+    repoPath,
+    "gh api graphql (reviewThreads)",
+  );
+  const raw = JSON.parse(out) as {
+    data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: ReviewThread[] } } } };
+  };
+  return raw.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+}
+
+function authorLogin(a: GhAuthor | null | undefined): string {
+  return a?.login || "ghost";
+}
+
+/** Bot/app detection across the shapes `gh` returns. Bots are still feedback — this
+ * only steers how Tack addresses them (see `buildReplyBody`). */
+export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
+  if (!a) return false;
+  return a.is_bot === true || a.__typename === "Bot" || /\[bot\]$/i.test(a.login ?? "");
+}
+
+/**
+ * The pure heart of PR watch input: turns a PR's raw comments into the list of NEW
+ * feedback items a fix agent should consider. Includes:
+ *  - every comment in an UNRESOLVED review thread (`review_thread`; resolved threads
+ *    are settled and excluded),
+ *  - reviews with a non-empty summary body (`review`; an empty body is just the
+ *    envelope for inline comments, which arrive as threads),
+ *  - conversation comments (`issue_comment`) that aren't minimized.
+ * Bots are included. Anything containing `PR_WATCH_MARKER` (Tack's own replies) is
+ * dropped, as is any sourceId already in `alreadyHandledIds` (ingested earlier).
+ */
+export function normalizeFeedback(
+  status: Pick<PrStatus, "comments" | "reviews" | "url">,
+  threads: ReviewThread[],
+  alreadyHandledIds: Iterable<string>,
+): PrFeedbackItem[] {
+  const seen = new Set(alreadyHandledIds);
+  const out: PrFeedbackItem[] = [];
+  const take = (item: PrFeedbackItem) => {
+    if (!item.body.trim()) return;
+    if (item.body.includes(PR_WATCH_MARKER)) return;
+    if (seen.has(item.sourceId)) return;
+    seen.add(item.sourceId); // de-dupe within one pass too
+    out.push(item);
+  };
+
+  for (const t of threads) {
+    if (t.isResolved) continue;
+    const nodes = t.comments?.nodes ?? [];
+    const root = nodes[0];
+    for (const c of nodes) {
+      if (c.databaseId === undefined || c.databaseId === null) continue;
+      take({
+        sourceId: String(c.databaseId),
+        kind: "review_thread",
+        author: authorLogin(c.author),
+        body: c.body ?? "",
+        url: c.url ?? status.url,
+        ...(c.path ? { path: c.path } : {}),
+        ...(typeof c.line === "number" ? { line: c.line } : {}),
+        ...(root ? { inReplyTo: String(root.databaseId) } : {}),
+        isBot: isBotAuthor(c.author),
+      });
+    }
+  }
+
+  for (const r of status.reviews ?? []) {
+    if (!r.id) continue;
+    take({
+      sourceId: r.id,
+      kind: "review",
+      author: authorLogin(r.author),
+      body: r.body ?? "",
+      url: r.url ?? status.url,
+      isBot: isBotAuthor(r.author),
+    });
+  }
+
+  for (const c of status.comments ?? []) {
+    if (!c.id || c.isMinimized) continue;
+    take({
+      sourceId: c.id,
+      kind: "issue_comment",
+      author: authorLogin(c.author),
+      body: c.body ?? "",
+      url: c.url ?? status.url,
+      isBot: isBotAuthor(c.author),
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Composes the body of a Tack reply. Thread replies sit right under the comment, so
+ * they're just the reply; conversation replies (`review` / `issue_comment`) address
+ * the author and quote the original's first line so it's clear what's being answered.
+ * Bots are quoted but not @-mentioned — mentioning a review bot typically summons it
+ * to respond again, which would feed the watcher a fresh comment every tick.
+ * Always ends with `PR_WATCH_MARKER` so Tack never ingests its own reply.
+ */
+export function buildReplyBody(input: {
+  kind: PrFeedbackKind;
+  author: string | null;
+  isBot?: boolean;
+  original: string;
+  reply: string;
+  /** Short sha of the pushed fix, when this item's fix reached the PR. */
+  fixSha?: string | null;
+}): string {
+  const parts: string[] = [];
+  if (input.kind !== "review_thread") {
+    const first = (input.original.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 200);
+    const who = input.author && !input.isBot ? `@${input.author}` : input.author ? `**${input.author}**` : "";
+    if (who) parts.push(who);
+    if (first) parts.push(`> ${first}`);
+    if (parts.length) parts.push("");
+  }
+  parts.push(input.reply.trim());
+  const sig = input.fixSha ? `_— Tack (fix: ${input.fixSha})_` : "_— Tack_";
+  return `${parts.join("\n")}\n\n${sig}\n${PR_WATCH_MARKER}`;
+}
+
+/** Replies inside a review thread (attached to the thread's root comment). Returns
+ * the posted comment's html_url. */
+export async function postReviewThreadReply(
+  repoPath: string,
+  number: number,
+  rootCommentId: string,
+  body: string,
+): Promise<string | null> {
+  const { owner, name } = await ghRepo(repoPath);
+  const out = await runOk(
+    [
+      "gh",
+      "api",
+      "-X",
+      "POST",
+      `repos/${owner}/${name}/pulls/${number}/comments/${rootCommentId}/replies`,
+      "-f",
+      `body=${body}`,
+    ],
+    repoPath,
+    "gh api (review reply)",
+  );
+  return htmlUrl(out);
+}
+
+/** Posts a PR conversation comment. Returns the posted comment's html_url. */
+export async function postIssueComment(repoPath: string, number: number, body: string): Promise<string | null> {
+  const { owner, name } = await ghRepo(repoPath);
+  const out = await runOk(
+    ["gh", "api", "-X", "POST", `repos/${owner}/${name}/issues/${number}/comments`, "-f", `body=${body}`],
+    repoPath,
+    "gh api (issue comment)",
+  );
+  return htmlUrl(out);
+}
+
+function htmlUrl(out: string): string | null {
+  try {
+    const v = JSON.parse(out) as { html_url?: string };
+    return v.html_url ?? null;
+  } catch {
+    return null;
+  }
 }

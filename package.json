@@ -8,7 +8,8 @@
   },
   "scripts": {
     "tack": "bun run ./bin/tack.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
