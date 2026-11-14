@@ -78,15 +78,81 @@ function readBaseRef(repo: string, branch: string): string | null {
   return r.status === 0 && sha ? sha : null;
 }
 
-/** Creates a fresh git worktree on a new `tack/<sessionId>/<agentId>` branch off HEAD. */
+/** Bounds the pre-worktree fetch so an unreachable remote or an auth prompt can't
+ * stall agent startup; on timeout we just use the already-local remote ref. */
+const FETCH_TIMEOUT_MS = 15_000;
+
+/** `git rev-parse --verify --quiet <ref>^{commit}`, or null if the ref doesn't resolve. */
+function tryResolveCommit(repo: string, ref: string): string | null {
+  const r = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  const sha = (r.stdout ?? "").trim();
+  return r.status === 0 && sha ? sha : null;
+}
+
+/**
+ * The remote default branch as a remote-tracking ref (e.g. `origin/main`), or null
+ * if the repo has no origin / no recognizable default. Prefers `origin/HEAD` (set by
+ * `git clone`); falls back to the conventional `origin/main` then `origin/master`
+ * for remotes added by hand, where `origin/HEAD` is usually unset.
+ */
+function remoteDefaultBranch(repo: string): string | null {
+  const sym = spawnSync("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  const head = (sym.stdout ?? "").trim();
+  if (sym.status === 0 && head.startsWith("origin/") && head !== "origin/HEAD") return head;
+  for (const ref of ["origin/main", "origin/master"]) {
+    if (tryResolveCommit(repo, `refs/remotes/${ref}`)) return ref;
+  }
+  return null;
+}
+
+/**
+ * The commit a new agent worktree should fork from: the tip of the remote default
+ * branch, refreshed by a best-effort fetch. Basing on the project's local HEAD went
+ * wrong whenever the user's checkout was behind origin or on an unrelated branch —
+ * every agent branch started from stale code and its PR came back unmergeable.
+ * The fetch is non-fatal (offline, auth failure, timeout all fall back to the
+ * already-local `origin/<branch>`), and a repo with no origin at all — e.g. a
+ * local-only project — keeps the old behavior of forking from HEAD.
+ */
+function resolveStartPoint(repo: string): string {
+  const remoteRef = remoteDefaultBranch(repo);
+  if (remoteRef) {
+    const branch = remoteRef.slice("origin/".length);
+    spawnSync("git", ["fetch", "--quiet", "origin", branch], {
+      cwd: repo,
+      encoding: "utf8",
+      timeout: FETCH_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+      // Never block on a credential prompt; a headless run has no one to answer it.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    const sha = tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
+    if (sha) return sha;
+  }
+  return git(["rev-parse", "HEAD"], repo);
+}
+
+/**
+ * Creates a fresh git worktree on a new `tack/<sessionId>/<agentId>` branch, forked
+ * from the up-to-date remote default branch (`origin/HEAD`, else `origin/main` /
+ * `origin/master`, fetched first) rather than the project's local HEAD, so agent
+ * branches — and the PRs opened from them — start from current upstream code. Falls
+ * back to HEAD only when the repo has no usable origin. See `resolveStartPoint`.
+ */
 export function createWorktree(repo: string, sessionId: string, agentId: string): Worktree {
   assertRepoRoot(repo);
   const root = sessionWorktreesRoot(sessionId);
   mkdirSync(root, { recursive: true });
   const path = join(root, agentId);
   const branch = `tack/${sessionId}/${agentId}`;
-  const base = git(["rev-parse", "HEAD"], repo);
-  git(["worktree", "add", "-b", branch, path, "HEAD"], repo);
+  const base = resolveStartPoint(repo);
+  git(["worktree", "add", "-b", branch, path, base], repo);
   // Pin the fork point so the accumulated diff is recoverable even after the agent
   // commits (which moves the branch HEAD away from `base`).
   git(["update-ref", baseRef(branch), base], repo);

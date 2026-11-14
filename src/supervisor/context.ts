@@ -75,7 +75,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig): s
     "   Split a project across several agents only when the pieces are genuinely",
     "   independent (disjoint files, no ordering between them) AND each is large",
     "   enough to be its own reviewable PR. Never split work that must happen in",
-    "   order within one project: every agent branches from the project's HEAD, not",
+    "   order within one project: every agent branches from the project's default branch, not",
     "   from a sibling's branch, so a `dependsOn` agent in the same project does NOT",
     "   see its prerequisite's changes — give sequential work to a single agent.",
     "   `dependsOn` is for ordering across projects. Put the full detail the human",
