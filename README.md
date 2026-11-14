@@ -99,7 +99,9 @@ export default ({
 ```
 
 The `description` field is load-bearing — the supervisor uses it to pick relevant
-repos. `metadata` (`language` + top `frameworks`) lets it route on stack too. Let a
+repos *before reading any code*: it syncs just those into fresh, Tack-owned snapshot
+worktrees of the latest default branch and investigates there, never in your own
+checkouts (which it doesn't touch). `metadata` (`language` + top `frameworks`) lets it route on stack too. Let a
 summary model write both for you instead of hand-authoring:
 
 ```bash

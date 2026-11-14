@@ -29,6 +29,7 @@ import {
   SUPERVISOR_PLAN_APPROVAL_PROMPT,
 } from "../mcp/supervisor-server";
 import { buildSupervisorContext } from "./context";
+import { sessionSnapshotsRoot } from "../worktree/worktree";
 import {
   tmuxAttachArgs,
   tmuxAvailable,
@@ -133,8 +134,13 @@ async function* runSupervisor(opts: {
   const cwd = join(TACK_HOME, "supervisor", session.id);
   mkdirSync(cwd, { recursive: true });
   const logPath = join(LOGS_DIR, session.id, "supervisor.log");
-  // The supervisor reads the repos it plans over, so grant read access to them.
-  const addDirs = [...config.projects.map((p) => p.path), ...config.readAllowlist];
+  // Read access is limited to this session's snapshot worktrees (populated by the
+  // `sync_projects` tool with each project's fresh default branch) — never the
+  // user's own checkouts, which may be stale or on an unrelated branch. The root is
+  // created up front so the grant is valid before the first sync.
+  const snapshots = sessionSnapshotsRoot(session.id);
+  mkdirSync(snapshots, { recursive: true });
+  const addDirs = [snapshots, ...config.readAllowlist];
   // Fresh claude runs pre-assign a session id to adopt; resumed runs pass the
   // stored one back through. Codex can't pre-assign, so a fresh run has none.
   const sessionRef = resume ? opts.sessionRef : model.runtime === "claude" ? uuid() : undefined;
@@ -229,7 +235,12 @@ export async function superviseInteractive(opts: {
 
   const cwd = join(TACK_HOME, "supervisor", session.id);
   mkdirSync(cwd, { recursive: true });
-  const addDirs = [...config.projects.map((p) => p.path), ...config.readAllowlist];
+  // Read access is limited to this session's snapshot worktrees (fresh default-branch
+  // checkouts made by `sync_projects`), not the user's possibly-stale checkouts; see
+  // `runSupervisor`.
+  const snapshots = sessionSnapshotsRoot(session.id);
+  mkdirSync(snapshots, { recursive: true });
+  const addDirs = [snapshots, ...config.readAllowlist];
   // Fresh claude runs pre-assign a session id so the resume handle + transcript
   // path are known before launch; resumed runs pass the stored one back. Codex
   // can't pre-assign, so a fresh run has none (its id is recovered afterwards).

@@ -28,7 +28,7 @@ import {
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
-import { commitWorktree, sessionPrBranch } from "../worktree/worktree";
+import { commitWorktree, sessionPrBranch, syncSnapshot } from "../worktree/worktree";
 import { openSessionPr } from "../projects/prs";
 import { spawnPrWatcher } from "../prwatch/watch";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
@@ -95,6 +95,51 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           frameworks: p.metadata?.frameworks,
         })),
       ),
+  );
+
+  // Not plan-gated: syncing is read-only investigation prep (it never touches the
+  // user's checkouts), and the supervisor needs it BEFORE it can form a plan.
+  server.registerTool(
+    "sync_projects",
+    {
+      description:
+        "Call this FIRST, with the projects the task affects, before reading any code. Fetches each project " +
+        "and checks out its latest default branch into a read-only snapshot worktree, returning the path. " +
+        "Investigate ONLY under the returned paths (never the projects' original checkouts). If another " +
+        "project turns out to be relevant, sync it before reading it; on a follow-up, re-sync before " +
+        "re-investigating so you read current code.",
+      inputSchema: {
+        projects: z.array(z.string()).min(1).describe("Project names from list_projects"),
+      },
+    },
+    async ({ projects }) => {
+      const names = [...new Set(projects)]; // a duplicate would race two syncs on one path
+      const unknown = names.filter((n) => !config.projects.some((p) => p.name === n));
+      if (unknown.length)
+        throw new Error(
+          `Unknown project(s): ${unknown.map((n) => `"${n}"`).join(", ")}. ` +
+            `Valid projects: ${config.projects.map((p) => p.name).join(", ") || "(none configured)"}`,
+        );
+      const results = await Promise.all(
+        names.map(async (name) => {
+          const proj = config.projects.find((p) => p.name === name)!;
+          const r = await syncSnapshot(proj.path, sessionId, proj.name);
+          return {
+            project: proj.name,
+            ...r,
+            ...(r.fetched
+              ? {}
+              : {
+                  note:
+                    r.ref === "HEAD"
+                      ? "no usable origin default branch; snapshot is at the project's local HEAD"
+                      : "fetch failed or timed out; snapshot is at the last-fetched commit",
+                }),
+          };
+        }),
+      );
+      return text(results);
+    },
   );
 
   server.registerTool(

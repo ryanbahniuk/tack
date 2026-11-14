@@ -25,6 +25,10 @@ export const CONTEXT_DIR = join(TACK_HOME, "context");
 export const ARTIFACTS_DIR = join(TACK_HOME, "artifacts");
 /** Git worktrees, scoped per session then per project. */
 export const WORKTREES_DIR = join(TACK_HOME, "worktrees");
+/** Detached, read-only snapshot worktrees the supervisor investigates, scoped per
+ * session then per project. Kept apart from WORKTREES_DIR so the supervisor's read
+ * grant covers only fresh upstream code, never the agents' in-progress branches. */
+export const SNAPSHOTS_DIR = join(TACK_HOME, "snapshots");
 
 /** Expands a leading `~` to the user's home directory. */
 export function expandHome(p: string): string {

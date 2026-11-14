@@ -172,7 +172,10 @@ untouched** — they belong to the repo. Tack layers its own context separately.
    bridged — only their session *ids* are kept, to resume.
 
 The supervisor has a *second* MCP server (`tack __supervisor-mcp <sessionId>`) with
-the coordination tools it needs: `list_projects`, `set_shared_context`,
+the coordination tools it needs: `list_projects`, `sync_projects` (fetches the
+affected projects and checks each default-branch tip out into a detached snapshot
+worktree under `snapshots/<sessionId>/<project>` — the only project code the
+supervisor reads), `set_shared_context`,
 `spawn_agent` (with `touches`/`dependsOn`), `check_agents`, `wait_for_agents` (blocks
 server-side so the planner doesn't burn tokens polling, and returns early with any
 `pendingAmendments` so the system routes an agent's proposal back to the supervisor
@@ -250,6 +253,7 @@ only; all large text lives on the filesystem, referenced by path.**
   config.ts                       # user config (plain `export default {…}` object)
   state.db                        # SQLite — metadata + *_ref paths only
   worktrees/<sessionId>/<agentId>/  # Tack-owned git worktrees
+  snapshots/<sessionId>/<project>/  # detached default-branch snapshots the supervisor reads
   context/<sessionId>/*.md        # session-scoped context files (injected by path)
   artifacts/<sessionId>/<agentId>/{prompt,output,diff}.…   # DB *_ref targets
   artifacts/<sessionId>/shared-context/vN.md
@@ -345,7 +349,8 @@ stdout/stderr to the log, and yields parsed JSON lines.
 ## 9. Execution flow
 
 1. **`tack session create`** (also bare `tack`) creates a session and launches the supervisor
-   runtime read-only, with project roots granted as read dirs and the supervisor MCP
+   runtime read-only, with only its session snapshot root (plus `readAllowlist`)
+   granted as read dirs — never the user's checkouts — and the supervisor MCP
    server mounted. By default this is the runtime's own **interactive** TUI (Claude
    Code / Codex) with inherited stdio — same capability posture (plan mode, no edit
    tools, only the `tack-supervisor` MCP tools), so you chat with the supervisor
@@ -354,7 +359,10 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime's transcript once it exits (claude sums per-message `usage` × pricing;
    codex reads its rollout's cumulative token count). `--background` keeps the
    headless, detached, streamed runner for unattended runs.
-2. The supervisor investigates, calls `set_shared_context`, presents its plan, and
+2. The supervisor picks the affected projects from their descriptions and calls
+   `sync_projects` (best-effort, time-boxed fetch → detached checkout of
+   `origin/<default>`, or HEAD with no origin), investigates those snapshots, calls
+   `set_shared_context`, presents its plan, and
    gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
    it refuses until the session's `plan_approved_at` is set. An attended claude
    session flips that gate when the human accepts the plan (the `ExitPlanMode` hook →

@@ -12,7 +12,7 @@ import {
 } from "../db";
 import { isAlive } from "../process/self";
 import { tmuxKillSession } from "./tmux";
-import { purgeSessionWorktrees } from "../worktree/worktree";
+import { purgeSessionWorktrees, sessionSnapshotsRoot } from "../worktree/worktree";
 
 function kill(pid: number | null | undefined): void {
   if (!isAlive(pid)) return;
@@ -59,13 +59,14 @@ export function unarchiveSession(sessionId: string): void {
 
 /**
  * Deletes a session and everything it left behind: stops live processes, removes
- * git worktrees, drops the DB rows (agents/context/amendments/prs cascade), and
- * sweeps its on-disk artifacts/context/logs.
+ * git worktrees and supervisor snapshots, drops the DB rows (agents/context/
+ * amendments/prs cascade), and sweeps its on-disk artifacts/context/logs.
  */
 export function deleteSession(sessionId: string): void {
   stopSession(sessionId);
   tmuxKillSession(sessionId);
   purgeSessionWorktrees(sessionId);
+  rmSync(sessionSnapshotsRoot(sessionId), { recursive: true, force: true });
   dbDeleteSession(sessionId);
   for (const dir of [ARTIFACTS_DIR, CONTEXT_DIR, LOGS_DIR]) {
     rmSync(join(dir, sessionId), { recursive: true, force: true });
