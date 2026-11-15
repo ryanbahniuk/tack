@@ -28,7 +28,7 @@ import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
 import { readInsights, RANGES, type InsightRange } from "./stats";
-import { Insights } from "./insights";
+import { Insights, insightChartWidth } from "./insights";
 
 interface View {
   session: SessionRow;
@@ -167,15 +167,15 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   const listWidth = effectiveLayout === "split" ? Math.floor(size.columns * 0.55) : size.columns;
   const insightWidth = effectiveLayout === "split" ? size.columns - listWidth : size.columns;
   const [range, setRange] = useState<InsightRange>("30d");
-  const [stats, setStats] = useState(() => readInsights(range, new Date(), insightWidth - 13));
+  const [stats, setStats] = useState(() => readInsights(range, new Date(), insightChartWidth(insightWidth)));
   const statsSig = useRef(JSON.stringify(stats));
   // A slow read also catches archived-only changes that the active list's
   // fingerprint can't see. Equal results never schedule an idle repaint.
   useEffect(() => {
     const tick = () => {
       const chartWidth = effectiveLayout === "insights" && insightWidth >= 70
-        ? Math.floor(insightWidth / 2) - 13
-        : insightWidth - 13;
+        ? insightChartWidth(Math.floor(insightWidth / 2))
+        : insightChartWidth(insightWidth);
       const next = readInsights(range, new Date(), chartWidth);
       const sig = JSON.stringify(next);
       if (sig !== statsSig.current) {

@@ -217,8 +217,13 @@ Insights adds a per-repo table, sorted by agent count. Daily/weekly/monthly buck
 adapt to range and width; dates use local time. PR creation means first linked to
 a session, and ticket completion is approximated by its last status refresh.
 Costs include supervisor and agent spend; repo costs include agents only.
-Monochrome glyphs preserve chart values without color. Charts refresh every five
-seconds when their data changes; an idle dashboard does not repaint.
+Time charts use block heights (▁▂▃▄▅▆▇█, · for zero), shared scales for paired
+series, full-word labels, totals and peaks when space allows, and dated axes.
+Short series stretch across the chart. Heatmap shades (░▒▓█) have weekday/date
+labels and a separate intensity legend; blank cells are outside the range.
+Aligned KPIs show signed changes vs the previous period without relying on color.
+Charts refresh every five seconds when their data changes; an idle dashboard does
+not repaint.
 
 Run `tack --help` (or `tack <command> --help`) for the full command list.
 
