@@ -8,7 +8,9 @@ import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
 import { recoverSupervisorCost, superviseInteractive } from "../supervisor/supervise";
 import { tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxRequestExit, tmuxSessionName } from "./tmux";
 
-export const REFRESH_MESSAGE = "Tack has refreshed onto new code or config. Your tools and permissions may have changed. Re-run sync_projects before further investigation.";
+import { REFRESH_MESSAGE } from "./refresh-message";
+
+export { REFRESH_MESSAGE } from "./refresh-message";
 
 /** Probe injection keeps the policy testable without real processes or tmux. */
 export function isSessionStale(session: SessionRow, probes = {
