@@ -198,6 +198,12 @@ tack session resume <session>      # rejoin the supervisor
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
+PR-watch answers inline review feedback inside its review thread. Replies to
+conversation comments and review summaries are combined into one top-level comment
+per fix run, linking and quoting each original and citing pushed fixes. Human authors
+are mentioned at most once; bots are never mentioned. Set `prWatch.reply: false` to
+disable replies.
+
 `tack dashboard` defaults to a split view on terminals at least 140 columns wide:
 work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
 full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.

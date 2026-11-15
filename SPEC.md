@@ -661,6 +661,9 @@ non-empty review bodies, conversation comments, bots included, minus anything
 already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
 if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn a
 `pr_fix` agent, subject to `maxFixRunsPerDay` per PR (failed runs count).
+Conversation comments and reviews come from paginated GraphQL connections with
+`author { login __typename }`, retaining their existing node ids. Bot detection also
+uses a case-insensitive known-login fallback, stripping any `[bot]` suffix.
 
 The **fix agent** forks off the PR's current remote head (`createPrWorktree`), is
 told to judge each item (fix what's relevant and justified, decline the rest),
@@ -670,10 +673,18 @@ or calls `gh`.
 
 The **post-fix step** (watcher): safety-net commit; if HEAD moved and `autoPush`,
 push **non-force** onto the PR branch — a rejected push releases the items back to
-pending for a fresh run off the new head; then, if `reply`, post each reply (thread
-reply, or a conversation comment addressing the author and quoting the original),
-always ending with the marker so Tack never ingests itself. Unreported items become
-`declined` with no reply; a failed run marks its items `failed` (never retried
+pending for a fresh run off the new head; then, if `reply`, post inline replies
+through the review-thread replies endpoint. Conversation comments and review bodies
+share **one top-level comment per fix run**, even when there is only one item. Each
+section links the original, names its author, quotes its first meaningful line
+(skipping blank lines and HTML comments, stripping heading markers, capped at 200
+characters), gives the reply, and cites the pushed fix SHA for fixed items. Human
+authors are @-mentioned at most once per batch; bot logins are bold and never
+@-mentioned. The batch ends with one `_— Tack_` signature and one marker; every item
+records the same reply URL. Posting failures are logged and the affected items are
+marked handled without retry, since the request may already have landed. All replies
+end with the marker so Tack never ingests itself. Empty declined replies are skipped.
+Unreported items become `declined` with no reply; a failed run marks its items `failed` (never retried
 automatically). It's latched per item (`handled_at`) and per agent
 (`post_fixed_at`), so it never double-posts. The agent stores the post-fix outcome
 and full pushed SHA independently of its runtime status. The dashboard shows
