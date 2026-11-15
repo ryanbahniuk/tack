@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import { migrate } from "../src/db/migrate";
 import {
   PR_WATCH_MARKER,
+  runtimeAttribution,
   buildReplyBody,
   buildConversationReplyBody,
   feedbackQuote,
@@ -40,7 +41,9 @@ import {
 } from "../src/db";
 import { createWakeableSleep, postFix, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
 import { writePrFeedbackArtifact } from "../src/artifacts/store";
-import type { Project, TackConfig } from "../src/config/schema";
+import type { Project, RuntimeKind, TackConfig } from "../src/config/schema";
+
+const CLAUDE_ATTRIBUTION = "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
 
@@ -396,7 +399,7 @@ describe("conversation reply formatting", () => {
     const body = buildConversationReplyBody([
       { ...item, fixSha: "abc1234" }, { ...item, author: "Alice" },
       { ...item, author: "cursor" }, { ...item, author: "custom-app", isBot: true },
-    ]);
+    ], { runtime: "claude" });
     expect(body).toContain(`[Original feedback](${item.url}) — @alice`);
     expect(body).toContain("**Alice**");
     expect(body).toContain("> Rename it");
@@ -406,9 +409,9 @@ describe("conversation reply formatting", () => {
     expect(body).toContain("**custom-app**");
     expect(body).not.toContain("@cursor");
     expect(body).not.toContain("@custom-app");
-    expect(body.match(/_— Tack_/g)).toHaveLength(1);
+    expect(body.split(CLAUDE_ATTRIBUTION)).toHaveLength(2);
     expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
-    expect(body.endsWith(`_— Tack_\n${PR_WATCH_MARKER}`)).toBe(true);
+    expect(body.endsWith(`\n\n${CLAUDE_ATTRIBUTION}\n${PR_WATCH_MARKER}`)).toBe(true);
   });
 });
 
@@ -471,6 +474,40 @@ describe("GraphQL conversation feedback", () => {
   });
 });
 
+describe("runtime attribution", () => {
+  test("uses Claude Code's standard footer and leaves other runtimes unsigned", () => {
+    expect(runtimeAttribution("claude")).toBe(CLAUDE_ATTRIBUTION);
+    for (const runtime of ["codex", null, undefined, "unknown"] as const) {
+      expect(runtimeAttribution(runtime as RuntimeKind | null | undefined)).toBe("");
+    }
+  });
+
+  for (const runtime of ["claude", "codex", null, undefined] as const) {
+    for (const fixSha of ["abc1234", undefined]) {
+      test(`both reply formats end with the marker for ${runtime}, fix ${fixSha}`, () => {
+        const item = { author: "alice", original: "Rename it", reply: "Done.\n\n", fixSha };
+        const bodies = [
+          buildReplyBody({ ...item, kind: "review_thread", runtime }),
+          buildConversationReplyBody([{ ...item, url: PR_URL }], { runtime }),
+        ];
+        for (const body of bodies) {
+          expect(body.endsWith(`\n${PR_WATCH_MARKER}`)).toBe(true);
+          expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
+          expect(body.includes(CLAUDE_ATTRIBUTION)).toBe(runtime === "claude");
+          expect(body).not.toContain("\n\n\n");
+          if (fixSha) expect(body).toContain(`Done.\n\nFix: ${fixSha}`);
+          else expect(body).not.toContain("Fix:");
+          if (runtime === "claude") {
+            expect(body.endsWith(`\n\n${CLAUDE_ATTRIBUTION}\n${PR_WATCH_MARKER}`)).toBe(true);
+          } else {
+            expect(body.endsWith(`${fixSha ? `Fix: ${fixSha}` : "Done."}\n${PR_WATCH_MARKER}`)).toBe(true);
+          }
+        }
+      });
+    }
+  }
+});
+
 describe("buildReplyBody", () => {
   test("always ends with the marker and quotes conversation comments", () => {
     const b = buildReplyBody({
@@ -481,13 +518,13 @@ describe("buildReplyBody", () => {
       fixSha: "abc1234",
     });
     expect(b.startsWith("@bob\n> Rename foo\n\nRenamed.")).toBe(true);
-    expect(b).toContain("_— Tack (fix: abc1234)_");
+    expect(b).toContain("Renamed.\n\nFix: abc1234");
     expect(b.endsWith(PR_WATCH_MARKER)).toBe(true);
   });
 
   test("thread replies are just the reply; bots are not @-mentioned", () => {
     expect(buildReplyBody({ kind: "review_thread", author: "a", original: "x", reply: "Done." })).toBe(
-      `Done.\n\n_— Tack_\n${PR_WATCH_MARKER}`,
+      `Done.\n${PR_WATCH_MARKER}`,
     );
     const bot = buildReplyBody({ kind: "review", author: "coderabbitai", isBot: true, original: "x", reply: "No." });
     expect(bot).not.toContain("@coderabbitai");
@@ -717,11 +754,11 @@ describe("triggerPrWatch", () => {
 
 
 describe("postFix replies", () => {
-  async function runReplies(root: string, reply = true, single = false) {
+  async function runReplies(root: string, reply = true, single = false, runtime?: RuntimeKind | null) {
     const session = createSession({ title: "post-fix replies" });
     upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open" });
     const pr = listSessionPrs(session.id)[0]!;
-    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id });
+    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id, runtime });
     setAgentStatus(a.id, "done");
     const entries = [
       { id: "IC_1", kind: "issue_comment", author: "cursor", decision: "fixed", reply: "Fixed cursor feedback." },
@@ -756,7 +793,7 @@ describe("postFix replies", () => {
       const posts = calls().filter(args => args.includes("POST"));
       expect(posts).toHaveLength(2);
       expect(posts[0]).toContain("repos/acme/app/pulls/7/comments/10/replies");
-      expect(posts[0]).toContain(`body=Fixed inline.\n\n_— Tack_\n${PR_WATCH_MARKER}`);
+      expect(posts[0]).toContain(`body=Fixed inline.\n${PR_WATCH_MARKER}`);
       expect(posts[1]).toContain("repos/acme/app/issues/7/comments");
       const body = posts[1]!.find(a => a.startsWith("body="))!;
       expect(body).toContain(`[Original feedback](${PR_URL}#IC_1) — **cursor**`);
@@ -775,6 +812,21 @@ describe("postFix replies", () => {
       expect(calls().filter(args => args.includes("POST"))).toHaveLength(2);
     });
   });
+
+  for (const runtime of ["claude", "codex", null] as const) {
+    test(`passes the fix agent's runtime (${runtime}) to both reply formats`, async () => {
+      await withGh({}, async (root, calls) => {
+        await runReplies(root, true, false, runtime);
+        const bodies = calls().filter(args => args.includes("POST"))
+          .map(args => args.find(arg => arg.startsWith("body="))!);
+        expect(bodies).toHaveLength(2);
+        for (const body of bodies) {
+          expect(body.includes(CLAUDE_ATTRIBUTION)).toBe(runtime === "claude");
+          expect(body.endsWith(PR_WATCH_MARKER)).toBe(true);
+        }
+      });
+    });
+  }
 
   test("uses the same linked format for a single conversation item", async () => {
     await withGh({}, async (root, calls) => {

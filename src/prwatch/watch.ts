@@ -630,6 +630,7 @@ export async function postFix(
       continue;
     }
     const body = buildReplyBody({
+      runtime: agent.runtime,
       kind: f.source_kind,
       author: f.author,
       isBot: f.author_is_bot === 1,
@@ -659,7 +660,7 @@ export async function postFix(
       original: readArtifact(f.body_ref),
       reply: readArtifact(f.reply_ref),
       fixSha: f.decision === "fixed" ? pushedSha?.slice(0, 7) : null,
-    })));
+    })), { runtime: agent.runtime });
     let url: string | null = null;
     try {
       url = await postIssueComment(project.path, pr.number!, body);
