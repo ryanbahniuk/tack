@@ -639,8 +639,9 @@ null. A live headless runner is always treated as busy.
 Once a session has open PRs, a detached watcher (`tack __watch-prs <session>`,
 `src/prwatch/watch.ts`, pid in `sessions.pr_watch_pid`, log at
 `logs/<ses>/pr-watch.log`) polls them every `prWatch.intervalSeconds`. `open_pr`
-starts it; the dashboard's 60s refresh restarts it for any active session with an
-open PR and a dead watcher. It exits when the session is archived/gone or no PR is
+starts it; the dashboard refreshes PR status on mount and every
+`prWatch.intervalSeconds`, restarting it for any active session with an open PR
+and a dead watcher. It exits when the session is archived/gone or no PR is
 open; `stop`/`archive` SIGTERM it.
 
 Out-of-cycle polling is available through `tack session poll-prs <session>`, dashboard

@@ -134,11 +134,13 @@ export type McpServer = z.infer<typeof McpServerSchema>;
 
 /**
  * PR watch: each session with open PRs runs a background watcher that polls them
- * every `intervalSeconds`. New review feedback (bots included) or a merge conflict
- * spawns a `pr_fix` agent; afterwards Tack pushes its commits (`autoPush`, always
- * non-force) and replies to each comment on GitHub (`reply`). `maxFixRunsPerDay`
- * caps fix runs per PR in any rolling 24h window — failed runs count — so a PR that
- * keeps attracting comments (or keeps failing) can't loop unbounded.
+ * every `intervalSeconds`. This also sets how often `tack dashboard` refreshes PR
+ * status and restarts missing watchers. New review feedback (bots included) or a
+ * merge conflict spawns a `pr_fix` agent; afterwards Tack pushes its commits
+ * (`autoPush`, always non-force) and replies to each comment on GitHub (`reply`).
+ * `maxFixRunsPerDay` caps fix runs per PR in any rolling 24h window — failed runs
+ * count — so a PR that keeps attracting comments (or keeps failing) can't loop
+ * unbounded.
  */
 export const PrWatchSchema = z
   .object({
