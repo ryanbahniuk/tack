@@ -43,6 +43,8 @@ src/worktree/            session-scoped worktrees, supervisor snapshots (syncSna
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
+src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
+src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
 ```
@@ -116,3 +118,12 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   realpath of `$CLAUDE_CODE_TMPDIR` or `/tmp`. The scratchpad may not exist yet.
   Keep its symlink/ancestor resolution fail-closed and the parent `.claude`
   settings unwritable. Publishing tools keep their normal permissions.
+
+## Refreshing sessions after updating Tack
+
+`tack session refresh <id>` refreshes stale supervisor/watcher processes without
+stopping agents and rejoins the supervisor conversation. `--force` bypasses the
+pending-plan/mid-turn guard. `--all` refreshes stale active sessions and parks
+replacement supervisors detached in tmux; without tmux they stay stopped until
+resume. Interactive `session resume` refreshes automatically when idle; dashboard
+`r` confirms refresh and `stale` marks sessions running older code.

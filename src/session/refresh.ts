@@ -1,0 +1,73 @@
+import type { TackConfig } from "../config/schema";
+import { resolveModel } from "../config/load";
+import { getSession, listSessionPrs, setSessionPrWatchPid, setSupervisorTurnStartedAt, type SessionRow } from "../db";
+import { supervisorCwd } from "../paths";
+import { isAlive } from "../process/self";
+import { currentCodeVersion, isCodeVersionStale } from "../process/version";
+import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
+import { recoverSupervisorCost } from "../supervisor/supervise";
+import { tmuxHasSession, tmuxKillSession, tmuxRequestExit, tmuxSessionName } from "./tmux";
+
+export const REFRESH_MESSAGE = "Tack has refreshed onto new code. Your tools and permissions may have changed. Re-run sync_projects before further investigation.";
+
+/** Probe injection keeps the policy testable without real processes or tmux. */
+export function isSessionStale(session: SessionRow, probes = {
+  current: currentCodeVersion(),
+  tmux: tmuxHasSession(tmuxSessionName(session.id)),
+  alive: isAlive,
+}) {
+  const supervisorLive = probes.tmux || probes.alive(session.pid);
+  const watcherLive = probes.alive(session.pr_watch_pid);
+  const supervisor = supervisorLive && isCodeVersionStale(session.supervisor_code_version, probes.current);
+  const watcher = watcherLive && isCodeVersionStale(session.pr_watch_code_version, probes.current);
+  return { stale: supervisor || watcher, supervisor, watcher, supervisorLive, watcherLive };
+}
+
+export function refreshBlockedReason(session: SessionRow, probes = {
+  tmux: tmuxHasSession(tmuxSessionName(session.id)), alive: isAlive,
+}): string | null {
+  if (session.awaiting_input_at && session.awaiting_reason === "plan") return "plan approval is pending";
+  if (session.supervisor_turn_started_at) return "supervisor is mid-turn";
+  // Interactive launchers can remain alive while attached; only a runner without a
+  // tmux TUI is unconditionally busy.
+  if (!probes.tmux && probes.alive(session.pid)) return "headless supervisor runner is still alive";
+  return null;
+}
+
+async function waitUntilGone(alive: () => boolean): Promise<boolean> {
+  const deadline = Date.now() + 1500;
+  while (alive() && Date.now() < deadline) await Bun.sleep(75);
+  return !alive();
+}
+
+/** Refresh only Tack-owned supervisor/watcher processes. Agent work is untouched.
+ * Launching the replacement TUI belongs to the caller so Ink can unmount first. */
+export async function refreshSession(id: string, config: TackConfig, opts: { force?: boolean; watcherOnly?: boolean } = {}) {
+  const session = getSession(id);
+  if (!session) throw new Error(`Unknown session ${id}`);
+  const stale = isSessionStale(session);
+  if (!stale.stale) return { ...stale, refreshed: false, blocked: null };
+  const blocked = !opts.force && !opts.watcherOnly ? refreshBlockedReason(session) : null;
+  if (blocked) return { ...stale, refreshed: false, blocked };
+  if (stale.supervisor && !opts.watcherOnly) {
+    const tmuxAlive = () => tmuxHasSession(tmuxSessionName(id));
+    if (tmuxAlive()) {
+      tmuxRequestExit(id);
+      if (!await waitUntilGone(tmuxAlive)) tmuxKillSession(id);
+    } else if (isAlive(session.pid)) {
+      try { process.kill(session.pid!, "SIGTERM"); } catch { /* exited */ }
+      if (!await waitUntilGone(() => isAlive(session.pid))) throw new Error(`Supervisor ${id} did not exit`);
+    }
+    if (tmuxAlive()) throw new Error(`Supervisor ${id} did not exit`);
+    if (session.supervisor_model) recoverSupervisorCost({ session, model: resolveModel(config, session.supervisor_model), cwd: supervisorCwd(id), sessionRef: session.resume_ref ?? undefined });
+    setSupervisorTurnStartedAt(id, null);
+  }
+  if (stale.watcher) {
+    try { process.kill(session.pr_watch_pid!, "SIGTERM"); } catch { /* exited */ }
+    // Never clear a live pid: spawnPrWatcher must not race a still-running watcher.
+    if (!await waitUntilGone(() => isAlive(session.pr_watch_pid))) throw new Error(`PR watcher ${id} did not exit`);
+    if (getSession(id)?.pr_watch_pid === session.pr_watch_pid) setSessionPrWatchPid(id, null);
+    if (listSessionPrs(id).some(isWatchablePr)) spawnPrWatcher(id, config);
+  }
+  return { ...stale, refreshed: true, blocked: null };
+}

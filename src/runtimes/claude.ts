@@ -268,6 +268,10 @@ export class ClaudeRuntime implements Runtime {
         UserPromptSubmit: [{ hooks: [{ type: "command", command }] }],
       };
     }
+    if (opts.onTurnEnd) {
+      const command = shellJoin([opts.onTurnEnd.command, ...opts.onTurnEnd.args]);
+      settings.hooks = { ...settings.hooks, Stop: [{ hooks: [{ type: "command", command }] }] };
+    }
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(
       "--mcp-config",

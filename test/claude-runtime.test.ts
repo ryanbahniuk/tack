@@ -245,3 +245,14 @@ describe("ClaudeRuntime.interactiveCommand writable page directory", () => {
     expect(() => settingsOf({ writableDirs: [dir] })).toThrow("require a writeGuard");
   });
 });
+
+test("turn callbacks preserve permission hooks and wire prompt-submit plus Stop", () => {
+  const settings = settingsOf({
+    onUserPrompt: { command: "/path with spaces/tack", args: ["__approve-prompt", "ses_test"] },
+    onTurnEnd: { command: "/path with spaces/tack", args: ["__turn-end", "ses_test"] },
+  });
+  expect(settings.hooks.PreToolUse.length).toBeGreaterThan(0);
+  expect(settings.hooks.UserPromptSubmit[0].hooks[0].command).toContain("__approve-prompt");
+  expect(settings.hooks.Stop[0].hooks[0].command).toContain("__turn-end");
+  expect(settingsOf().hooks.Stop).toBeUndefined();
+});

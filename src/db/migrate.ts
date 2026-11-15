@@ -264,6 +264,15 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN cache_write INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 10,
+    name: "session_code_version_and_turn",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN supervisor_code_version TEXT;
+      ALTER TABLE sessions ADD COLUMN pr_watch_code_version TEXT;
+      ALTER TABLE sessions ADD COLUMN supervisor_turn_started_at TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

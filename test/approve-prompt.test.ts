@@ -55,3 +55,17 @@ describe("__approve-prompt", () => {
     expect(submit("", '{"prompt":"/approve"}')).toBe("");
   });
 });
+
+test("prompt-submit marks ordinary turns busy and turn-end silently clears the marker", () => {
+  const session = createSession({});
+  expect(submit(session.id, JSON.stringify({ prompt: "investigate" }))).toBe("");
+  expect(getSession(session.id)?.supervisor_turn_started_at).toBeString();
+  expect(getSession(session.id)?.plan_approved_at).toBeNull();
+  const result = Bun.spawnSync([
+    process.execPath, resolve(import.meta.dir, "../bin/tack.ts"), "__turn-end", session.id,
+  ], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("");
+  expect(result.stderr.toString()).toBe("");
+  expect(getSession(session.id)?.supervisor_turn_started_at).toBeNull();
+});
