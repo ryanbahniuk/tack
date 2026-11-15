@@ -270,7 +270,13 @@ export class ClaudeRuntime implements Runtime {
     }
     if (opts.onTurnEnd) {
       const command = shellJoin([opts.onTurnEnd.command, ...opts.onTurnEnd.args]);
-      settings.hooks = { ...settings.hooks, Stop: [{ hooks: [{ type: "command", command }] }] };
+      // Esc interrupts don't fire Stop. Clear the turn flag on idle_prompt too,
+      // so an interrupted supervisor doesn't look busy forever in the dashboard.
+      settings.hooks = {
+        ...settings.hooks,
+        Stop: [{ hooks: [{ type: "command", command }] }],
+        Notification: [{ matcher: "idle_prompt", hooks: [{ type: "command", command }] }],
+      };
     }
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(

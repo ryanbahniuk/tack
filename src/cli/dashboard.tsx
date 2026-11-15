@@ -17,7 +17,7 @@ import {
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { agentDisplayStatus, sessionLive, sessionNeedsInput } from "./liveness";
+import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, isSessionStale, refreshSession } from "../session/refresh";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { selfCommand } from "../process/self";
@@ -39,6 +39,7 @@ interface View {
   tickets: SessionJiraTicketRow[];
   cost: number;
   live: boolean;
+  working: boolean;
   stale: boolean;
   needsInput: boolean;
   /** Pending amendment proposals awaiting the human's adjudication. */
@@ -67,6 +68,7 @@ function snapshot(showArchived: boolean): View[] {
         tickets: listSessionJiraTickets(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
+        working: sessionWorking(session),
         stale: isSessionStale(session).stale,
         // Waiting on the human: a plan to approve, or unread completed agent work
         // once nothing is still in flight.
@@ -97,7 +99,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -259,6 +261,14 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   }, [range, insightWidth, effectiveLayout]);
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<View[]>(() => snapshot(false));
+  const [frame, setFrame] = useState(0);
+  const workingCount = rows.filter((v) => v.working).length;
+  // Animate only while supervisors are working; idle boards don't repaint.
+  useEffect(() => {
+    if (!workingCount) return;
+    const timer = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 120);
+    return () => clearInterval(timer);
+  }, [workingCount]);
   // Selection is pinned to a session *id*, not a row index, so re-sorting (sessions
   // float as they start needing input) and deletions never move the highlight onto
   // the wrong session under the human's cursor.
@@ -591,6 +601,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
         ) : null}
         {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
         {v.stale ? <Text color="yellow"> stale</Text> : null}
+        {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
         <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
       </Text>
@@ -681,6 +692,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       <Text bold wrap="truncate">
         Tack · {effectiveLayout === "list" ? "list-only" : effectiveLayout} · {range} {showArchived ? "(all)" : "(active)"} · {rows.length} session{rows.length === 1 ? "" : "s"} ·{" "}
         <Text color="green">{liveCount} live</Text> ·{" "}
+        <Text color={workingCount > 0 ? "cyan" : undefined} dimColor={workingCount === 0}>{workingCount} working</Text> ·{" "}
         {needsCount > 0 ? <Text color="yellow">{needsCount} need input</Text> : <Text dimColor>0 need input</Text>} ·{" "}
         <Text color="green">{usd(totalCost)}</Text> <Text dimColor>in flight</Text>
       </Text>
@@ -767,6 +779,19 @@ function AmendmentsPanel({ view, cursor, notice }: { view: View; cursor: number;
       </Box>
     </Box>
   );
+}
+
+const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+/** Compact duration of the supervisor's current turn, refreshed by spinner ticks. */
+function turnElapsed(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h${mins % 60}m`;
 }
 
 /** A coarse "N ago" from an ISO-UTC timestamp, for the live activity line. */
