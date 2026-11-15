@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { TackConfig } from "../config/schema";
+import type { RuntimeKind, TackConfig } from "../config/schema";
 import {
   listAgents,
   listSessionPrs,
@@ -651,6 +651,11 @@ export function normalizeFeedback(
   return out;
 }
 
+/** Standard runtime attribution; runtimes without a standard footer stay unsigned. */
+export function runtimeAttribution(runtime: RuntimeKind | null | undefined): string {
+  return runtime === "claude" ? "🤖 Generated with [Claude Code](https://claude.com/claude-code)" : "";
+}
+
 /**
  * Composes the body of a Tack reply. Thread replies sit right under the comment, so
  * they're just the reply; conversation replies (`review` / `issue_comment`) address
@@ -667,6 +672,7 @@ export function buildReplyBody(input: {
   reply: string;
   /** Short sha of the pushed fix, when this item's fix reached the PR. */
   fixSha?: string | null;
+  runtime?: RuntimeKind | null;
 }): string {
   const parts: string[] = [];
   if (input.kind !== "review_thread") {
@@ -678,8 +684,10 @@ export function buildReplyBody(input: {
     if (parts.length) parts.push("");
   }
   parts.push(input.reply.trim());
-  const sig = input.fixSha ? `_— Tack (fix: ${input.fixSha})_` : "_— Tack_";
-  return `${parts.join("\n")}\n\n${sig}\n${PR_WATCH_MARKER}`;
+  if (input.fixSha) parts.push("", `Fix: ${input.fixSha}`);
+  const attribution = runtimeAttribution(input.runtime);
+  if (attribution) parts.push("", attribution);
+  return `${parts.join("\n")}\n${PR_WATCH_MARKER}`;
 }
 
 /** Quote only visible text: bot comments often start with multiline HTML metadata. */
@@ -700,7 +708,7 @@ export function buildConversationReplyBody(items: Array<{
   original: string;
   reply: string;
   fixSha?: string | null;
-}>): string {
+}>, input: { runtime?: RuntimeKind | null } = {}): string {
   const mentioned = new Set<string>();
   const sections = items.map((item) => {
     const login = item.author;
@@ -717,7 +725,8 @@ export function buildConversationReplyBody(items: Array<{
       ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),
     ].join("\n");
   });
-  return `${sections.join("\n\n---\n\n")}\n\n_— Tack_\n${PR_WATCH_MARKER}`;
+  const attribution = runtimeAttribution(input.runtime);
+  return `${sections.join("\n\n---\n\n")}${attribution ? `\n\n${attribution}` : ""}\n${PR_WATCH_MARKER}`;
 }
 
 /** Replies inside a review thread (attached to the thread's root comment). Returns
