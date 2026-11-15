@@ -18,8 +18,21 @@ function editorCommand(): string[] {
  * place — used for `tack config edit`. Throws if no editor could be launched.
  */
 export function openInEditor(path: string): void {
-  const [cmd, ...args] = editorCommand();
-  execFileSync(cmd!, [...args, path], { stdio: "inherit" });
+  const { command, args } = editorInvocation(path);
+  execFileSync(command, args, { stdio: "inherit" });
+}
+
+/** Shared by synchronous CLI launches and the dashboard's asynchronous TTY handoff. */
+export function editorInvocation(target: string): { command: string; args: string[] } {
+  const [command, ...args] = editorCommand();
+  return { command: command!, args: [...args, target] };
+}
+
+/** Root the editor at the worktree so directory browsing and editor shell commands
+ * operate on the same tree the human selected, regardless of Tack's own cwd. */
+export function openWorktreeInEditor(path: string): void {
+  const { command, args } = editorInvocation(".");
+  execFileSync(command, args, { cwd: path, stdio: "inherit" });
 }
 
 /** A whole line that is nothing but an HTML comment, e.g. `<!-- help -->`. We use
@@ -41,8 +54,8 @@ export function captureViaEditor(template = ""): string {
   const file = join(dir, "PROMPT.md");
   writeFileSync(file, template, "utf8");
   try {
-    const [cmd, ...args] = editorCommand();
-    execFileSync(cmd!, [...args, file], { stdio: "inherit" });
+    const { command, args } = editorInvocation(file);
+    execFileSync(command, args, { stdio: "inherit" });
     const raw = readFileSync(file, "utf8");
     return raw
       .split("\n")
