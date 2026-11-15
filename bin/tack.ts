@@ -58,7 +58,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import { generateSessionTitle, spawnSessionTitler } from "../src/session/title";
+import { generateSessionTitle, spawnSessionTitler, titleFromFirstPrompt } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
 import { runDashboard } from "../src/cli/dashboard";
@@ -975,7 +975,7 @@ const sessionCreate = defineCommand({
     if (bugSource) writeTackBugReport(session.id, bugSource);
     console.log(`${pc.dim("supervisor")} ${pc.bold(session.id)} ${pc.dim(`· ${model.key} (${model.runtime}:${model.id})`)}`);
     // Title from the seed now — before superviseInteractive blocks on the TUI. With
-    // no seed, the first shared contract titles it instead (see set_shared_context).
+    // no seed, the prompt-submit hook titles it from the first human ask.
     if (prompt) {
       writeSupervisorPrompt(session.id, prompt);
       spawnSessionTitler(session.id);
@@ -1540,8 +1540,9 @@ if (hidden === "__mcp") {
         },
       }));
     }
+    if (sessionId && typeof input?.prompt === "string") titleFromFirstPrompt(sessionId, input.prompt);
   } catch {
-    // Approval is best-effort; never block the human's prompt.
+    // Approval and titling are best-effort; never block the human's prompt.
   }
   process.exit(0);
 } else if (hidden === "__turn-end") {
