@@ -41,7 +41,7 @@ src/supervisor/          supervise.ts (runner), context.ts (system context), con
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
-src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
+src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply, promote drafts), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
@@ -106,6 +106,17 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   (`src/supervisor/context.ts`).
 - **Change the schema:** append a migration in `src/db/migrate.ts` (never edit an
   applied one) and update `src/db/repositories.ts`.
+
+## PR readiness
+
+`open_pr` forces drafts by default (`draftPrs: true`); false honors the tool's
+`draft` argument. PR watch (`prWatch.enabled`, default true) auto-promotes once
+with `prWatch.autoReady` (default true): mergeable, no busy fix or outstanding
+feedback, explicit handled decisions/replies for non-CI items, and settled green
+current-head CI. Drafts fetch checks even with `fixCi: false`; fetch failures block
+promotion and zero checks is green. The durable `session_prs.ready_promoted_at`
+latch respects a human's later return to draft. Keep readiness and CI ingestion
+on the same pending/failing predicates; promotion failures retry next tick.
 
 ## Testing & gotchas
 

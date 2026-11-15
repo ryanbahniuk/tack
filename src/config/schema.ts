@@ -147,6 +147,7 @@ export type McpServer = z.infer<typeof McpServerSchema>;
  * failing CI (`fixCi`, default true), or a merge conflict spawns a `pr_fix` agent;
  * afterwards Tack pushes its commits
  * (`autoPush`, always non-force) and replies to each comment on GitHub (`reply`).
+ * `autoReady` promotes drafts once all feedback is addressed and CI is green.
  * `maxFixRunsPerDay` caps automatic (watcher) fix runs per PR per rolling 24h;
  * supervisor fix_pr runs are exempt. Failed automatic runs count to prevent loops.
  */
@@ -154,6 +155,7 @@ export const PrWatchSchema = z
   .object({
     enabled: z.boolean().default(true),
     intervalSeconds: z.number().min(60).default(300),
+    autoReady: z.boolean().default(true),
     autoPush: z.boolean().default(true),
     reply: z.boolean().default(true),
     fixCi: z.boolean().default(true),
@@ -162,6 +164,7 @@ export const PrWatchSchema = z
   .default({
     enabled: true,
     intervalSeconds: 300,
+    autoReady: true,
     autoPush: true,
     reply: true,
     fixCi: true,
@@ -211,6 +214,8 @@ export const ConfigSchema = z.object({
    * `open_pr` call raises a per-call confirmation in attended sessions.
    */
   autoOpenPrs: z.boolean().default(true),
+  /** Force new PRs to draft; the watcher promotes addressed, green PRs. */
+  draftPrs: z.boolean().default(true),
   /** Optional JIRA ticket tracking via one of `supervisorMcpServers` (see `JiraConfigSchema`). */
   jira: JiraConfigSchema.optional(),
 });
@@ -230,6 +235,7 @@ export interface TackConfig {
   prWatch: PrWatch;
   agentReuse: { enabled: boolean; maxIdleHours: number };
   autoOpenPrs: boolean;
+  draftPrs: boolean;
   jira?: JiraConfig;
 }
 

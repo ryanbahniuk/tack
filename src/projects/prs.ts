@@ -415,17 +415,36 @@ export async function fetchPrChecks(repoPath: string, number: number): Promise<P
   return checks;
 }
 
+/** Shared check predicates keep CI ingestion and ready-for-review gating aligned. */
+export function isPendingCheck(check: PrCheck): boolean {
+  return check.bucket?.toLowerCase() === "pending" ||
+    /^(PENDING|QUEUED|IN_PROGRESS|WAITING|REQUESTED|EXPECTED)$/i.test(check.state ?? "");
+}
+
+export function isFailingCheck(check: PrCheck): boolean {
+  return /^(fail|cancel)$/i.test(check.bucket ?? "") ||
+    /^(FAILURE|FAIL|ERROR|CANCELLED|CANCELED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE)$/i.test(check.state ?? "");
+}
+
+/** No checks is green; a failed fetch must be represented separately by callers. */
+export function ciGreen(checks: PrCheck[]): boolean {
+  return !checks.some((check) => isPendingCheck(check) || isFailingCheck(check));
+}
+
+/** Marks a draft ready; callers own retries and the durable promotion latch. */
+export async function markPrReady(repoPath: string, number: number): Promise<void> {
+  await runOk(["gh", "pr", "ready", String(number)], repoPath, "gh pr ready");
+}
+
 /** Wait for the whole suite; the SHA scopes dedupe so a failed fix can be retried. */
 export function normalizeCiFailures(
   checks: PrCheck[], headSha: string | null, alreadyHandledIds: Iterable<string>,
 ): PrFeedbackItem[] {
-  if (!headSha || checks.some((c) => c.bucket?.toLowerCase() === "pending" ||
-    /^(PENDING|QUEUED|IN_PROGRESS|WAITING|REQUESTED|EXPECTED)$/i.test(c.state ?? ""))) return [];
+  if (!headSha || checks.some(isPendingCheck)) return [];
   const seen = new Set(alreadyHandledIds);
   const items: PrFeedbackItem[] = [];
   for (const check of checks) {
-    if (!/^(fail|cancel)$/i.test(check.bucket ?? "") &&
-      !/^(FAILURE|FAIL|ERROR|CANCELLED|CANCELED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE)$/i.test(check.state ?? "")) continue;
+    if (!isFailingCheck(check)) continue;
     const name = check.name || "ci";
     const sourceId = `ci:${headSha}:${check.workflow ? `${check.workflow}/` : ""}${name}`;
     if (seen.has(sourceId)) continue;

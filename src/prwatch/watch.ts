@@ -14,10 +14,12 @@ import {
   getDb,
   insertPrFeedback,
   listAgentPrFeedback,
+  listPrFeedback,
   listPrFixAgents,
   listSessionPrs,
   listUnassignedPrFeedback,
   markAgentPostFixed,
+  markSessionPrReadyPromoted,
   markPrFeedbackHandled,
   prFeedbackSourceIds,
   releaseAgentPrFeedback,
@@ -44,6 +46,9 @@ import {
   buildConversationReplyBody,
   fetchPrStatus,
   fetchPrChecks,
+  ciGreen,
+  markPrReady,
+  type PrCheck,
   enrichCiLogs,
   normalizeCiFailures,
   fetchReviewThreads,
@@ -74,6 +79,11 @@ export { buildPrFixPrompt } from "./prompt";
  * failing CI checks (when `fixCi` is on), or a merge conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
  * finishes, the watcher (never the agent) pushes its commits non-force onto the PR
  * branch and posts the agent's verdicts (threaded inline, batched in conversation).
+ * With `autoReady`, drafts become ready once mergeable, idle, all feedback is
+ * addressed with explicit replies, and current-head CI is settled and green.
+ * Checks are fetched for drafts even with `fixCi` off; fetch errors block readiness.
+ * Clean PRs qualify without a fix run. A durable per-PR latch prevents promoting
+ * again if a human later returns the PR to draft; failed promotions retry next tick.
  *
  * The supervisor can also start a fix run itself (`fix_pr`, for a conflict that
  * persists, a failed run, or follow-ups the human asked for). It goes through the
@@ -129,6 +139,29 @@ type Log = (msg: string) => void;
  * including drafts and rows whose state hasn't been polled yet). */
 export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
   return pr.state !== "merged" && pr.state !== "closed";
+}
+
+/** Pure promotion gate. Missing CI data blocks promotion, including fetch errors.
+ * reply_ref distinguishes an explicit verdict from silently declined input. */
+export function readyToPromote(input: {
+  enabled: boolean;
+  autoReady: boolean;
+  isDraft: boolean | undefined;
+  readyPromotedAt: string | null;
+  mergeable: PrMergeable | null;
+  prFixBusy: boolean;
+  freshCount: number;
+  releasedCount: number;
+  feedback: Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref">[];
+  checks: PrCheck[] | null;
+}): boolean {
+  return input.enabled && input.autoReady && !!input.isDraft && !input.readyPromotedAt &&
+    input.mergeable === "MERGEABLE" && !input.prFixBusy &&
+    input.freshCount === 0 && input.releasedCount === 0 &&
+    input.feedback.every((row) => row.decision !== "pending" && row.decision !== "failed" &&
+      (row.source_kind === "ci_check" ||
+        (!!row.handled_at && ["fixed", "declined", "not_applicable"].includes(row.decision) && !!row.reply_ref))) &&
+    input.checks !== null && ciGreen(input.checks);
 }
 
 /**
@@ -287,7 +320,8 @@ async function watchPass(session: SessionRow, config: TackConfig, log: Log): Pro
   }
 }
 
-async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig, log: Log): Promise<void> {
+/** One PR tick; exported so readiness and fix scheduling can be verified together. */
+export async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig, log: Log): Promise<void> {
   const tag = `PR #${pr.number ?? "?"}`;
   const project = config.projects.find((p) => p.name === pr.project_name);
   if (!project) return log(`${tag}: project "${pr.project_name ?? "?"}" not in config; skipping`);
@@ -323,17 +357,45 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   const conflict = mergeable === "CONFLICTING";
   const threads = await fetchReviewThreads(project.path, pr.number);
   const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
-  if (config.prWatch.fixCi) {
+  let checks: PrCheck[] | null = null;
+  if (status.isDraft || config.prWatch.fixCi) {
     try {
-      const checks = await fetchPrChecks(project.path, pr.number);
-      fresh.push(...await enrichCiLogs(project.path,
-        normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
+      checks = await fetchPrChecks(project.path, pr.number);
+      if (config.prWatch.fixCi) {
+        fresh.push(...await enrichCiLogs(project.path,
+          normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
+      }
     } catch (err) {
       log(`${tag}: fetching CI checks failed: ${(err as Error).message}`);
     }
   }
   // Items released back to pending (a rejected push / stopped run) also need a fix.
   const released = listUnassignedPrFeedback(pr.id);
+  if (readyToPromote({
+    enabled: config.prWatch.enabled,
+    autoReady: config.prWatch.autoReady,
+    isDraft: status.isDraft,
+    readyPromotedAt: pr.ready_promoted_at,
+    mergeable,
+    prFixBusy: prFixBusy(pr.id),
+    freshCount: fresh.length,
+    releasedCount: released.length,
+    feedback: listPrFeedback(pr.id),
+    checks,
+  })) {
+    try {
+      await markPrReady(project.path, pr.number);
+      markSessionPrReadyPromoted(pr.id);
+      setSessionPrStatus(pr.id, {
+        state: "open", mergeable, baseBranch: status.baseRefName,
+        headSha: status.headRefOid, title: status.title,
+      });
+      log(`${tag}: promoted draft to ready for review`);
+    } catch (err) {
+      log(`${tag}: promoting draft failed: ${(err as Error).message}; will retry next tick`);
+    }
+    return;
+  }
   if (!conflict && fresh.length === 0 && released.length === 0) return;
 
   const cap = prFixCapReached(pr.id, config);

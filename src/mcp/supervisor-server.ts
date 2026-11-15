@@ -389,6 +389,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             "explicitly approved opening PRs. ") +
         "Commits anything the agent left uncommitted, merges the latest remote base, then pushes its worktree branch under the " +
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
+        "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
         "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
@@ -396,7 +397,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         body: z.string().describe("PR description (markdown)"),
         slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
         base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
-        draft: z.boolean().optional().describe("Open as a draft PR"),
+        draft: z.boolean().optional().describe("Request a draft PR; draftPrs forces drafts even when false. The watcher promotes addressed PRs with green CI."),
       },
     },
     async ({ agentId, title, body, slug, base, draft }) => {
@@ -420,6 +421,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         prFixAgentId?: string;
         prFixSkipped?: string;
       } = await syncBranchWithBase(proj.path, a.branch, a.worktree_path, base);
+      const asDraft = config.draftPrs || !!draft;
       const pr = await openSessionPr({
         repoPath: proj.path,
         localBranch: a.branch,
@@ -427,7 +429,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         title,
         body,
         base,
-        draft,
+        draft: asDraft,
       });
       upsertSessionPr({
         sessionId,
@@ -436,7 +438,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         projectName: a.project_name,
         number: pr.number,
         title,
-        state: draft ? "draft" : "open",
+        state: asDraft ? "draft" : "open",
         headBranch: pr.headBranch,
       });
       // A known local conflict needn't wait for GitHub's mergeability calculation

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PrWatchSchema } from "../src/config/schema";
 import {
-  buildConversationReplyBody, enrichCiLogs, fetchPrChecks, normalizeCiFailures,
+  buildConversationReplyBody, enrichCiLogs, fetchPrChecks, normalizeCiFailures, markPrReady,
   type PrCheck,
 } from "../src/projects/prs";
 import { buildPrFixPrompt } from "../src/prwatch/prompt";
@@ -106,6 +106,17 @@ async function withChecksGh(script: string, check: (root: string) => Promise<voi
   try { await check(root); }
   finally { mock.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 }
+
+describe("markPrReady", () => {
+  test("runs gh pr ready and surfaces failures for the watcher to retry", async () => {
+    await withChecksGh(`
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["pr", "ready", "7"])) process.exit(2);
+`, async root => { await markPrReady(root, 7); });
+    await withChecksGh('console.error("permission denied"); process.exit(1);', async root => {
+      await expect(markPrReady(root, 7)).rejects.toThrow("gh pr ready failed: permission denied");
+    });
+  });
+});
 
 describe("CI collection", () => {
   test("parses valid JSON on failed and pending gh exit codes", async () => {
