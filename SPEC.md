@@ -272,7 +272,8 @@ colliding on config or database.
 
 ```
 sessions(id, title, supervisor_model, runtime, resume_ref,
-         status[active|archived], cost, pid, heartbeat_at, created_at, updated_at)
+         status[active|archived], cost, pid, heartbeat_at, created_at, updated_at,
+         supervisor_code_version, pr_watch_code_version, supervisor_turn_started_at)
 
 agents(id, session_id→sessions, project_name, worktree_path, branch,
        status[pending|running|done|failed|stopped], model, runtime, resume_ref, interrupted_at,
@@ -600,6 +601,29 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   supervisor: rejoin via `tack session resume <id>` or dashboard `enter/o`.
   Dashboard `a` archives immediately, confirms unarchive with the interrupted
   count, and reports the resumed count; `z` reveals archived sessions.
+
+### Refresh onto updated Tack code
+
+`session refresh <id>` gracefully exits a stale supervisor TUI (bounded `/exit`,
+then tmux kill), recovers its cost, restarts a stale PR watcher if watchable PRs
+remain, and resumes the same conversation. Agents are never stopped. `--all`
+targets stale active sessions and parks replacement supervisors detached in tmux;
+without tmux, supervisors stay stopped until the next resume. `--force` bypasses
+the plan-approval, turn-marker, and live headless-runner guards. Dashboard `r`
+asks y/N and hands off to resume; stale sessions show a `stale` badge.
+
+Interactive `session resume` automatically refreshes stale idle processes before
+reattaching. A blocked supervisor stays live with a notice to refresh once idle;
+a stale watcher can still be refreshed independently. Refreshed supervisors get
+a seed telling them tools/permissions may have changed and to re-run `sync_projects`.
+
+Versions are memoized per process: content hashes of the entry script's Tack
+source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
+uncommitted edits, or executable size/mtime for compiled Tack. Missing stamps on
+live legacy processes count as stale; `unknown` versions never do. Watchers stamp
+their own version at startup. Claude's prompt-submit hook stamps the best-effort
+turn marker and its Stop hook clears it; adapters without these hooks leave it
+null. A live headless runner is always treated as busy.
 
 ### PR watch
 

@@ -253,6 +253,15 @@ const migrations: Migration[] = [
     // Archive remembers which agents to relaunch when the session is restored.
     sql: `ALTER TABLE agents ADD COLUMN interrupted_at TEXT;`,
   },
+  {
+    version: 9,
+    name: "session_code_version_and_turn",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN supervisor_code_version TEXT;
+      ALTER TABLE sessions ADD COLUMN pr_watch_code_version TEXT;
+      ALTER TABLE sessions ADD COLUMN supervisor_turn_started_at TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

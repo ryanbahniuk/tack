@@ -42,6 +42,9 @@ export interface SessionRow {
   last_seen_at: string | null;
   /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
   pr_watch_pid: number | null;
+  supervisor_code_version: string | null;
+  pr_watch_code_version: string | null;
+  supervisor_turn_started_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -937,4 +940,15 @@ export function readInsightEvents(db: Database = getDb()): InsightEvent[] {
       UNION ALL SELECT updated_at, NULL, 'done', 1 FROM session_jira_tickets WHERE status_category = 'done'
     ) GROUP BY at, repo, metric
   `).all() as InsightEvent[];
+}
+
+/** Versions are stamped by the process that loaded the code, never its launcher. */
+export function setSupervisorCodeVersion(id: string, version: string): void {
+  getDb().prepare(`UPDATE sessions SET supervisor_code_version = ? WHERE id = ?`).run(version, id);
+}
+export function setPrWatchCodeVersion(id: string, version: string): void {
+  getDb().prepare(`UPDATE sessions SET pr_watch_code_version = ? WHERE id = ?`).run(version, id);
+}
+export function setSupervisorTurnStartedAt(id: string, at: string | null): void {
+  getDb().prepare(`UPDATE sessions SET supervisor_turn_started_at = ? WHERE id = ?`).run(at, id);
 }

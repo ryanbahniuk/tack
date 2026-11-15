@@ -89,7 +89,7 @@ describe("merged_at persistence and migration", () => {
   test("v7 upgrades an existing v6 table without rewriting its data; rerun is safe", () => {
     const db = fixture();
     // Reconstruct the pre-v7 schema, removing later columns while preserving legacy rows.
-    db.exec("ALTER TABLE session_prs DROP COLUMN merged_at; DELETE FROM _migrations WHERE version >= 7; ALTER TABLE agents DROP COLUMN interrupted_at");
+    db.exec("ALTER TABLE session_prs DROP COLUMN merged_at; DELETE FROM _migrations WHERE version >= 7; ALTER TABLE agents DROP COLUMN interrupted_at; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at");
     migrate(db);
     expect(db.query("SELECT merged_at FROM session_prs WHERE id = 'p'").get()).toEqual({ merged_at: null });
     expect(db.query("SELECT COUNT(*) AS n FROM session_prs").get()).toEqual({ n: 2 });

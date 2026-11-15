@@ -33,6 +33,7 @@ import {
   listSharedContext,
   sessionTotalCost,
   setSessionAwaitingInput,
+  setSupervisorTurnStartedAt,
 } from "../src/db";
 import { readArtifact } from "../src/artifacts/store";
 import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
@@ -46,6 +47,8 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { REFRESH_MESSAGE, isSessionStale, refreshBlockedReason, refreshSession } from "../src/session/refresh";
+import { tmuxAvailable } from "../src/session/tmux";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
 import {
@@ -991,6 +994,46 @@ const sessionCreate = defineCommand({
   },
 });
 
+const sessionRefresh = defineCommand({
+  meta: { name: "refresh", description: "Refresh stale Tack processes; --all parks supervisors detached in tmux (without tmux, leaves them stopped for resume)" },
+  args: {
+    session: { type: "positional", required: false, description: "Session id (or use --all)" },
+    all: { type: "boolean", description: "Refresh all stale active sessions" },
+    force: { type: "boolean", description: "Allow refresh during a turn or pending plan approval" },
+  },
+  async run({ args }) {
+    if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
+    const config = await loadConfig();
+    const sessions = args.all ? listSessions().filter(s => s.status === "active" && isSessionStale(s).stale) : [getSession(String(args.session))];
+    for (const session of sessions) {
+      if (!session) throw new Error(`Unknown session ${args.session}`);
+      try {
+        const result = await refreshSession(session.id, config, { force: args.force });
+        if (result.blocked) {
+          console.error(`${session.id}: refresh blocked: ${result.blocked}`);
+          if (!args.all) process.exitCode = 1;
+          continue;
+        }
+        console.log(`${session.id}: ${result.refreshed ? "refreshed" : "already current"}`);
+        // tmux supports detached creation. Without it bulk refresh stops here and
+        // the next resume launches fresh; never open multiple foreground TUIs.
+        if (result.refreshed && (!args.all || (result.supervisor && tmuxAvailable()))) {
+          if (!result.supervisor && !args.all) {
+            const attached = await attachSupervisor(session.id, config);
+            if (attached.alive) { reportInteractiveOutcome(session.id, attached.detached); continue; }
+          }
+          const { detached } = await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: Boolean(args.all) });
+          if (!args.all) reportInteractiveOutcome(session.id, detached);
+        }
+      } catch (err) {
+        if (!args.all) throw err;
+        console.error(`${session.id}: ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
+    }
+  },
+});
+
 const sessionResume = defineCommand({
   meta: {
     name: "resume",
@@ -1011,6 +1054,21 @@ const sessionResume = defineCommand({
 
     const config = await loadConfig();
 
+    let refreshedSupervisor = false;
+    const before = getSession(id)!;
+    const stale = isSessionStale(before);
+    if (stale.stale) {
+      const blocked = refreshBlockedReason(before);
+      if (stale.supervisor && blocked) {
+        console.log(pc.dim(`Running old Tack code (${blocked}); run tack session refresh ${id} once idle.`));
+        if (stale.watcher) await refreshSession(id, config, { watcherOnly: true });
+      } else {
+        console.log(pc.dim(`Refreshing ${id} onto new Tack code…`));
+        const result = await refreshSession(id, config, { watcherOnly: !stale.supervisor });
+        refreshedSupervisor = result.refreshed && result.supervisor;
+      }
+    }
+
     // Prefer rejoining a live, parked session — that lands you back exactly where
     // you left it (e.g. a pending plan approval), which a transcript resume can't
     // reconstruct. Falls through when there's nothing live to rejoin.
@@ -1024,7 +1082,7 @@ const sessionResume = defineCommand({
       console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
       return process.exit(1);
     }
-    const prompt = message ?? "";
+    const prompt = refreshedSupervisor ? [REFRESH_MESSAGE, message].filter(Boolean).join("\n\n") : message ?? "";
     console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
     const { detached } = await superviseInteractive({ session: existing, prompt, resume: true, config });
     reportInteractiveOutcome(id, detached);
@@ -1292,9 +1350,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, retitle, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, show, context, retitle, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1422,6 +1480,7 @@ if (hidden === "__mcp") {
   try {
     const sessionId = process.argv[3];
     const input = JSON.parse(await Bun.stdin.text());
+    if (sessionId && typeof input?.prompt === "string") setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
     if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
       approveSessionPlan(sessionId);
       process.stdout.write(JSON.stringify({
@@ -1434,6 +1493,9 @@ if (hidden === "__mcp") {
   } catch {
     // Approval is best-effort; never block the human's prompt.
   }
+  process.exit(0);
+} else if (hidden === "__turn-end") {
+  try { if (process.argv[3]) setSupervisorTurnStartedAt(process.argv[3]!, null); } catch { /* best-effort hook */ }
   process.exit(0);
 } else if (hidden === "__guard-write") {
   let raw = "";

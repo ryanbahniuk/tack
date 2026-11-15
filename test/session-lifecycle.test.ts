@@ -81,12 +81,16 @@ describe("archive restoration", () => {
 test("v8 upgrades an existing database, preserves agents, and is idempotent", () => {
   const db = new Database(":memory:");
   migrate(db);
-  db.exec("ALTER TABLE agents DROP COLUMN interrupted_at; DELETE FROM _migrations WHERE version = 8");
+  db.exec(`ALTER TABLE agents DROP COLUMN interrupted_at;
+    ALTER TABLE sessions DROP COLUMN supervisor_code_version;
+    ALTER TABLE sessions DROP COLUMN pr_watch_code_version;
+    ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at;
+    DELETE FROM _migrations WHERE version >= 8`);
   db.exec("INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then')");
   db.exec("INSERT INTO agents (id, session_id, project_name, status, created_at, updated_at) VALUES ('a', 's', 'test', 'stopped', 'then', 'then')");
   migrate(db);
   expect(db.query("SELECT id, interrupted_at FROM agents").all()).toEqual([{ id: "a", interrupted_at: null }]);
-  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 8 });
+  expect(db.query("SELECT MAX(version) AS v FROM _migrations WHERE version <= 8").get()).toEqual({ v: 8 });
   migrate(db);
   db.close();
 });
