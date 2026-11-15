@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { agentDisplayStatus, sessionNeedsInput } from "../src/cli/liveness";
+import { agentDisplayStatus, sessionNeedsInput, sessionWorking } from "../src/cli/liveness";
 import type { AgentRow, SessionRow } from "../src/db";
 
 const before = "2026-11-14T10:00:00.000Z";
@@ -14,6 +14,28 @@ const session = {
 function agent(status: AgentRow["status"], finished_at: string | null = null, pid: number | null = null): AgentRow {
   return { status, finished_at, pid } as unknown as AgentRow;
 }
+
+describe("sessionWorking", () => {
+  const working = { ...session, pid: process.pid, supervisor_turn_started_at: after };
+
+  test("a live supervisor with a turn in progress is working", () => {
+    expect(sessionWorking(working)).toBe(true);
+  });
+
+  test("an idle supervisor is not working", () => {
+    expect(sessionWorking({ ...working, supervisor_turn_started_at: null })).toBe(false);
+  });
+
+  test("a pending plan prompt takes precedence over the turn flag", () => {
+    expect(sessionWorking({ ...working, awaiting_input_at: after })).toBe(false);
+  });
+
+  test("a missing or dead supervisor cannot leave a stale working signal", () => {
+    for (const pid of [null, 2147483646]) {
+      expect(sessionWorking({ ...working, pid })).toBe(false);
+    }
+  });
+});
 
 describe("sessionNeedsInput", () => {
   test("a plan awaiting approval needs input even with a live agent", () => {

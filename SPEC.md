@@ -557,7 +557,10 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 ## 11. Dashboard, PRs, lifecycle
 
 - **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
-  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m O p J c x a d z q`.
+  liveness and a change-driven refresh loop. Live supervisors mid-turn show a cyan
+  spinner and `working <elapsed>` badge, with a working count beside live in the
+  header. Pending plan prompts show needs-input instead. The spinner ticks only
+  while a session is working. Session keys: `j/k enter/o v m O p J c x a d z q`.
   At ≥140 columns it defaults to a 55% session list / 45% **Insights** split.
   `s` cycles split → list-only → full-screen Insights; narrow terminals start with
   the list and retain access to full-screen Insights. `[` / `]` select
@@ -631,8 +634,9 @@ source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
 uncommitted edits, or executable size/mtime for compiled Tack. Missing stamps on
 live legacy processes count as stale; `unknown` versions never do. Watchers stamp
 their own version at startup. Claude's prompt-submit hook stamps the best-effort
-turn marker and its Stop hook clears it; adapters without these hooks leave it
-null. A live headless runner is always treated as busy.
+turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
+notification covers Esc interruptions, which do not fire Stop. Adapters without
+these hooks leave it null. A live headless runner is always treated as busy.
 
 ### PR watch
 

@@ -246,7 +246,7 @@ describe("ClaudeRuntime.interactiveCommand writable page directory", () => {
   });
 });
 
-test("turn callbacks preserve permission hooks and wire prompt-submit plus Stop", () => {
+test("turn callbacks preserve permission hooks and wire prompt-submit, Stop and idle notifications", () => {
   const settings = settingsOf({
     onUserPrompt: { command: "/path with spaces/tack", args: ["__approve-prompt", "ses_test"] },
     onTurnEnd: { command: "/path with spaces/tack", args: ["__turn-end", "ses_test"] },
@@ -254,5 +254,9 @@ test("turn callbacks preserve permission hooks and wire prompt-submit plus Stop"
   expect(settings.hooks.PreToolUse.length).toBeGreaterThan(0);
   expect(settings.hooks.UserPromptSubmit[0].hooks[0].command).toContain("__approve-prompt");
   expect(settings.hooks.Stop[0].hooks[0].command).toContain("__turn-end");
+  expect(settings.hooks.Notification).toEqual([
+    { matcher: "idle_prompt", hooks: [{ type: "command", command: settings.hooks.Stop[0].hooks[0].command }] },
+  ]);
   expect(settingsOf().hooks.Stop).toBeUndefined();
+  expect(settingsOf().hooks.Notification).toBeUndefined();
 });

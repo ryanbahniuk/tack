@@ -6,6 +6,15 @@ export function sessionLive(s: SessionRow): boolean {
   return isAlive(s.pid);
 }
 
+/**
+ * UserPromptSubmit sets the turn flag; Stop / idle_prompt clear it. Liveness
+ * guards against a crashed supervisor leaving it set, and a pending plan prompt
+ * needs input rather than counting as working.
+ */
+export function sessionWorking(s: SessionRow): boolean {
+  return sessionLive(s) && !!s.supervisor_turn_started_at && !s.awaiting_input_at;
+}
+
 /** An agent is live while it's marked running and its runner process is alive. */
 export function agentLive(a: AgentRow): boolean {
   return a.status === "running" && isAlive(a.pid);

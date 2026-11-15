@@ -202,7 +202,9 @@ tack session delete <session>      # kill pids, purge worktrees + artifacts, cas
 work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
 full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
 Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
-The header shows the current layout and range. Existing session keys still work
+The header shows the current layout, range, and live/working session counts.
+Working supervisors show a cyan spinner and elapsed turn time in their session row;
+a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
 in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `x`, `a`, `d`, `z`, `q`.
 Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
 immediate; unarchiving asks for confirmation and resumes only the agents archive
