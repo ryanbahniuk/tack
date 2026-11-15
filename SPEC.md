@@ -557,7 +557,7 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 ## 11. Dashboard, PRs, lifecycle
 
 - **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
-  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m n O p J c x a d z q`.
+  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m O p J c x a d z q`.
   At ≥140 columns it defaults to a 55% session list / 45% **Insights** split.
   `s` cycles split → list-only → full-screen Insights; narrow terminals start with
   the list and retain access to full-screen Insights. `[` / `]` select
