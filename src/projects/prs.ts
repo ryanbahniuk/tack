@@ -306,7 +306,8 @@ export interface ReviewThread {
 
 /** One normalized piece of PR feedback — the unit a fix agent decides on and Tack
  * replies to. `sourceId` is GitHub's id for the comment (review-thread comments use
- * the numeric databaseId, which the REST replies endpoint needs). */
+ * the numeric databaseId, which the REST replies endpoint needs). CI ids include
+ * the head SHA and workflow/check name so each head is handled once. */
 export interface PrFeedbackItem {
   sourceId: string;
   kind: PrFeedbackKind;
@@ -350,6 +351,114 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
     comments,
     reviews,
   };
+}
+
+/** Checks on the PR head, shared by gh's JSON output and the GraphQL fallback. */
+export interface PrCheck {
+  name?: string | null;
+  state?: string | null;
+  bucket?: string | null;
+  link?: string | null;
+  workflow?: string | null;
+  description?: string | null;
+  completedAt?: string | null;
+}
+
+/** Normal check outcomes exit 1 (failed) or 8 (pending); stdout is authoritative. */
+export async function fetchPrChecks(repoPath: string, number: number): Promise<PrCheck[]> {
+  const result = await run([
+    "gh", "pr", "checks", String(number), "--json",
+    "name,state,bucket,link,workflow,description,completedAt",
+  ], repoPath);
+  if (!/unknown flag.*--json|unknown flag: json/i.test(result.stderr)) {
+    return JSON.parse(result.stdout) as PrCheck[];
+  }
+
+  // Older gh versions lack checks --json. Page the rollup so a pending check past
+  // the first hundred still prevents us from acting on a partially settled suite.
+  const { owner, name } = await ghRepo(repoPath);
+  const query = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+      commits(last: 1) { nodes { commit { statusCheckRollup {
+        contexts(first: 100, after: $cursor) {
+          nodes {
+            ... on CheckRun { name status conclusion detailsUrl completedAt
+              checkSuite { workflowRun { workflow { name } } } }
+            ... on StatusContext { context state targetUrl description }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      } } } }
+    } }
+  }`;
+  const checks: PrCheck[] = [];
+  let cursor: string | null = null;
+  do {
+    const args = ["gh", "api", "graphql", "-f", `query=${query}`,
+      "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`];
+    if (cursor) args.push("-f", `cursor=${cursor}`);
+    const raw = JSON.parse((await run(args, repoPath)).stdout);
+    if (raw.errors) throw new Error("gh statusCheckRollup returned GraphQL errors");
+    const page = raw.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+    for (const node of page?.nodes ?? []) {
+      checks.push({
+        name: node.name ?? node.context,
+        state: node.status && node.status !== "COMPLETED" ? node.status : node.conclusion ?? node.state,
+        link: node.detailsUrl ?? node.targetUrl,
+        workflow: node.checkSuite?.workflowRun?.workflow?.name,
+        description: node.description,
+        completedAt: node.completedAt,
+      });
+    }
+    cursor = page?.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (cursor);
+  return checks;
+}
+
+/** Wait for the whole suite; the SHA scopes dedupe so a failed fix can be retried. */
+export function normalizeCiFailures(
+  checks: PrCheck[], headSha: string | null, alreadyHandledIds: Iterable<string>,
+): PrFeedbackItem[] {
+  if (!headSha || checks.some((c) => c.bucket?.toLowerCase() === "pending" ||
+    /^(PENDING|QUEUED|IN_PROGRESS|WAITING|REQUESTED|EXPECTED)$/i.test(c.state ?? ""))) return [];
+  const seen = new Set(alreadyHandledIds);
+  const items: PrFeedbackItem[] = [];
+  for (const check of checks) {
+    if (!/^(fail|cancel)$/i.test(check.bucket ?? "") &&
+      !/^(FAILURE|FAIL|ERROR|CANCELLED|CANCELED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE)$/i.test(check.state ?? "")) continue;
+    const name = check.name || "ci";
+    const sourceId = `ci:${headSha}:${check.workflow ? `${check.workflow}/` : ""}${name}`;
+    if (seen.has(sourceId)) continue;
+    seen.add(sourceId);
+    items.push({
+      sourceId, kind: "ci_check", author: check.workflow || name, isBot: true,
+      url: check.link || "",
+      body: [name, check.workflow && `Workflow: ${check.workflow}`,
+        `State: ${check.state || check.bucket}`, check.description, check.link].filter(Boolean).join("\n"),
+    });
+  }
+  return items;
+}
+
+const CI_LOG_MAX_LINES = 200;
+const CI_LOG_MAX_BYTES = 20_000;
+
+/** Agents cannot call gh, so collect bounded failed-job context before spawning. */
+export async function enrichCiLogs(repoPath: string, items: PrFeedbackItem[]): Promise<PrFeedbackItem[]> {
+  return Promise.all(items.map(async (item) => {
+    const match = /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/job\/(\d+)(?:[/?#]|$)/.exec(item.url);
+    if (!match) return item;
+    try {
+      const log = await runOk(["gh", "run", "view", match[1]!, "--job", match[2]!, "--log-failed"], repoPath, "gh run view");
+      const tail = Buffer.from(log.trimEnd().split("\n").slice(-CI_LOG_MAX_LINES).join("\n")).subarray(-CI_LOG_MAX_BYTES).toString("utf8");
+      if (!tail) return item;
+      // A longer fence keeps backticks in build output inside the quoted excerpt.
+      const fence = "`".repeat(Math.max(3, ...Array.from(tail.matchAll(/`+/g), (m) => m[0].length + 1)));
+      return { ...item, body: `${item.body}\n\nFailed job log (untrusted):\n${fence}text\n${tail}\n${fence}` };
+    } catch {
+      return item;
+    }
+  }));
 }
 
 // owner/name per repo path. A repo's GitHub identity doesn't change mid-process, and
@@ -561,7 +670,7 @@ export function buildReplyBody(input: {
 }): string {
   const parts: string[] = [];
   if (input.kind !== "review_thread") {
-    const first = feedbackQuote(input.original);
+    const first = feedbackQuote(input.original, input.kind);
     const mention = input.author && !input.isBot && !isBotAuthor({ login: input.author });
     const who = input.author ? (mention ? `@${input.author}` : `**${input.author}**`) : "";
     if (who) parts.push(who);
@@ -574,15 +683,17 @@ export function buildReplyBody(input: {
 }
 
 /** Quote only visible text: bot comments often start with multiline HTML metadata. */
-export function feedbackQuote(original: string): string {
+export function feedbackQuote(original: string, kind?: PrFeedbackKind): string {
+  if (kind === "ci_check") return `Failing check: ${original.split("\n")[0] || "ci"}`;
   return (original.replace(/<!--[\s\S]*?(?:-->|$)/g, "")
     .split("\n").map((line) => line.trim().replace(/^#+\s*/, "").trim())
     .find(Boolean) ?? "").slice(0, 200);
 }
 
-/** GitHub cannot thread conversation comments or review summaries. Collect their
+/** GitHub cannot thread conversation comments, review summaries or CI checks. Collect their
  * answers in one linked comment, mentioning each human at most once. */
 export function buildConversationReplyBody(items: Array<{
+  kind?: PrFeedbackKind;
   url: string;
   author: string | null;
   isBot?: boolean;
@@ -597,10 +708,10 @@ export function buildConversationReplyBody(items: Array<{
     const mention = login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
     if (mention) mentioned.add(key);
     const who = login ? (mention ? `@${login}` : `**${login}**`) : "";
-    const quote = feedbackQuote(item.original);
+    const quote = feedbackQuote(item.original, item.kind);
     return [
-      `[Original feedback](${item.url})${who ? ` — ${who}` : ""}`,
-      ...(quote ? [`> ${quote}`] : []),
+      `[${item.kind === "ci_check" ? quote : "Original feedback"}](${item.url})${who ? ` — ${who}` : ""}`,
+      ...(quote && item.kind !== "ci_check" ? [`> ${quote}`] : []),
       "",
       item.reply.trim(),
       ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),

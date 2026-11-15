@@ -198,9 +198,16 @@ tack session resume <session>      # rejoin the supervisor
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
+PR-watch handles review feedback, merge conflicts and failing CI checks on the PR
+head. CI fixes wait for the suite to settle and include bounded failed-job logs for
+GitHub Actions. Agents reproduce failures locally and fix PR code/tests; unrelated
+flaky or infrastructure failures are reported without changes. Set `prWatch.fixCi: false`
+to disable CI fixes (enabled by default).
+
 PR-watch answers inline review feedback inside its review thread. Replies to
 conversation comments and review summaries are combined into one top-level comment
-per fix run, linking and quoting each original and citing pushed fixes. Human authors
+per fix run, linking and quoting each original and citing pushed fixes.
+CI replies join that batch as links to failing checks without quoting logs. Human authors
 are mentioned at most once; bots are never mentioned. Set `prWatch.reply: false` to
 disable replies.
 
