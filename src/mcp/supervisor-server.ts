@@ -232,7 +232,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "until its prerequisites finish (use this to order work across projects). You can fan out every agent " +
         "at once with dependencies declared — they order themselves.\n\n" +
         "To change an already-open PR (a conflict, a failed fix run, a follow-up the human asked for), use " +
-        "fix_pr instead — an agent from spawn_agent can't be pushed onto an existing PR.",
+        "fix_pr to update the same PR branch. Do not use spawn_agent + open_pr for this: it creates a second PR.",
       inputSchema: {
         project: z.string().describe("Project name from list_projects"),
         prompt: z.string().describe("The task for the agent, self-contained"),
@@ -391,6 +391,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         else {
           try {
             const { agent } = spawnPrFixAgent(session, prRow, proj, config, {
+              origin: "auto",
               conflict: true,
               baseBranch: baseSync.base,
               title,
@@ -420,15 +421,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "fix_pr",
     {
       description:
-        "Fix an EXISTING pull request in this session on its own branch: spawns a pr_fix agent forked off the " +
-        "PR's current head, and the PR watcher pushes its commits (non-force) onto that PR and replies to any " +
-        "review feedback once it finishes. This is the ONLY way to change an open PR — resolve a merge " +
-        "conflict that persists, redo a watcher fix run that failed (e.g. on an unavailable model; pass " +
-        "`model`), or make follow-up changes the human asked for (put them in `prompt`). Never use " +
-        "spawn_agent + open_pr for that: it creates a separate PR. The agent automatically gets a merge step " +
-        "if GitHub reports a conflict and any review feedback still pending on the PR. Fix runs share the " +
-        "watcher's daily cap (prWatch.maxFixRunsPerDay per PR) and its one-at-a-time rule: this refuses while " +
-        "another fix on the PR is running or awaiting its push. Returns immediately with the agent id.",
+        "Update an existing session PR: use this for any change to an open PR, including follow-ups the " +
+        "human asked for (put them in `prompt`), a conflict that persists, or a failed fix run (pass `model` " +
+        "to choose another model). Spawns a pr_fix agent off the PR's current head; the PR watcher pushes " +
+        "its commits non-force onto the same PR branch and replies to review feedback when it finishes. " +
+        "Do not use spawn_agent + open_pr to change an existing PR: that creates a second PR. The agent " +
+        "automatically gets a merge step if GitHub reports a conflict and any pending review feedback. " +
+        "Runs one fix at a time per PR: refuses while another fix is running or awaiting its push. " +
+        "Supervisor fix_pr runs are not subject to the watcher's daily cap and do not count toward it. " +
+        "Returns immediately with the agent id.",
       inputSchema: {
         pr: z
           .union([z.number().int(), z.string()])
@@ -460,13 +461,6 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           `A fix for ${tag} is already running or awaiting its push/replies. Use check_prs to follow it, and ` +
             "call fix_pr again once it has finished and been post-fixed.",
         );
-      const cap = prFixCapReached(pr.id, config);
-      if (cap.reached)
-        throw new Error(
-          `${tag} has hit the daily cap of ${config.prWatch.maxFixRunsPerDay} fix runs per 24h ` +
-            `(${cap.runs} so far, failed runs included). Report this to the human instead of retrying.`,
-        );
-
       const m = model ? resolveModel(config, model) : modelForRole(config, "agent");
       // Same fail-fast as spawn_agent — the very failure fix_pr is often called to
       // recover from is a fix run that died on a model the login doesn't offer.
@@ -494,6 +488,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       }
 
       const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+        origin: "supervisor",
         conflict,
         baseBranch: status.baseRefName,
         title: status.title,
@@ -535,7 +530,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "review feedback (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
         "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
         "on it. Read-only by default; refresh asks the watcher to poll now asynchronously, so results land " +
-        "on the next check. If a PR needs intervention (a conflict persists, a fix run failed), call fix_pr.",
+        "on the next check. For any change to an open PR (human follow-ups, a persistent conflict, a failed " +
+        "run), call fix_pr to update the same PR branch.",
       inputSchema: { refresh: z.boolean().optional().default(false) },
       annotations: { readOnlyHint: false },
     },

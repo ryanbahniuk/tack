@@ -46,6 +46,8 @@ export function prepareAgent(input: {
   kind?: AgentKind | null;
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
+  /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
+  fixOrigin?: "auto" | "supervisor" | null;
 }): AgentRow {
   const agent = createAgent({
     sessionId: input.session.id,
@@ -56,6 +58,7 @@ export function prepareAgent(input: {
     dependsOn: input.dependsOn ?? null,
     kind: input.kind ?? null,
     sessionPrId: input.sessionPrId ?? null,
+    fixOrigin: input.fixOrigin ?? null,
   });
   const promptRef = writeAgentArtifact(input.session.id, agent.id, "prompt", input.prompt);
   getDb().prepare(`UPDATE agents SET prompt_ref = ? WHERE id = ?`).run(promptRef, agent.id);

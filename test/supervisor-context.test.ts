@@ -38,7 +38,12 @@ describe("supervisor context: PR fixes", () => {
     expect(body).toContain("- `fix_pr` —");
     expect(body).toContain("when a PR stays conflicting");
     expect(body).toContain("asks for changes to an open PR, use `fix_pr`");
-    expect(body).toContain("never spawn a new agent or open a new PR");
+    expect(body).toContain("Never spawn a new agent or open a new PR");
+    expect(body).toContain("whenever the human asks for changes");
+    expect(body).toContain("Runs one fix per PR at a time; supervisor runs are not subject to");
+    expect(body).toContain("the watcher's daily cap and do not count toward it");
+    expect(body).not.toContain("only way");
+    expect(body).not.toContain("shares the watcher's daily cap");
   });
 });
 

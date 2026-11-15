@@ -138,9 +138,8 @@ export type McpServer = z.infer<typeof McpServerSchema>;
  * status and restarts missing watchers. New review feedback (bots included) or a
  * merge conflict spawns a `pr_fix` agent; afterwards Tack pushes its commits
  * (`autoPush`, always non-force) and replies to each comment on GitHub (`reply`).
- * `maxFixRunsPerDay` caps fix runs per PR in any rolling 24h window — failed runs
- * count — so a PR that keeps attracting comments (or keeps failing) can't loop
- * unbounded.
+ * `maxFixRunsPerDay` caps automatic (watcher) fix runs per PR per rolling 24h;
+ * supervisor fix_pr runs are exempt. Failed automatic runs count to prevent loops.
  */
 export const PrWatchSchema = z
   .object({

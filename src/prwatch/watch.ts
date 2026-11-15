@@ -69,8 +69,9 @@ export { buildPrFixPrompt } from "./prompt";
  *
  * The supervisor can also start a fix run itself (`fix_pr`, for a conflict that
  * persists, a failed run, or follow-ups the human asked for). It goes through the
- * same `spawnPrFixAgent` / `prFixBusy` / `prFixCapReached` as a tick, and this loop
- * post-fixes it like any other — so the invariants below hold for both.
+ * same `spawnPrFixAgent` / `prFixBusy` as a tick, and this loop post-fixes it like
+ * any other. Supervisor runs are exempt from the automatic anti-loop cap and do
+ * not count toward it.
  *
  * Invariants:
  *  - At most one fix agent per PR in flight; the next tick waits for it.
@@ -78,8 +79,9 @@ export { buildPrFixPrompt } from "./prompt";
  *    Tack's own replies carry `PR_WATCH_MARKER` so they're never ingested.
  *  - The post-fix step is latched per agent (`agents.post_fixed_at`) and per item
  *    (`pr_feedback.handled_at`), so a crash mid-step resumes without double-posting.
- *  - Fix runs per PR are capped per rolling 24h (`maxFixRunsPerDay`), failures
- *    included, and failed items are never retried automatically — no loops.
+ *  - Automatic fix runs per PR are capped per rolling 24h (`maxFixRunsPerDay`),
+ *    failures included; supervisor runs are exempt and do not count. Failed items
+ *    are never retried automatically — no loops.
  *  - Every `gh`/git call is async and best-effort: a failure is logged and the loop
  *    carries on (next PR, next tick). Nothing throws out of the loop.
  */
@@ -319,6 +321,7 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   }
 
   const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+    origin: "auto",
     conflict,
     baseBranch: status.baseRefName,
     title: status.title,
@@ -366,9 +369,9 @@ export function prFixBusy(sessionPrId: string): boolean {
 }
 
 /**
- * The per-PR daily cap on fix runs (`prWatch.maxFixRunsPerDay` over a rolling 24h,
- * failed runs included), shared by the watcher and `fix_pr` so supervisor-initiated
- * runs draw from the same budget and can't be used to loop past it.
+ * The per-PR daily cap on automatic fix runs (`prWatch.maxFixRunsPerDay` over a
+ * rolling 24h, failed runs and legacy NULL origins included). Supervisor `fix_pr`
+ * runs are exempt and do not count toward this anti-loop budget.
  */
 export function prFixCapReached(sessionPrId: string, config: TackConfig): { reached: boolean; runs: number } {
   const runs = countPrFixRunsSince(sessionPrId, new Date(Date.now() - DAY_MS).toISOString());
@@ -383,9 +386,10 @@ export function prFixCapReached(sessionPrId: string, config: TackConfig): { reac
  * (`kind: "pr_fix"` routes `prepareAgent` to the PR worktree). The watcher's
  * post-fix step later pushes and replies for it regardless of who spawned it.
  *
- * Callers own the guards (`isWatchablePr`, `prFixBusy`, `prFixCapReached`); this
- * only spawns. `baseBranch`/`title` are the freshly polled values, falling back to
- * the row's. Returns the agent and how many feedback items it was given.
+ * Callers own the guards (`isWatchablePr`, `prFixBusy`, and `prFixCapReached` for
+ * automatic runs only); this only spawns. `baseBranch`/`title` are the freshly
+ * polled values, falling back to the row's. Returns the agent and how many feedback
+ * items it was given.
  */
 export function spawnPrFixAgent(
   session: SessionRow,
@@ -393,6 +397,7 @@ export function spawnPrFixAgent(
   project: Project,
   config: TackConfig,
   opts: {
+    origin: "auto" | "supervisor";
     conflict: boolean;
     baseBranch: string | null;
     title: string | null;
@@ -430,6 +435,7 @@ export function spawnPrFixAgent(
     prompt,
     kind: "pr_fix",
     sessionPrId: pr.id,
+    fixOrigin: opts.origin,
   });
   assignPrFeedback(
     rows.map((r) => r.id),
