@@ -9,6 +9,7 @@ import {
   assignPrFeedback,
   countPrFixRunsSince,
   getSession,
+  getSessionPr,
   getAgent,
   getDb,
   insertPrFeedback,
@@ -160,19 +161,25 @@ export type PrWatchTrigger =
   | { kind: "signalled"; pid: number }
   | { kind: "started"; pid: number };
 
-/** Request the normal watcher pass sooner, preserving all watchPass guards. */
-export function triggerPrWatch(
+/** Refresh watchable PR statuses first, then request an early watcher pass only
+ * if any remain open. Poll failures retain stored state; watchPass guards apply. */
+export async function triggerPrWatch(
   sessionId: string,
   config: TackConfig,
   deps = {
     isAlive,
     signal: (pid: number) => { process.kill(pid, "SIGUSR1"); },
     spawn: spawnPrWatcher,
+    poll: (pr: SessionPrRow, project: Project): Promise<unknown> => pollPrStatus(pr.id, project.path, pr.number!),
   },
-): PrWatchTrigger {
+): Promise<PrWatchTrigger> {
   if (!config.prWatch.enabled) return { kind: "disabled" };
   const session = getSession(sessionId);
   if (!session || session.status !== "active") return { kind: "inactive" };
+  await Promise.allSettled(listSessionPrs(sessionId).filter(isWatchablePr).map(async (pr) => {
+    const project = config.projects.find((p) => p.name === pr.project_name);
+    if (pr.number !== null && project) await deps.poll(pr, project);
+  }));
   if (!listSessionPrs(sessionId).some(isWatchablePr)) return { kind: "no-open-prs" };
   if (session.pr_watch_pid && deps.isAlive(session.pr_watch_pid)) {
     try {
@@ -417,9 +424,9 @@ export async function prContinuationDecision(pr: SessionPrRow, model: Model, con
  * lineage or forking fresh off the PR head. The watcher's
  * post-fix step later pushes and replies for it regardless of who spawned it.
  *
- * Callers own the watchability and automatic-cap guards; this also claims the
- * busy slot atomically before any async work. `baseBranch`/`title` are the freshly
- * polled values, falling back to the row's. Returns the agent and how many feedback
+ * Callers poll first and own the automatic-cap guard; this also refuses stored
+ * merged/closed PRs and claims the busy slot atomically before any async work.
+ * `baseBranch`/`title` are the freshly polled values, falling back to the row's. Returns the agent and how many feedback
  * items it was given.
  */
 export async function spawnPrFixAgent(
@@ -443,6 +450,10 @@ export async function spawnPrFixAgent(
   // Claim the PR before fetching: another process must not fast-forward this
   // worktree while its new runner is already modifying it.
   const { agent, rows } = getDb().transaction(() => {
+    const current = getSessionPr(pr.id);
+    if (current?.state === "merged" || current?.state === "closed") {
+      throw new Error(`PR #${current.number} is ${current.state}; nothing to fix.`);
+    }
     if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
     for (const item of opts.fresh ?? []) {
       insertPrFeedback({

@@ -190,7 +190,7 @@ tack session list                  # list sessions and cost
 tack session show <session>        # agents, PRs, cost, and pending amendments
 tack session context <session>     # the shared contract + version history (--all for bodies)
 tack session approve <session>     # approve a stuck plan (or type /approve in the Claude session)
-tack session poll-prs <session>    # ask the PR watcher to poll now
+tack session poll-prs <session>    # refresh open PR statuses; wake/start watcher if any remain open
 tack session stop <session>        # stop a session and its agents
 tack session archive <session>     # stop + hide, remembering interrupted agents
 tack session unarchive <session>   # restore + resume interrupted agents

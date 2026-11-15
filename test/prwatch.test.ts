@@ -32,6 +32,8 @@ import {
   markAgentPostFixed,
   setAgentStatus,
   setSessionPrWatchPid,
+  setSessionPrStatus,
+  type SessionPrRow,
   setSessionStatus,
   upsertSessionPr,
   type AgentStatus,
@@ -584,15 +586,21 @@ describe("createWakeableSleep", () => {
 });
 
 describe("triggerPrWatch", () => {
-  const config = { prWatch: { enabled: true } } as TackConfig;
+  const project = { name: "app", path: "/tmp", description: "Test" };
+  const config = { prWatch: { enabled: true }, projects: [project] } as TackConfig;
   function setup(state?: string, pid: number | null = null) {
     const session = createSession({ title: "trigger PR watch" });
     setSessionPrWatchPid(session.id, pid);
     if (state !== undefined) {
-      upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, state, number: 7 });
+      upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, state, number: 7, projectName: "app" });
     }
     const calls: string[] = [];
+    const polls: string[] = [];
     const deps = {
+      poll: async (pr: SessionPrRow, candidate: Project): Promise<unknown> => {
+        expect(candidate).toEqual(project);
+        polls.push(pr.id);
+      },
       isAlive: (candidate: number | null | undefined) => candidate === 123,
       signal: (candidate: number) => { calls.push(`signal ${candidate}`); },
       spawn: (id: string, _config: TackConfig): number | null => {
@@ -601,55 +609,109 @@ describe("triggerPrWatch", () => {
         return 456;
       },
     };
-    return { session, calls, deps };
+    return { session, calls, deps, polls };
   }
 
-  test("disabled takes precedence over a missing session", () => {
-    expect(triggerPrWatch("missing", { prWatch: { enabled: false } } as TackConfig)).toEqual({ kind: "disabled" });
-  });
-
-  test("inactive for missing or non-active sessions", () => {
-    expect(triggerPrWatch("missing", config)).toEqual({ kind: "inactive" });
-    const { session, calls, deps } = setup("open", 123);
-    setSessionStatus(session.id, "archived");
-    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "inactive" });
+  test("disabled takes precedence over a missing session", async () => {
+    const { session, deps, polls, calls } = setup("open", 123);
+    expect(await triggerPrWatch("missing", { prWatch: { enabled: false } } as TackConfig, deps)).toEqual({ kind: "disabled" });
+    expect(await triggerPrWatch(session.id, { ...config, prWatch: { ...config.prWatch, enabled: false } }, deps)).toEqual({ kind: "disabled" });
+    expect(polls).toEqual([]);
     expect(calls).toEqual([]);
   });
 
-  test("no-open-prs for no PRs or only closed/merged PRs, even with a live watcher", () => {
+  test("inactive for missing or non-active sessions", async () => {
+    expect(await triggerPrWatch("missing", config)).toEqual({ kind: "inactive" });
+    const { session, calls, deps, polls } = setup("open", 123);
+    setSessionStatus(session.id, "archived");
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "inactive" });
+    expect(polls).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test("no-open-prs for no PRs or only closed/merged PRs, even with a live watcher", async () => {
     for (const state of [undefined, "closed", "merged"]) {
-      const { session, calls, deps } = setup(state, 123);
-      expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "no-open-prs" });
+      const { session, calls, deps, polls } = setup(state, 123);
+      expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "no-open-prs" });
+      expect(polls).toEqual([]);
       expect(calls).toEqual([]);
     }
   });
 
-  test("starts a missing or dead watcher for open, draft, or unpolled PRs", () => {
+  test("starts a missing or dead watcher for open, draft, or unpolled PRs", async () => {
     for (const [state, pid] of [["open", null], ["draft", 999], ["unknown", null]] as const) {
-      const { session, calls, deps } = setup(state, pid);
-      expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
+      const { session, calls, deps, polls } = setup(state, pid);
+      expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
       expect(calls).toEqual(["spawn"]);
+      expect(polls).toEqual([listSessionPrs(session.id)[0]!.id]);
     }
   });
 
-  test("signals a live watcher without spawning", () => {
+  test("signals a live watcher without spawning", async () => {
     const { session, calls, deps } = setup("open", 123);
-    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
     expect(calls).toEqual(["signal 123"]);
   });
 
-  test("falls back to spawning when the watcher dies before signalling", () => {
+  test("falls back to spawning when the watcher dies before signalling", async () => {
     const { session, calls, deps } = setup("open", 123);
     deps.signal = () => { calls.push("signal failed"); throw new Error("ESRCH"); };
-    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
     expect(calls).toEqual(["signal failed", "spawn"]);
   });
 
-  test("signals a watcher that won a concurrent spawn", () => {
+  test("signals a watcher that won a concurrent spawn", async () => {
     const { session, calls, deps } = setup("open");
     deps.spawn = () => { setSessionPrWatchPid(session.id, 123); return null; };
-    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
     expect(calls).toEqual(["signal 123"]);
+  });
+
+  for (const state of ["merged", "closed"]) {
+    for (const pid of [null, 123]) {
+      test(`refreshes stored open to ${state} without waking watcher ${pid}`, async () => {
+        const { session, calls, deps } = setup("open", pid);
+        deps.poll = async (pr) => { setSessionPrStatus(pr.id, { state }); };
+        expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "no-open-prs" });
+        expect(calls).toEqual([]);
+        expect(listSessionPrs(session.id)[0]!.state).toBe(state);
+      });
+    }
+  }
+
+  for (const pid of [null, 123]) {
+    test(`poll failures preserve watchable state with watcher ${pid}`, async () => {
+      const { session, calls, deps } = setup("open", pid);
+      deps.poll = async () => { throw new Error("GitHub unavailable"); };
+      expect(await triggerPrWatch(session.id, config, deps)).toEqual(
+        pid ? { kind: "signalled", pid } : { kind: "started", pid: 456 },
+      );
+      expect(calls).toEqual([pid ? "signal 123" : "spawn"]);
+      expect(listSessionPrs(session.id)[0]!.state).toBe("open");
+    });
+
+    test(`mixed merged/open results still wake watcher ${pid}`, async () => {
+      const { session, calls, deps, polls } = setup("open", pid);
+      upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}/8`, number: 8, state: "open", projectName: "app" });
+      deps.poll = async (pr) => {
+        polls.push(pr.id);
+        if (pr.number === 7) setSessionPrStatus(pr.id, { state: "merged" });
+      };
+      expect(await triggerPrWatch(session.id, config, deps)).toEqual(
+        pid ? { kind: "signalled", pid } : { kind: "started", pid: 456 },
+      );
+      expect(calls).toEqual([pid ? "signal 123" : "spawn"]);
+      expect(polls).toHaveLength(2);
+      expect(listSessionPrs(session.id).map(pr => pr.state).sort()).toEqual(["merged", "open"]);
+    });
+  }
+
+  test("skips polling PRs without a number or configured project", async () => {
+    const { session, deps, polls } = setup();
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/no-number`, state: "open", projectName: "app" });
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/no-project`, state: "open", number: 8, projectName: "missing" });
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
+    expect(polls).toEqual([]);
   });
 });
 

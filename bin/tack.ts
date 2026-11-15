@@ -1386,11 +1386,11 @@ const sessionPollPrs = defineCommand({
   async run({ args }) {
     const id = String(args.session);
     requireSession(id);
-    const result = triggerPrWatch(id, await loadConfig());
+    const result = await triggerPrWatch(id, await loadConfig());
     switch (result.kind) {
       case "disabled": console.log(pc.yellow("PR watch is disabled")); break;
       case "inactive": console.log(pc.yellow(`${id} is not active`)); break;
-      case "no-open-prs": console.log(pc.dim(`${id} has no open PRs`)); break;
+      case "no-open-prs": console.log(pc.dim(`${id} has no open PRs (statuses refreshed)`)); break;
       case "signalled":
       case "started":
         console.log(pc.green(`polling PRs for ${id} · ${result.kind} watcher pid ${result.pid}`));
