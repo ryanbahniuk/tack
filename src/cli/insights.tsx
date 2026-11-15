@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { InsightStats, Totals } from "./stats";
-import { heatmap, horizontalBars, pairedBars, sparkline } from "./charts";
+import { heatmap, horizontalBars, pairedBars, sparkline, timeAxis } from "./charts";
 
 function Panel({ title, lines }: { title: string; lines: React.ReactNode[] }) {
   return <Box borderStyle="round" flexDirection="column" paddingX={1} flexShrink={0}>
@@ -11,7 +11,12 @@ function Panel({ title, lines }: { title: string; lines: React.ReactNode[] }) {
 }
 const money = (n: number) => `$${n.toFixed(2)}`;
 function delta(value: number, cost = false): string {
-  return `${value < 0 ? "▼" : value > 0 ? "▲" : "="}${cost ? money(Math.abs(value)) : Math.abs(value)}`;
+  return value === 0 ? "no change" : `${value < 0 ? "−" : "+"}${cost ? money(Math.abs(value)) : Math.abs(value)} vs prev`;
+}
+/** Match the label and optional summary gutters when choosing time buckets. */
+export function insightChartWidth(column: number): number {
+  const inner = Math.max(1, column - 4);
+  return Math.max(1, inner - (inner < 28 ? 0 : 15) - (inner >= 65 ? 30 : 0));
 }
 
 type PanelSpec = { title: string; lines: React.ReactNode[] };
@@ -21,9 +26,29 @@ type PanelSpec = { title: string; lines: React.ReactNode[] };
 export function Insights({ stats, width, rows = 40, height = rows, full = false }: { stats: InsightStats; width: number; rows?: number; height?: number; full?: boolean }) {
   const grid = full && width >= 70;
   const column = grid ? Math.floor(width / 2) : width;
-  const chartWidth = Math.max(1, column - 6);
+  const inner = Math.max(1, column - 4), chartWidth = insightChartWidth(column);
+  const stacked = inner < 28, gutter = stacked ? "" : " ".repeat(15);
   const series = (metric: keyof Totals) => stats.series.map(b => b[metric]);
-  const [opened, merged] = pairedBars(series("prs"), series("merged"), Math.max(1, chartWidth - 7));
+  const timeChart = (title: string, metrics: readonly [string, keyof Totals, string][]) => {
+    const values = metrics.map(([, key]) => series(key));
+    const charts = values.length === 2 ? pairedBars(values[0]!, values[1]!, chartWidth) : [sparkline(values[0]!, chartWidth)];
+    // Stretching uses whole columns per bucket; align the axis with the drawn span.
+    const span = charts[0]?.length || chartWidth;
+    return <Panel title={`${title} · per ${stats.bucket}`}>
+      {title === "Cost" && <Text dimColor>Supervisor + agents</Text>}
+      {stacked && <Text dimColor>Per {stats.bucket}</Text>}
+      {metrics.map(([label, key, color], i) => {
+        const format = key === "cost" ? money : String;
+        const summary = `${format(stats.totals[key])} total · peak ${format(Math.max(0, ...values[i]!))}/${stats.bucket}`;
+        return <React.Fragment key={key}>
+          {stacked && <Text>{label}</Text>}
+          <Text color={color}>{!stacked && label.padEnd(15)}{charts[i]?.padEnd(inner >= 65 ? chartWidth : charts[i]!.length)}{inner >= 65 && 16 + chartWidth + summary.length <= inner && ` ${summary}`}</Text>
+        </React.Fragment>;
+      })}
+      {title === "Pull requests" && !stats.totals.prs && !stats.totals.merged && <Text dimColor>no PRs in range</Text>}
+      <Text dimColor>{gutter}{timeAxis(stats.start, stats.end, span, stats.bucket)}</Text>
+    </Panel>;
+  };
   const top = stats.repos.slice(0, rows < 38 ? 3 : full ? 8 : 5);
   const kpis = ([ ["Sessions", "sessions"], ["Agents", "agents"], ["PRs", "prs"], ["Merged", "merged"], ["Tickets", "tickets"], ["Done≈", "done"], ["Cost", "cost"] ] as const);
   // Pack explicit rows rather than relying on Yoga's flex-wrap, so large totals

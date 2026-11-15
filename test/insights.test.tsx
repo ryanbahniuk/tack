@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { Box, Text, render } from "ink";
 import { migrate, getDb, readInsightEvents, createSession, upsertSessionPr, listSessionPrs, setSessionPrStatus } from "../src/db";
 import { aggregateInsights, localDay } from "../src/cli/stats";
-import { compress, heatmap, horizontalBars, pairedBars, sparkline } from "../src/cli/charts";
+import { compress, heatmap, horizontalBars, pairedBars, sparkline, timeAxis } from "../src/cli/charts";
 import { Dashboard } from "../src/cli/dashboard";
 import { Insights } from "../src/cli/insights";
 
@@ -121,11 +121,11 @@ describe("Unicode charts", () => {
     expect(horizontalBars([{ label: "alpha", value: 4 }, { label: "beta", value: 2 }], 15)).toBe("alpha ███████ 4\nbeta  ████ 2");
     expect(horizontalBars([{ label: "a", value: 0 }], 6)).toBe("a   0");
     expect(horizontalBars([], 5)).toBe("no re");
-    expect(pairedBars([0, 1, 4], [4, 2, 0], 3)).toEqual(["·░█", "▇▃·"]);
+    expect(pairedBars([0, 1, 4], [4, 2, 0], 3)).toEqual(["·▂█", "█▄·"]);
     expect(pairedBars([0], [0], 1)).toEqual(["·", "·"]);
     const daily = Array.from({ length: 14 }, (_, i) => ({ day: `2026-11-${String(i + 2).padStart(2, "0")}`, count: i % 5 }));
-    expect(heatmap(daily, 2)).toBe("·▒\n░▓\n▒█\n▓·\n█░\n·▒\n░▓");
-    expect(heatmap(daily, 1)).toBe("▒\n▓\n█\n·\n░\n▒\n▓");
+    expect(heatmap(daily, 30)).toBe("    Nov 2\nMon ··▒▒\nTue ░░▓▓\nWed ▒▒██\nThu ▓▓··\nFri ██░░\nSat ··▒▒\nSun ░░▓▓\nless · ░ ▒ ▓ █ more\nmax 4/day");
+    expect(heatmap(daily, 60)).toContain("max 4/day · blank = out of range");
     expect(heatmap([], 10)).toBe("");
     for (const width of [0, 1, 3, 10]) {
       expect(horizontalBars([{ label: "long name", value: 20 }], width).length).toBeLessThanOrEqual(width);
@@ -133,26 +133,78 @@ describe("Unicode charts", () => {
   });
 });
 
+describe("chart labels and stretching", () => {
+  test("whole bucket stretching and shared scales", () => {
+    expect(sparkline([0, 1, 2], 10)).toBe("···▄▄▄███");
+    expect(pairedBars([1, 0], [2, 1], 6)).toEqual(["▄▄▄···", "███▄▄▄"]);
+    expect(sparkline([1], 5)).toBe("█████");
+    expect(pairedBars([1, 2, 3, 4], [0, 0, 0, 0], 2)).toEqual(["▄█", "··"]);
+  });
+  test("axis endpoints and bucket units", () => {
+    expect(timeAxis("2026-10-16", "2026-11-14", 30)).toBe("Oct 16────── day ───────Nov 14");
+    expect(timeAxis("2026-10-01", "2026-11-14", 30, "month")).toContain("Oct 2026");
+    expect(timeAxis("2026-10-01", "2026-11-14", 30, "month")).toEndWith("Nov 2026");
+    expect(timeAxis("2026-10-01", "2026-11-14", 13, "month")).toBe("Oct 26 Nov 26");
+  });
+  test("heatmap distinguishes blank from zero and labels its first visible week", () => {
+    const chart = heatmap([{ day: "2026-11-04", count: 0 }], 60);
+    expect(chart).toContain("Nov 2");
+    expect(chart).toContain("Mon   ");
+    expect(chart).toContain("Wed ··");
+    expect(chart).toContain("less · ░ ▒ ▓ █ more");
+    expect(chart).toContain("max 0/day · blank = out of range");
+  });
+  test("every pure renderer obeys its width", () => {
+    for (let width = 0; width <= 160; width++) {
+      const daily = Array.from({ length: 90 }, (_, i) => ({ day: localDay(new Date(2026, 7, i + 1)), count: i % 5 }));
+      const results = [sparkline([0, 1, 9], width), ...pairedBars([0, 4], [8, 1], width), heatmap(daily, width), timeAxis("2026-10-16", "2026-11-14", width), horizontalBars([{ label: "long repo", value: 100 }], width)];
+      for (const result of results) for (const line of result.split("\n")) expect(line.length).toBeLessThanOrEqual(width);
+    }
+  });
+});
+
+/** Ink debug writes complete frames and a separate newline on unmount. Capture
+ * the last complete frame so joined redraws cannot masquerade as overflow. */
+async function renderFrame(node: React.ReactNode, columns: number): Promise<string> {
+  const output = new PassThrough();
+  Object.assign(output, { columns, rows: 100, isTTY: false });
+  let frame = "";
+  output.on("data", chunk => { if (chunk.toString().includes("Insights")) frame = Bun.stripANSI(chunk.toString()); });
+  const app = render(node, { stdout: output as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream, debug: true, patchConsole: false, exitOnCtrlC: false });
+  await app.waitUntilRenderFlush();
+  app.unmount();
+  return frame;
+}
+
 describe("Insights Ink smoke render", () => {
-  for (const [full, columns] of [[false, 160], [true, 160], [true, 80], [true, 40]] as const) {
+  for (const [full, columns] of [false, true].flatMap(full => [40, 72, 80, 160].map(columns => [full, columns] as const))) {
     test(`${full ? "full" : "split"} at ${columns} columns with seeded scratch data`, async () => {
       const db = fixture();
       const stats = aggregateInsights(readInsightEvents(db), "30d", now);
-      const output = new PassThrough() as PassThrough & { columns: number; rows: number; isTTY: boolean };
-      Object.assign(output, { columns, rows: 60, isTTY: false });
-      let frame = "";
-      output.on("data", chunk => { frame += chunk.toString(); });
-      const input = new PassThrough();
       const width = full ? columns : Math.floor(columns * 0.45);
-      const app = render(<Box>{!full && <Box width={columns - width}><Text>Session list</Text></Box>}<Insights stats={stats} width={width} full={full} /></Box>, { stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream, debug: true, patchConsole: false, exitOnCtrlC: false });
-      await app.waitUntilRenderFlush();
-      app.unmount();
+      const frame = await renderFrame(<Box>{!full && <Box width={columns - width}><Text>Session list</Text></Box>}<Insights stats={stats} width={width} full={full} /></Box>, columns);
+      for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(columns);
+      // The surrounding list must not mask an overflowing Insights panel.
+      const insightFrame = await renderFrame(<Insights stats={stats} width={width} full={full} />, width);
+      for (const line of insightFrame.split("\n")) expect(line.length).toBeLessThanOrEqual(width);
+      if (process.env.INSIGHTS_FRAME_DIR) await Bun.write(`${process.env.INSIGHTS_FRAME_DIR}/${full ? "full" : "split"}-${columns}.txt`, insightFrame);
       expect(frame).toContain("Insights");
-      expect(frame).toContain("alpha");
+      expect(frame).toContain(columns === 40 && !full ? "alph" : "alpha");
       if (full) expect(frame).toContain("Repos · agent cost");
       db.close();
     });
   }
+  test("signed KPI comparisons, dollar scales, dates and explicit empty states", async () => {
+    const db = fixture();
+    const stats = aggregateInsights(readInsightEvents(db), "7d", now);
+    stats.deltas.cost = -1.2;
+    const frame = await renderFrame(<Insights stats={stats} width={160} full />, 160);
+    for (const text of ["+3 vs prev", "−$1.20 vs prev", "no change", "$13.00 total · peak $7.00/day", "Nov 8", "Nov 14", "Done (approx.)"]) expect(frame).toContain(text);
+    const empty = await renderFrame(<Insights stats={aggregateInsights([], "7d", now)} width={40} full />, 40);
+    expect(empty).toContain("no PRs in range");
+    expect(empty).toContain("no repos in range");
+    db.close();
+  });
 });
 
 test("real dashboard on scratch TACK_HOME renders split, cycles full-screen, and resizes", async () => {

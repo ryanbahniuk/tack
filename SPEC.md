@@ -554,8 +554,13 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   use creation dates; repo costs include agent spend only, sorted by agent count.
   Ranges include today through now; comparison uses the same local dates/time in
   the preceding period. Full-screen Insights uses two columns with a repo table.
-  Unicode intensities preserve meaning without color. A grouped read every 5s
-  catches archived changes too; identical stats never trigger a repaint.
+  Time series use block heights (▁▂▃▄▅▆▇█, · for zero), with shared scales for
+  paired rows, full-word labels, totals and peaks when space allows, and dated
+  axes with bucket units. Short series stretch by whole columns per bucket.
+  Heatmap shades (░▒▓█) have weekday/date labels and a separate legend with the
+  maximum per day; blanks mean out of range. Aligned KPIs show signed changes
+  vs the previous period, preserving meaning without color. A grouped read every
+  5s catches archived changes too; identical stats never trigger a repaint.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`. `O` opens the selected session's PRs.
 - **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
