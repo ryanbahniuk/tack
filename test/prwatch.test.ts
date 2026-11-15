@@ -20,6 +20,7 @@ import {
   assignPrFeedback,
   recordPrFeedbackDecision,
   createAgent,
+  countPrFixRunsSince,
   getAgent,
   insertPrFeedback,
   listAgentPrFeedback,
@@ -248,11 +249,11 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
     upsertSessionPr({ sessionId: session.id, url, projectName: "app", number: 7, state: "open", headBranch: "b" });
     return listSessionPrs(session.id)[0]!.id;
   }
-  function fixAgent(prId: string, status: AgentStatus, opts: { postFixed?: boolean } = {}) {
+  function fixAgent(prId: string, status: AgentStatus, opts: { postFixed?: boolean; origin?: "auto" | "supervisor" } = {}) {
     const sessionId = (getDb().prepare(`SELECT session_id FROM session_prs WHERE id = ?`).get(prId) as {
       session_id: string;
     }).session_id;
-    const a = createAgent({ sessionId, projectName: "app", kind: "pr_fix", sessionPrId: prId });
+    const a = createAgent({ sessionId, projectName: "app", kind: "pr_fix", sessionPrId: prId, fixOrigin: opts.origin });
     if (status !== "pending") setAgentStatus(a.id, status);
     if (opts.postFixed) markAgentPostFixed(a.id);
     return a;
@@ -286,6 +287,68 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
     }).session_id;
     createAgent({ sessionId, projectName: "app" });
     expect(prFixBusy(pr)).toBe(false);
+  });
+
+  test("supervisor fixes do not spend the automatic budget; legacy NULL origins still count", () => {
+    const pr = freshPr();
+    const legacy = fixAgent(pr, "failed", { postFixed: true });
+    expect(legacy.fix_origin).toBeNull();
+    const automatic = fixAgent(pr, "done", { postFixed: true, origin: "auto" });
+    expect(automatic.fix_origin).toBe("auto");
+    for (let i = 0; i < 3; i++) {
+      const supervisor = fixAgent(pr, "done", { postFixed: true, origin: "supervisor" });
+      expect(supervisor.fix_origin).toBe("supervisor");
+    }
+    expect(countPrFixRunsSince(pr, "2000-01-01T00:00:00.000Z")).toBe(2);
+    expect(prFixCapReached(pr, config(3))).toEqual({ reached: false, runs: 2 });
+    expect(prFixCapReached(pr, config(2))).toEqual({ reached: true, runs: 2 });
+  });
+
+  test("fix_pr spawns at the automatic cap and still enforces one fix at a time", async () => {
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const configModule = await import("../src/config/load");
+    const availability = await import("../src/runtimes/availability");
+    const detached = await import("../src/agent/detached");
+    const prs = await import("../src/projects/prs");
+    const watch = await import("../src/prwatch/watch");
+    const { approveSessionPlan } = await import("../src/db");
+    const { runSupervisorServer } = await import("../src/mcp/supervisor-server");
+    const prId = freshPr();
+    const pr = getDb().query("SELECT session_id FROM session_prs WHERE id = ?").get(prId) as { session_id: string };
+    approveSessionPlan(pr.session_id);
+    fixAgent(prId, "failed", { postFixed: true, origin: "auto" });
+    const model = { key: "test", name: "Test", runtime: "codex", id: "test" };
+    const cfg = {
+      projects: [{ name: "app", path: "/unused" }], models: [model], roles: { agent: ["test"] },
+      prWatch: { enabled: true, autoPush: true, maxFixRunsPerDay: 1 },
+    } as unknown as TackConfig;
+    const spies = [
+      spyOn(configModule, "loadConfig").mockResolvedValue(cfg),
+      spyOn(availability, "checkModelOffered").mockReturnValue({ ok: true }),
+      spyOn(detached, "spawnAgentRunner").mockReturnValue(123),
+      spyOn(prs, "fetchPrStatus").mockResolvedValue(status()),
+      spyOn(prs, "fetchReviewThreads").mockResolvedValue([]),
+      spyOn(watch, "spawnPrWatcher").mockReturnValue(null),
+      spyOn(McpServer.prototype, "connect").mockResolvedValue(),
+    ];
+    const register = spyOn(McpServer.prototype, "registerTool");
+    try {
+      await runSupervisorServer(pr.session_id);
+      const call = register.mock.calls.find(([name]) => name === "fix_pr")!;
+      const fix = call[2] as unknown as (args: { pr: number; prompt?: string }) => Promise<{
+        content: Array<{ text: string }>;
+      }>;
+      expect(prFixCapReached(prId, cfg)).toEqual({ reached: true, runs: 1 });
+      const result = await fix({ pr: 7, prompt: "Please rename the widget" });
+      const agent = getAgent(JSON.parse(result.content[0]!.text).agentId)!;
+      expect(agent).toMatchObject({ kind: "pr_fix", session_pr_id: prId, fix_origin: "supervisor" });
+      expect(readFileSync(agent.prompt_ref!, "utf8")).toContain("Please rename the widget");
+      expect(prFixCapReached(prId, cfg)).toEqual({ reached: true, runs: 1 });
+      await expect(fix({ pr: 7 })).rejects.toThrow("already running or awaiting its push/replies");
+    } finally {
+      register.mockRestore();
+      for (const spy of spies.reverse()) spy.mockRestore();
+    }
   });
 
   test("cap counts fix runs in the last 24h, failures included", () => {
@@ -771,7 +834,8 @@ describe("postFix outcomes", () => {
       migrate(db);
       db.exec(`ALTER TABLE agents DROP COLUMN fix_outcome;
         ALTER TABLE agents DROP COLUMN fix_pushed_sha;
-        DELETE FROM _migrations WHERE version = 11;
+        ALTER TABLE agents DROP COLUMN fix_origin;
+        DELETE FROM _migrations WHERE version >= 11;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, post_fixed_at, created_at, updated_at)
           VALUES ('a', 's', 'app', 'done', 'then', 'then', 'then');`);
@@ -784,4 +848,23 @@ describe("postFix outcomes", () => {
       db.close();
     }
   });
+});
+
+
+test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
+  const db = new Database(":memory:");
+  try {
+    migrate(db);
+    db.exec(`ALTER TABLE agents DROP COLUMN fix_origin;
+      DELETE FROM _migrations WHERE version = 12;
+      INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
+      INSERT INTO agents (id, session_id, project_name, status, kind, created_at, updated_at)
+        VALUES ('a', 's', 'app', 'done', 'pr_fix', 'then', 'then');`);
+    migrate(db);
+    expect(db.query("SELECT id, fix_origin FROM agents").get()).toEqual({ id: "a", fix_origin: null });
+    expect(db.query("SELECT name FROM _migrations WHERE version = 12").get()).toEqual({ name: "agent_fix_origin" });
+    migrate(db);
+  } finally {
+    db.close();
+  }
 });

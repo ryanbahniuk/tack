@@ -108,6 +108,8 @@ export interface AgentRow {
   fix_outcome: AgentFixOutcome | null;
   /** Full commit SHA successfully pushed to the PR, otherwise NULL. */
   fix_pushed_sha: string | null;
+  /** PR fix initiator; legacy NULL origins count as automatic for the daily cap. */
+  fix_origin: "auto" | "supervisor" | null;
   created_at: string;
   updated_at: string;
 }
@@ -356,13 +358,15 @@ export function createAgent(input: {
   kind?: AgentKind | null;
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
+  /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
+  fixOrigin?: "auto" | "supervisor" | null;
 }): AgentRow {
   const db = getDb();
   const now = nowIso();
   const id = shortId("agt");
   db.prepare(
-    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, kind, session_pr_id, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, kind, session_pr_id, fix_origin, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.sessionId,
@@ -374,6 +378,7 @@ export function createAgent(input: {
     input.dependsOn && input.dependsOn.length ? JSON.stringify(input.dependsOn) : null,
     input.kind ?? null,
     input.sessionPrId ?? null,
+    input.fixOrigin ?? null,
     now,
     now,
   );
@@ -732,15 +737,16 @@ export function markAgentPostFixed(id: string, outcome?: AgentFixOutcome, sha?: 
 }
 
 /**
- * How many fix runs were spawned for a PR since `sinceIso` — the input to the
- * `prWatch.maxFixRunsPerDay` cap. Counts every `pr_fix` agent regardless of outcome,
- * so failed runs spend budget too (that's what stops a broken PR from looping).
+ * How many automatic fix runs were spawned for a PR since `sinceIso` — the input
+ * to the `prWatch.maxFixRunsPerDay` cap. Legacy NULL origins count as automatic;
+ * supervisor runs are exempt. Failed automatic runs spend budget too, preventing loops.
  */
 export function countPrFixRunsSince(sessionPrId: string, sinceIso: string): number {
   return (
     getDb()
       .prepare(
-        `SELECT COUNT(*) AS n FROM agents WHERE kind = 'pr_fix' AND session_pr_id = ? AND created_at >= ?`,
+        `SELECT COUNT(*) AS n FROM agents WHERE kind = 'pr_fix' AND session_pr_id = ? AND created_at >= ?
+          AND (fix_origin IS NULL OR fix_origin = 'auto')`,
       )
       .get(sessionPrId, sinceIso) as { n: number }
   ).n;

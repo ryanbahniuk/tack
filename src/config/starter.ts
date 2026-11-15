@@ -82,7 +82,8 @@ export default ({
   // comments (bots included) or a merge conflict spawn a fix agent (roles.agent) that
   // fixes what's warranted — or merges the base branch to resolve the conflict — and
   // then Tack pushes (never force) and replies to each comment explaining what it did.
-  // \`maxFixRunsPerDay\` caps fix runs per PR per rolling 24h. All fields optional.
+  // \`maxFixRunsPerDay\` caps automatic (watcher) fix runs per PR per rolling 24h;
+  // supervisor fix_pr runs are exempt. All fields optional.
   prWatch: {
     // enabled: true,          // false = never start a watcher
     // intervalSeconds: 300,   // PR poll cadence for the watcher and tack dashboard (min 60)

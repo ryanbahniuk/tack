@@ -282,6 +282,14 @@ const migrations: Migration[] = [
       ALTER TABLE agents ADD COLUMN fix_pushed_sha TEXT;
     `,
   },
+  {
+    version: 12,
+    name: "agent_fix_origin",
+    // Legacy NULL origins count as automatic runs for the anti-loop cap.
+    sql: `
+      ALTER TABLE agents ADD COLUMN fix_origin TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

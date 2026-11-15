@@ -660,7 +660,10 @@ completed; otherwise gather **new** feedback — unresolved review-thread commen
 non-empty review bodies, conversation comments, bots included, minus anything
 already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
 if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn a
-`pr_fix` agent, subject to `maxFixRunsPerDay` per PR (failed runs count).
+`pr_fix` agent with origin `auto`, subject to `maxFixRunsPerDay` per PR per rolling
+24h (failed automatic runs and legacy NULL-origin rows count; supervisor `fix_pr`
+runs are exempt and do not count). The `open_pr` base-conflict hand-off also uses
+origin `auto` and enforces this cap.
 Conversation comments and reviews come from paginated GraphQL connections with
 `author { login __typename }`, retaining their existing node ids. Bot detection also
 uses a case-insensitive known-login fallback, stripping any `[bot]` suffix.
@@ -694,18 +697,18 @@ push, or `unpushed` when autoPush is off. Failed/stopped runs keep their status;
 legacy rows without an outcome keep their original display status. The PR's
 `fixing` badge stays on through the pushing step.
 
-**Supervisor-initiated fix runs** (`fix_pr`) cover what the watcher won't retry on
-its own: a conflict that persists, a fix run that failed (e.g. its model wasn't
-offered to the login — `fix_pr` takes a `model` and runs `checkModelOffered` like
-`spawn_agent`), or follow-up changes the human asks for on an open PR (passed as
-`prompt`, rendered in the fix prompt as a `## Supervisor guidance` section just
-before `## Rules`). It's the same machinery, not a parallel path: the same `pr_fix`
-kind forked off the PR head (`spawnPrFixAgent`, shared with the watcher), the same
-`maxFixRunsPerDay` cap (`prFixCapReached`), the same one-at-a-time rule
+**Supervisor-initiated fix runs** (`fix_pr`) are how the supervisor makes any change
+to an open PR: follow-ups the human asks for (passed as `prompt`), a conflict that
+persists, or a fix run that failed (e.g. its model wasn't offered to the login —
+`fix_pr` takes a `model` and runs `checkModelOffered` like `spawn_agent`). Guidance is rendered in the fix prompt as a `## Supervisor guidance`
+section just before `## Rules`. These runs share the `pr_fix` kind forked off the
+PR head (`spawnPrFixAgent`, shared with the watcher), the one-at-a-time rule
 (`prFixBusy`: refused while a fix is pending/running or finished but not yet
 post-fixed), and the same watcher post-fix push + replies — `fix_pr` polls the PR
 live, folds in any not-yet-ingested feedback, spawns the agent, and (re)starts the
-watcher. `spawn_agent` + `open_pr` would instead create a second PR, so the
+watcher. These runs have origin `supervisor`: they are exempt from the watcher's
+`maxFixRunsPerDay` cap and do not count toward it. Commits push onto the same PR
+branch. `spawn_agent` + `open_pr` would instead create a second PR, so the
 supervisor never uses them to change an existing one.
 
 ---
