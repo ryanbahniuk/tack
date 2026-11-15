@@ -9,6 +9,7 @@ import {
   createSession,
   getSession,
   setSessionCost,
+  setSessionUsage,
   setSessionResumeRef,
   stampSessionHeartbeat,
   stampSessionSeen,
@@ -167,8 +168,13 @@ async function* runSupervisor(opts: {
     logPath,
   })) {
     if (ev.type === "session") setSessionResumeRef(session.id, ev.ref);
-    else if (ev.type === "cost") {
-      lastCost = ev.usd; // cost events are cumulative running totals
+    else if (ev.type === "usage") {
+      // Latest figure wins, just like cost: Claude result usage and modern Codex
+      // turn usage cover this invocation (also on resume); legacy Codex may emit
+      // running totals. Adding to stored usage would mix those semantics.
+      setSessionUsage(session.id, ev);
+    } else if (ev.type === "cost") {
+      lastCost = ev.usd; // overwrite with the runtime's latest figure
       setSessionCost(session.id, lastCost);
     }
     yield ev;
@@ -376,6 +382,7 @@ function recoverSupervisorCost(opts: {
   const { session, model, cwd, sessionRef } = opts;
   const usage = selectRuntime(model.runtime).recoverUsage({ sessionRef, cwd });
   if (!usage) return;
+  setSessionUsage(session.id, usage); // Transcript recovery is cumulative, as is recovered cost.
   const usd = costFromPricing(pricingFor(model), usage);
   if (usd !== null) setSessionCost(session.id, usd);
 }

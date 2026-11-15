@@ -10,8 +10,14 @@ function Panel({ title, lines }: { title: string; lines: React.ReactNode[] }) {
   </Box>;
 }
 const money = (n: number) => `$${n.toFixed(2)}`;
-function delta(value: number, cost = false): string {
-  return value === 0 ? "no change" : `${value < 0 ? "−" : "+"}${cost ? money(Math.abs(value)) : Math.abs(value)} vs prev`;
+const tokens = (n: number): string => {
+  for (const [scale, suffix] of [[1e9, "B"], [1e6, "M"], [1e3, "k"]] as const) {
+    if (Math.abs(n) >= scale) return `${Number((n / scale).toFixed(1))}${suffix}`;
+  }
+  return String(n);
+};
+function delta(value: number, key: keyof Totals): string {
+  return value === 0 ? "no change" : `${value < 0 ? "−" : "+"}${key === "cost" ? money(Math.abs(value)) : key === "tokens" ? tokens(Math.abs(value)) : Math.abs(value)} vs prev`;
 }
 /** Match the label and optional summary gutters when choosing time buckets. */
 export function insightChartWidth(column: number): number {
@@ -50,20 +56,20 @@ export function Insights({ stats, width, rows = 40, height = rows, full = false 
     return { title: `${title} · per ${stats.bucket}`, lines };
   };
   const top = stats.repos.slice(0, rows < 38 ? 3 : full ? 8 : 5);
-  const kpis = ([["Sessions", "sessions"], ["Agents", "agents"], ["Opened", "prs"], ["Merged", "merged"], ["Linked", "tickets"], ["Done (approx.)", "done"], ["Cost", "cost"]] as const);
-  const value = (key: keyof Totals) => key === "cost" ? money(stats.totals[key]) : String(stats.totals[key]);
+  const kpis = ([["Sessions", "sessions"], ["Agents", "agents"], ["Tokens", "tokens"], ["Opened", "prs"], ["Merged", "merged"], ["Linked", "tickets"], ["Done (approx.)", "done"], ["Cost", "cost"]] as const);
+  const value = (key: keyof Totals) => key === "cost" ? money(stats.totals[key]) : key === "tokens" ? tokens(stats.totals[key]) : String(stats.totals[key]);
   const valueWidth = Math.max(...kpis.map(([, key]) => value(key).length));
-  const deltaWidth = Math.max(...kpis.map(([, key]) => delta(stats.deltas[key], key === "cost").length));
+  const deltaWidth = Math.max(...kpis.map(([, key]) => delta(stats.deltas[key], key).length));
   // An aligned one-row-per-KPI table when it fits; otherwise pack explicit rows
   // rather than relying on Yoga's flex-wrap, so large totals and narrow columns
   // cannot silently increase a panel's measured height.
   const kpiLines: React.ReactNode[] = [];
   if (16 + valueWidth + deltaWidth <= inner) {
-    for (const [label, key] of kpis) kpiLines.push(<Text>{label.padEnd(14)} {value(key).padStart(valueWidth)} <Text color={stats.deltas[key] < 0 ? "red" : key === "cost" ? "yellow" : "green"}>{delta(stats.deltas[key], key === "cost")}</Text></Text>);
+    for (const [label, key] of kpis) kpiLines.push(<Text>{label.padEnd(14)} {value(key).padStart(valueWidth)} <Text color={stats.deltas[key] < 0 ? "red" : key === "cost" ? "yellow" : "green"}>{delta(stats.deltas[key], key)}</Text></Text>);
   } else {
     const packed: string[] = [];
     for (const [label, key] of kpis) {
-      const text = `${label} ${value(key)} ${delta(stats.deltas[key], key === "cost")}`;
+      const text = `${label} ${value(key)} ${delta(stats.deltas[key], key)}`;
       const last = packed.length - 1;
       if (last >= 0 && packed[last]!.length + 2 + text.length <= inner) packed[last] += `  ${text}`;
       else packed.push(text);
@@ -84,11 +90,33 @@ export function Insights({ stats, width, rows = 40, height = rows, full = false 
   // "table" marks where the repo cost table competes for rows; it sizes itself
   // to what is left and always includes its note, header and at least one
   // repository (or the empty-state row).
-  const renderColumn = (panels: (PanelSpec | "table")[]) => {
+  const renderColumn = (panels: (PanelSpec | "table" | "models")[]) => {
     let remaining = Math.max(0, height - 1);
     const fitted: PanelSpec[] = [];
     for (const item of panels) {
       let panel = item;
+      if (panel === "models") {
+        const data = stats.models.map(m => [m.model, String(m.sessions), String(m.agents), tokens(m.tokens), money(m.cost)]);
+        const headers = ["Model", "Sessions", "Agents", "Tokens", "Cost"];
+        const widths = headers.map((h, i) => Math.max(h.length, ...data.map(row => row[i]!.length)));
+        const numericWidth = widths.slice(1).reduce((sum, w) => sum + w, 0) + 4;
+        const modelWidth = Math.min(widths[0]!, inner - numericWidth);
+        const modelStacked = stacked || modelWidth < 5;
+        // Stacked records still use explicit rows: no wrapping or fragments that
+        // would invalidate the panel budget. Keep a whole record or drop it.
+        const recordRows = modelStacked ? 5 : 1;
+        const capacity = Math.floor((remaining - 4) / recordRows);
+        if (remaining < 5 || (data.length > 0 && capacity < 1)) continue;
+        const format = (row: string[]) => row.map((cell, i) => i === 0
+          ? cell.slice(0, modelWidth).padEnd(modelWidth)
+          : cell.padStart(widths[i]!)).join(" ");
+        panel = { title: "Models · sessions, agents, tokens, cost", lines: [
+          <Text dimColor>{modelStacked ? "Model" : format(headers)}</Text>,
+          ...(data.length ? data.slice(0, capacity).flatMap(row => modelStacked
+            ? [row[0]!, ...row.slice(1).map((cell, i) => `${headers[i + 1]} ${cell}`)]
+            : [format(row)]) : [<Text dimColor>no models in range</Text>]),
+        ] };
+      }
       if (panel === "table") {
         if (remaining < 6) continue;
         const repoWidth = Math.max(1, inner - 27);
@@ -109,12 +137,12 @@ export function Insights({ stats, width, rows = 40, height = rows, full = false 
   // the headline Totals and PRs rather than being starved at the bottom.
   const [totals, prs, ...restPrimary] = primary;
   const [repos, ...restSecondary] = secondary;
-  const single: (PanelSpec | "table")[] = [totals!, prs!, repos!, ...(full ? ["table" as const] : []), ...restPrimary, ...restSecondary];
+  const single: (PanelSpec | "table" | "models")[] = [totals!, prs!, repos!, "models", ...(full ? ["table" as const] : []), ...restPrimary, ...restSecondary];
   if (height < 1) return null;
   return <Box width={width} flexDirection="column" flexShrink={0}>
     <Text bold wrap="truncate">Insights · {stats.range} · all sessions</Text>
     <Box flexDirection={grid ? "row" : "column"}>
-      {grid ? <><Box width={column} flexDirection="column">{renderColumn(primary)}</Box><Box width={width - column} flexDirection="column">{renderColumn([...secondary, "table"])}</Box></> : <Box width={width} flexDirection="column">{renderColumn(single)}</Box>}
+      {grid ? <><Box width={column} flexDirection="column">{renderColumn([totals!, "models", prs!, ...restPrimary])}</Box><Box width={width - column} flexDirection="column">{renderColumn([...secondary, "table"])}</Box></> : <Box width={width} flexDirection="column">{renderColumn(single)}</Box>}
     </Box>
   </Box>;
 }

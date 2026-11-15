@@ -5,6 +5,7 @@ export type InsightRange = typeof RANGES[number];
 export type BucketSize = "day" | "week" | "month";
 export type Totals = Record<InsightMetric, number>;
 export interface RepoTotal { repo: string; agents: number; prs: number; merged: number; cost: number }
+export interface ModelTotal { model: string; sessions: number; agents: number; tokens: number; cost: number }
 export interface InsightStats {
   range: InsightRange;
   bucket: BucketSize;
@@ -16,9 +17,10 @@ export interface InsightStats {
   /** Absolute changes remain meaningful when the previous period is zero. */
   deltas: Totals;
   repos: RepoTotal[];
+  models: ModelTotal[];
   daily: Array<{ day: string; count: number }>;
 }
-const zero = (): Totals => ({ sessions: 0, agents: 0, prFix: 0, prs: 0, merged: 0, tickets: 0, done: 0, cost: 0 });
+const zero = (): Totals => ({ sessions: 0, agents: 0, prFix: 0, prs: 0, merged: 0, tickets: 0, done: 0, cost: 0, tokens: 0 });
 export function localDay(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -63,15 +65,22 @@ export function aggregateInsights(events: readonly InsightEvent[], range: Insigh
   for (let d = start; d <= today; d = shift(d, 1)) daily.set(localDay(d), 0);
   const totals = zero(), previous = zero();
   const repos = new Map<string, RepoTotal>();
+  const models = new Map<string, ModelTotal>();
   for (const event of valid) {
     const date = new Date(event.at);
     if (date >= previousStart && date <= previousEnd) previous[event.metric] += event.value;
     if (date < start) continue;
     totals[event.metric] += event.value;
     series.get(localDay(bucketStart(date, bucket)))![event.metric] += event.value;
-    // Money and the pr_fix subset aren't extra contributions.
-    if (event.metric !== "cost" && event.metric !== "prFix") {
+    // Money, tokens and the pr_fix subset aren't extra contributions.
+    if (event.metric !== "cost" && event.metric !== "tokens" && event.metric !== "prFix") {
       const day = localDay(date); daily.set(day, daily.get(day)! + event.value);
+    }
+    if (event.metric === "sessions" || event.metric === "agents" || event.metric === "tokens" || event.metric === "cost") {
+      const model = event.model ?? "unknown";
+      const total = models.get(model) ?? { model, sessions: 0, agents: 0, tokens: 0, cost: 0 };
+      total[event.metric] += event.value;
+      models.set(model, total);
     }
     if (event.repo && ["agents", "prs", "merged", "cost"].includes(event.metric)) {
       const repo = repos.get(event.repo) ?? { repo: event.repo, agents: 0, prs: 0, merged: 0, cost: 0 };
@@ -82,6 +91,7 @@ export function aggregateInsights(events: readonly InsightEvent[], range: Insigh
   const deltas = zero();
   for (const key of Object.keys(totals) as InsightMetric[]) deltas[key] = totals[key] - previous[key];
   return { range, bucket, start: localDay(start), end: localDay(now), series: [...series.values()], totals, previous, deltas,
+    models: [...models.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens || b.agents - a.agents || b.sessions - a.sessions || a.model.localeCompare(b.model)),
     repos: [...repos.values()].sort((a, b) => b.agents - a.agents || b.prs - a.prs || b.merged - a.merged || b.cost - a.cost || a.repo.localeCompare(b.repo)),
     daily: [...daily].map(([day, count]) => ({ day, count })) };
 }
