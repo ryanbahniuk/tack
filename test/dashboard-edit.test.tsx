@@ -54,3 +54,30 @@ test("dashboard shows the worktree and requires y/Y to edit a running agent", as
     rmSync(path, { recursive: true, force: true });
   }
 });
+
+for (const insights of [false, true]) {
+  test(`dashboard C edits config with zero sessions${insights ? " in insights" : ""}`, async () => {
+    const list = spyOn(repositories, "listSessions").mockReturnValue([]);
+    const output = new PassThrough();
+    Object.assign(output, { columns: 100, rows: 30, isTTY: false });
+    output.resume();
+    const input = new PassThrough();
+    Object.assign(input, { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+    const launches: Parameters<Parameters<typeof Dashboard>[0]["onLaunch"]>[0][] = [];
+    const app = render(<Dashboard config={null} initialNotice="config unchanged" onLaunch={launch => launches.push(launch)} />, {
+      stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream,
+      debug: true, patchConsole: false, exitOnCtrlC: false,
+    });
+    try {
+      await app.waitUntilRenderFlush();
+      if (insights) {
+        input.write("s");
+        await Bun.sleep(25);
+        await app.waitUntilRenderFlush();
+      }
+      input.write("C");
+      await Bun.sleep(25);
+      expect(launches).toEqual([{ kind: "config" }]);
+    } finally { app.unmount(); list.mockRestore(); }
+  });
+}

@@ -1,25 +1,26 @@
 import type { TackConfig } from "../config/schema";
 import { resolveModel } from "../config/load";
-import { getSession, listSessionPrs, setSessionPrWatchPid, setSupervisorTurnStartedAt, type SessionRow } from "../db";
+import { getSession, listSessions, listSessionPrs, setSessionPrWatchPid, setSupervisorTurnStartedAt, type SessionRow } from "../db";
 import { supervisorCwd } from "../paths";
 import { isAlive } from "../process/self";
-import { currentCodeVersion, isCodeVersionStale } from "../process/version";
+import { currentCodeVersion, currentConfigVersion, isCodeVersionStale } from "../process/version";
 import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
-import { recoverSupervisorCost } from "../supervisor/supervise";
-import { tmuxHasSession, tmuxKillSession, tmuxRequestExit, tmuxSessionName } from "./tmux";
+import { recoverSupervisorCost, superviseInteractive } from "../supervisor/supervise";
+import { tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxRequestExit, tmuxSessionName } from "./tmux";
 
-export const REFRESH_MESSAGE = "Tack has refreshed onto new code. Your tools and permissions may have changed. Re-run sync_projects before further investigation.";
+export const REFRESH_MESSAGE = "Tack has refreshed onto new code or config. Your tools and permissions may have changed. Re-run sync_projects before further investigation.";
 
 /** Probe injection keeps the policy testable without real processes or tmux. */
 export function isSessionStale(session: SessionRow, probes = {
   current: currentCodeVersion(),
+  config: currentConfigVersion(),
   tmux: tmuxHasSession(tmuxSessionName(session.id)),
   alive: isAlive,
 }) {
   const supervisorLive = probes.tmux || probes.alive(session.pid);
   const watcherLive = probes.alive(session.pr_watch_pid);
-  const supervisor = supervisorLive && isCodeVersionStale(session.supervisor_code_version, probes.current);
-  const watcher = watcherLive && isCodeVersionStale(session.pr_watch_code_version, probes.current);
+  const supervisor = supervisorLive && (isCodeVersionStale(session.supervisor_code_version, probes.current) || isCodeVersionStale(session.supervisor_config_version, probes.config));
+  const watcher = watcherLive && (isCodeVersionStale(session.pr_watch_code_version, probes.current) || isCodeVersionStale(session.pr_watch_config_version, probes.config));
   return { stale: supervisor || watcher, supervisor, watcher, supervisorLive, watcherLive };
 }
 
@@ -70,4 +71,32 @@ export async function refreshSession(id: string, config: TackConfig, opts: { for
     if (listSessionPrs(id).some(isWatchablePr)) spawnPrWatcher(id, config);
   }
   return { ...stale, refreshed: true, blocked: null };
+}
+
+export type BulkRefreshResult = {
+  session: SessionRow;
+} & ({ status: "refreshed" | "current" } | { status: "blocked"; reason: string } | { status: "error"; error: string });
+
+/** Refresh active stale sessions without ever opening a foreground TUI. Without
+ * tmux the next resume starts the replacement supervisor. Failures stay local so
+ * one busy or broken session cannot prevent the others from refreshing. */
+export async function refreshAllStaleSessions(config: TackConfig, opts: { force?: boolean } = {}): Promise<BulkRefreshResult[]> {
+  const sessions = listSessions().filter(s => s.status === "active" && isSessionStale(s).stale);
+  const results: BulkRefreshResult[] = [];
+  for (const session of sessions) {
+    try {
+      const result = await refreshSession(session.id, config, opts);
+      if (result.blocked) {
+        results.push({ session, status: "blocked", reason: result.blocked });
+        continue;
+      }
+      if (result.refreshed && result.supervisor && tmuxAvailable()) {
+        await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: true });
+      }
+      results.push({ session, status: result.refreshed ? "refreshed" : "current" });
+    } catch (err) {
+      results.push({ session, status: "error", error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
 }

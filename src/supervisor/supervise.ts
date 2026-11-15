@@ -10,6 +10,7 @@ import {
   getSession,
   setSessionCost,
   setSupervisorCodeVersion,
+  setSupervisorConfigVersion,
   setSupervisorTurnStartedAt,
   setSessionUsage,
   setSessionResumeRef,
@@ -24,7 +25,7 @@ import {
   selectRuntime,
   type AgentEvent,
 } from "../runtimes";
-import { currentCodeVersion } from "../process/version";
+import { currentCodeVersion, currentConfigVersion } from "../process/version";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
 import {
@@ -132,6 +133,7 @@ async function* runSupervisor(opts: {
   const { session, model, prompt, resume, config } = opts;
   stampSessionHeartbeat(session.id, process.pid);
   setSupervisorCodeVersion(session.id, currentCodeVersion());
+  setSupervisorConfigVersion(session.id, currentConfigVersion());
   setSupervisorTurnStartedAt(session.id, null);
 
   const contextFile = buildSupervisorContext(session.id, config);
@@ -222,6 +224,7 @@ export async function superviseInteractive(opts: {
   const model = resolveModel(config, session.supervisor_model);
   stampSessionHeartbeat(session.id, process.pid);
   setSupervisorCodeVersion(session.id, currentCodeVersion());
+  setSupervisorConfigVersion(session.id, currentConfigVersion());
   setSupervisorTurnStartedAt(session.id, null);
 
   const artifactsDir = supervisorArtifactsDir(session.id);

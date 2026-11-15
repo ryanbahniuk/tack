@@ -2,7 +2,9 @@ import { expect, spyOn, test } from "bun:test";
 import { createAgent, createSession, getAgent, setSupervisorCodeVersion, setSupervisorTurnStartedAt, setSessionPrWatchPid, setPrWatchCodeVersion, upsertSessionPr } from "../src/db";
 import * as tmux from "../src/session/tmux";
 import * as version from "../src/process/version";
-import { refreshSession } from "../src/session/refresh";
+import * as repositories from "../src/db/repositories";
+import * as supervisor from "../src/supervisor/supervise";
+import { refreshAllStaleSessions, REFRESH_MESSAGE, refreshSession } from "../src/session/refresh";
 import * as self from "../src/process/self";
 import * as watcher from "../src/prwatch/watch";
 import type { TackConfig } from "../src/config/schema";
@@ -62,3 +64,71 @@ for (const watchable of [true, false]) {
     }
   });
 }
+
+for (const available of [true, false]) {
+  test(`bulk refresh skips blocked sessions and parks supervisors only with tmux (${available})`, async () => {
+    const ready = createSession({});
+    const blocked = createSession({});
+    const watching = createSession({});
+    setSupervisorTurnStartedAt(blocked.id, "busy");
+    setSessionPrWatchPid(watching.id, 987654);
+    upsertSessionPr({ sessionId: watching.id, url: `https://example.com/${watching.id}`, state: "open" });
+    const live = new Set([ready.id, blocked.id]);
+    let watcherLive = true;
+    const current = spyOn(version, "currentCodeVersion").mockReturnValue("new");
+    const configVersion = spyOn(version, "currentConfigVersion").mockReturnValue("unknown");
+    const has = spyOn(tmux, "tmuxHasSession").mockImplementation(name => [...live].some(id => tmux.tmuxSessionName(id) === name));
+    const request = spyOn(tmux, "tmuxRequestExit").mockImplementation(id => { live.delete(id); });
+    const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(available);
+    const alive = spyOn(self, "isAlive").mockImplementation(pid => pid === 987654 && watcherLive);
+    const signal = spyOn(process, "kill").mockImplementation(() => { watcherLive = false; return true; });
+    const spawn = spyOn(watcher, "spawnPrWatcher").mockReturnValue(123);
+    const launch = spyOn(supervisor, "superviseInteractive").mockResolvedValue({ code: 0, detached: true });
+    try {
+      const config = {} as TackConfig;
+      const results = await refreshAllStaleSessions(config);
+      expect(results.find(r => r.session.id === blocked.id)).toMatchObject({ status: "blocked", reason: "supervisor is mid-turn" });
+      expect(results.find(r => r.session.id === ready.id)?.status).toBe("refreshed");
+      expect(results.find(r => r.session.id === watching.id)?.status).toBe("refreshed");
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(launch).toHaveBeenCalledTimes(available ? 1 : 0);
+      if (available) expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: ready.id }, config, park: true, resume: true, prompt: REFRESH_MESSAGE });
+    } finally {
+      current.mockRestore(); configVersion.mockRestore(); has.mockRestore(); request.mockRestore(); avail.mockRestore();
+      alive.mockRestore(); signal.mockRestore(); spawn.mockRestore(); launch.mockRestore();
+    }
+  });
+}
+
+test("bulk refresh respects force, isolates launch errors, and handles sessions becoming current", async () => {
+  const failed = createSession({});
+  const ready = createSession({});
+  const raced = createSession({});
+  setSupervisorTurnStartedAt(failed.id, "busy");
+  const live = new Set([failed.id, ready.id, raced.id]);
+  let raceProbes = 0;
+  const list = spyOn(repositories, "listSessions").mockReturnValue([failed, ready, raced].map(s => repositories.getSession(s.id)!));
+  const current = spyOn(version, "currentCodeVersion").mockReturnValue("new");
+  const configVersion = spyOn(version, "currentConfigVersion").mockReturnValue("unknown");
+  const has = spyOn(tmux, "tmuxHasSession").mockImplementation(name => {
+    if (name === tmux.tmuxSessionName(raced.id)) return ++raceProbes === 1;
+    return [...live].some(id => tmux.tmuxSessionName(id) === name);
+  });
+  const request = spyOn(tmux, "tmuxRequestExit").mockImplementation(id => { live.delete(id); });
+  const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(true);
+  const alive = spyOn(self, "isAlive").mockReturnValue(false);
+  const launch = spyOn(supervisor, "superviseInteractive").mockImplementation(async opts => {
+    if (opts.session.id === failed.id) throw new Error("launch failed");
+    return { code: 0, detached: true };
+  });
+  try {
+    const results = await refreshAllStaleSessions({} as TackConfig, { force: true });
+    expect(results.map(r => r.status)).toEqual(["error", "refreshed", "current"]);
+    expect(results[0]).toMatchObject({ error: "launch failed" });
+    expect(launch).toHaveBeenCalledTimes(2);
+  } finally {
+    list.mockRestore(); current.mockRestore(); configVersion.mockRestore(); has.mockRestore();
+    request.mockRestore(); avail.mockRestore(); alive.mockRestore(); launch.mockRestore();
+  }
+});

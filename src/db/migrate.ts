@@ -302,6 +302,14 @@ const migrations: Migration[] = [
       ALTER TABLE agents ADD COLUMN diff_base TEXT;
     `,
   },
+  {
+    version: 14,
+    name: "session_config_version",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN supervisor_config_version TEXT;
+      ALTER TABLE sessions ADD COLUMN pr_watch_config_version TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

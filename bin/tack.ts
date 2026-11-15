@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
+import { ensureConfigExists } from "../src/config/ensure";
 import { STARTER_CONFIG } from "../src/config/starter";
 import { loadConfig, modelForRole, resolveModel, roleModelKeys } from "../src/config/load";
 import {
@@ -47,9 +48,8 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
-import { REFRESH_MESSAGE, isSessionStale, refreshBlockedReason, refreshSession } from "../src/session/refresh";
+import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
-import { tmuxAvailable } from "../src/session/tmux";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
 import {
@@ -87,15 +87,6 @@ import type { RuntimeKind, TackConfig } from "../src/config/schema";
 const usd = (n: number) => pc.green(`$${n.toFixed(4)}`);
 
 const RUNTIME_KINDS: RuntimeKind[] = ["claude", "codex"];
-
-/** Exits with the one "run tack init" message shared by every command that needs an
- * existing config, so the wording stays in a single place. */
-function ensureConfigExists(): void {
-  if (!existsSync(CONFIG_PATH)) {
-    console.error(pc.red(`No config at ${CONFIG_PATH}. Run \`tack init\` first.`));
-    process.exit(1);
-  }
-}
 
 /** `ensureConfigExists` + `loadConfig`, the opening move of most commands. */
 async function requireConfig(): Promise<TackConfig> {
@@ -1005,31 +996,34 @@ const sessionRefresh = defineCommand({
   async run({ args }) {
     if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
     const config = await loadConfig();
-    const sessions = args.all ? listSessions().filter(s => s.status === "active" && isSessionStale(s).stale) : [getSession(String(args.session))];
+    if (args.all) {
+      for (const result of await refreshAllStaleSessions(config, { force: args.force })) {
+        const id = result.session.id;
+        if (result.status === "blocked") console.error(`${id}: refresh blocked: ${result.reason}`);
+        else if (result.status === "error") {
+          console.error(`${id}: ${result.error}`);
+          process.exitCode = 1;
+        } else console.log(`${id}: ${result.status === "refreshed" ? "refreshed" : "already current"}`);
+      }
+      return;
+    }
+    const sessions = [getSession(String(args.session))];
     for (const session of sessions) {
       if (!session) throw new Error(`Unknown session ${args.session}`);
-      try {
-        const result = await refreshSession(session.id, config, { force: args.force });
-        if (result.blocked) {
-          console.error(`${session.id}: refresh blocked: ${result.blocked}`);
-          if (!args.all) process.exitCode = 1;
-          continue;
-        }
-        console.log(`${session.id}: ${result.refreshed ? "refreshed" : "already current"}`);
-        // tmux supports detached creation. Without it bulk refresh stops here and
-        // the next resume launches fresh; never open multiple foreground TUIs.
-        if (result.refreshed && (!args.all || (result.supervisor && tmuxAvailable()))) {
-          if (!result.supervisor && !args.all) {
-            const attached = await attachSupervisor(session.id, config);
-            if (attached.alive) { reportInteractiveOutcome(session.id, attached.detached); continue; }
-          }
-          const { detached } = await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: Boolean(args.all) });
-          if (!args.all) reportInteractiveOutcome(session.id, detached);
-        }
-      } catch (err) {
-        if (!args.all) throw err;
-        console.error(`${session.id}: ${(err as Error).message}`);
+      const result = await refreshSession(session.id, config, { force: args.force });
+      if (result.blocked) {
+        console.error(`${session.id}: refresh blocked: ${result.blocked}`);
         process.exitCode = 1;
+        continue;
+      }
+      console.log(`${session.id}: ${result.refreshed ? "refreshed" : "already current"}`);
+      if (result.refreshed) {
+        if (!result.supervisor) {
+          const attached = await attachSupervisor(session.id, config);
+          if (attached.alive) { reportInteractiveOutcome(session.id, attached.detached); continue; }
+        }
+        const { detached } = await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: false });
+        reportInteractiveOutcome(session.id, detached);
       }
     }
   },

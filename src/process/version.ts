@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { CONFIG_PATH } from "../paths";
 
 /** Exposed separately so hashing can be tested without resetting the process cache. */
 export function codeVersionForEntry(entry: string, execPath = process.execPath): string {
@@ -48,4 +49,13 @@ export function currentCodeVersion(): string {
 /** Missing stamps predate version tracking; unknown identities never force a restart. */
 export function isCodeVersionStale(version: string | null, current = currentCodeVersion()): boolean {
   return current !== "unknown" && version !== "unknown" && version !== current;
+}
+
+/** Read fresh: a dashboard process survives config edits. */
+export function currentConfigVersion(path = CONFIG_PATH): string {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return "unknown";
+  }
 }

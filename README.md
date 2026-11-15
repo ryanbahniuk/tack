@@ -230,7 +230,11 @@ Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d)
 The header shows the current layout, range, and live/working session counts.
 Working supervisors show a cyan spinner and elapsed turn time in their session row;
 a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
-in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `x`, `a`, `d`, `z`, `q`.
+in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `C`, `r`, `x`, `a`, `d`, `z`, `q`.
+Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vi`).
+After a valid change, Tack reloads config and refreshes stale active sessions, parking
+supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume
+or `r`; invalid config keeps the previous dashboard config and leaves sessions running.
 Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
 immediate; unarchiving asks for confirmation and resumes only the agents archive
 interrupted. Agents with a runtime session handle continue their conversation;

@@ -27,6 +27,7 @@ import {
   setSessionPrStatus,
   setSessionPrWatchPid,
   setPrWatchCodeVersion,
+  setPrWatchConfigVersion,
   type AgentRow,
   type AgentFixOutcome,
   type AgentStatus,
@@ -56,7 +57,7 @@ import {
 } from "../projects/prs";
 import { commitWorktreeAsync, fastForwardPrWorktree, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
-import { currentCodeVersion } from "../process/version";
+import { currentCodeVersion, currentConfigVersion } from "../process/version";
 import { nowIso } from "../util/id";
 
 export { buildPrFixPrompt } from "./prompt";
@@ -220,6 +221,7 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
   }
   setSessionPrWatchPid(sessionId, process.pid);
   setPrWatchCodeVersion(sessionId, currentCodeVersion());
+  setPrWatchConfigVersion(sessionId, currentConfigVersion());
 
   const release = () => {
     try {
