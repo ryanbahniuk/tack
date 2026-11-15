@@ -563,14 +563,23 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   7d / 30d / 90d / 1y / all (default 30d). Resizes update the layout.
   Insights aggregates **all** sessions, including archived ones, into local calendar
   day/week/month buckets: sessions, agents (including PR-fix agents), PRs opened
-  and merged, tickets linked and done, supervisor + agent cost, per-repo totals,
+  and merged, tickets linked and done, supervisor + agent tokens and cost, per-repo totals,
   absolute deltas vs. the previous equal-length period, and daily contributions.
   PR opening uses the link's `created_at`; merge uses GitHub's `mergedAt`, persisted
   as `session_prs.merged_at` (legacy merged rows fall back to `updated_at`). Ticket
   completion uses `updated_at` for current `done` rows as an approximation. Costs
   use creation dates; repo costs include agent spend only, sorted by agent count.
   Ranges include today through now; comparison uses the same local dates/time in
-  the preceding period. Full-screen Insights uses two columns with a repo table.
+  the preceding period. A model table in split/full views shows sessions by
+  `supervisor_model`, agents by `model` (including PR-fix), and their combined
+  tokens and cost; NULL handles use "unknown". Tokens sum input, output, cache
+  reads and cache writes, attributed to creation dates like cost, and excluded
+  from contributions. Session token columns default to zero without backfill.
+  Headless supervisor usage overwrites with the latest runtime figure, matching
+  cost even on resume; interactive transcript recovery overwrites both with
+  cumulative figures. Model rows sort by cost, tokens, agents, sessions, then name.
+  Tables size to remaining rows or drop whole; narrow model tables stack fields.
+  Full-screen Insights uses two columns with a repo table.
   Time series use block heights (▁▂▃▄▅▆▇█, · for zero), with shared scales for
   paired rows, full-word labels, totals and peaks when space allows, and dated
   axes with bucket units. Short series stretch by whole columns per bucket.

@@ -253,6 +253,17 @@ const migrations: Migration[] = [
     // Archive remembers which agents to relaunch when the session is restored.
     sql: `ALTER TABLE agents ADD COLUMN interrupted_at TEXT;`,
   },
+  {
+    version: 9,
+    name: "session_usage",
+    // Historical supervisor usage is unknown and remains zero; no backfill.
+    sql: `
+      ALTER TABLE sessions ADD COLUMN tokens_input INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN tokens_output INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN cache_read INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN cache_write INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */
