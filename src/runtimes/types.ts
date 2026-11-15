@@ -41,9 +41,15 @@ export interface RunOptions {
   }>;
   /**
    * Read-only posture — for the supervisor, which only investigates and delegates,
-   * never edits. Adapters translate to their CLI's read-only sandbox/permissions.
+   * never edits code. Adapters translate to their CLI's read-only sandbox/permissions.
    */
   readOnly?: boolean;
+  /** Optional writable page-source directories for attended read-only runs.
+   * Adapters may ignore this; Claude requires `writeGuard` to enforce the scope. */
+  writableDirs?: string[];
+  /** PreToolUse guard command enforcing `writableDirs`; built by the caller so
+   * runtime adapters need not know how to invoke Tack itself. */
+  writeGuard?: { command: string; args: string[] };
   /**
    * Also forbid the shell (Bash) on top of `readOnly`. The delegate-only supervisor
    * sets this so it can't route around its no-write posture by shelling out to

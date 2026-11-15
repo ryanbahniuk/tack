@@ -37,7 +37,7 @@ src/db/                  connection, migrate (schema), repositories, index
 src/runtimes/            types (Runtime/AgentEvent), claude.ts, codex.ts, proc.ts, pricing.ts, pricing-sync.ts (models.dev), resolve.ts, install.ts
 src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor: spawn/touches/dependsOn, check_conflicts)
 src/agent/               execute.ts (prepare/run + activity/error), detached.ts (background runner, dependency self-gate + retry)
-src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection)
+src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection), write-guard.ts (publishable-page write scope)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
@@ -109,3 +109,7 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   bump codex, re-check the field extractors in `src/runtimes/codex.ts`.
 - MCP servers speak their protocol over **stdout** — the `__mcp` / `__supervisor-mcp`
   subcommands must emit nothing else there (they bypass citty for this reason).
+- The interactive supervisor may draft publishable pages only under
+  `<TACK_HOME>/supervisor/<sessionId>/artifacts`. `__guard-write` is its PreToolUse
+  boundary: keep symlink/ancestor resolution fail-closed and the parent `.claude`
+  settings unwritable. Publishing tools keep their normal permissions.

@@ -41,3 +41,27 @@ describe("supervisor context: PR fixes", () => {
     expect(body).toContain("never spawn a new agent or open a new PR");
   });
 });
+
+describe("supervisor context: publishable pages", () => {
+  test("without an artifacts dir preserves the original no-filesystem guidance", () => {
+    const body = context(true);
+    expect(body).toContain("You investigate read-only and never touch the filesystem yourself.");
+    expect(body).toContain("Do not reach\nfor Edit, Write, NotebookEdit");
+    expect(body).not.toContain("page/Artifact tool");
+    buildSupervisorContext("ses_test", { projects: [], autoOpenPrs: true } as unknown as TackConfig, {});
+    expect(written).toBe(body);
+  });
+
+  test("with an artifacts dir grants only requested pages and keeps delegation guidance", () => {
+    buildSupervisorContext("ses_test", { projects: [], autoOpenPrs: true } as unknown as TackConfig,
+      { artifactsDir: "/tmp/tack/supervisor/ses_test/artifacts" });
+    expect(written).toContain("`/tmp/tack/supervisor/ses_test/artifacts`");
+    expect(written).toContain("write its source with Write/Edit");
+    expect(written).toContain("publish it with your page/Artifact tool");
+    expect(written).toContain("ONLY writable place");
+    expect(written).toContain("never\nplans, notes, contracts or code");
+    expect(written).toContain("Writes elsewhere are denied");
+    expect(written).toContain('Never tell the human you "can\'t write a file"');
+    expect(written).not.toContain("never touch the filesystem yourself");
+  });
+});

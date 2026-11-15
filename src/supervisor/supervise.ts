@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LOGS_DIR, TACK_HOME } from "../paths";
+import { LOGS_DIR, supervisorCwd, supervisorArtifactsDir } from "../paths";
 import type { TackConfig } from "../config/schema";
 import type { RunOptions } from "../runtimes/types";
 import { modelForRole, resolveModel } from "../config/load";
@@ -133,7 +133,7 @@ async function* runSupervisor(opts: {
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
 
-  const cwd = join(TACK_HOME, "supervisor", session.id);
+  const cwd = supervisorCwd(session.id);
   mkdirSync(cwd, { recursive: true });
   const logPath = join(LOGS_DIR, session.id, "supervisor.log");
   // Read access is limited to this session's snapshot worktrees (populated by the
@@ -210,7 +210,9 @@ export async function superviseInteractive(opts: {
   const model = resolveModel(config, session.supervisor_model);
   stampSessionHeartbeat(session.id, process.pid);
 
-  const contextFile = buildSupervisorContext(session.id, config);
+  const artifactsDir = supervisorArtifactsDir(session.id);
+  mkdirSync(artifactsDir, { recursive: true });
+  const contextFile = buildSupervisorContext(session.id, config, { artifactsDir });
   const supervisorMcp = selfCommand(["__supervisor-mcp", session.id]);
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
@@ -235,7 +237,7 @@ export async function superviseInteractive(opts: {
   // that finished before this turn counts as seen.
   stampSessionSeen(session.id);
 
-  const cwd = join(TACK_HOME, "supervisor", session.id);
+  const cwd = supervisorCwd(session.id);
   mkdirSync(cwd, { recursive: true });
   // Read access is limited to this session's snapshot worktrees (fresh default-branch
   // checkouts made by `sync_projects`), not the user's possibly-stale checkouts; see
@@ -259,6 +261,8 @@ export async function superviseInteractive(opts: {
     readOnly: true,
     disallowShell: true,
     addDirs,
+    writableDirs: [artifactsDir],
+    writeGuard: selfCommand(["__guard-write", artifactsDir]),
     resume,
     sessionRef,
     contextFile,
@@ -351,7 +355,7 @@ export async function attachSupervisor(
     const session = getSession(sessionId);
     if (session?.supervisor_model) {
       const model = resolveModel(config, session.supervisor_model);
-      const cwd = join(TACK_HOME, "supervisor", sessionId);
+      const cwd = supervisorCwd(sessionId);
       recoverSupervisorCost({ session, model, cwd, sessionRef: session.resume_ref ?? undefined });
     }
   }

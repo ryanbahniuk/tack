@@ -44,3 +44,13 @@ export function collapseHome(p: string): string {
   if (p.startsWith(home + "/")) return "~/" + p.slice(home.length + 1);
   return p;
 }
+
+/** Tack-owned supervisor cwd; its settings must stay outside the writable drafts. */
+export function supervisorCwd(sessionId: string): string {
+  return join(TACK_HOME, "supervisor", sessionId);
+}
+
+/** Publishable page sources only, never supervisor settings or project code. */
+export function supervisorArtifactsDir(sessionId: string): string {
+  return join(supervisorCwd(sessionId), "artifacts");
+}
