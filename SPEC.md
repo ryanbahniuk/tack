@@ -497,8 +497,9 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
-  prWatch: { enabled: true, intervalSeconds: 300, autoPush: true, reply: true, fixCi: true, maxFixRunsPerDay: 5 },
+  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
+  draftPrs: true,
   jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
 ```
@@ -689,6 +690,25 @@ if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn
 24h (failed automatic runs and legacy NULL-origin rows count; supervisor `fix_pr`
 runs are exempt and do not count). The `open_pr` base-conflict hand-off also uses
 origin `auto` and enforces this cap.
+
+PRs opened through `open_pr` default to drafts: `draftPrs` (default true) forces
+`--draft` even when its `draft` argument is false. With `draftPrs: false`, the
+argument is honored. The tool persists the resulting state as draft or open.
+
+With `prWatch.enabled` and `prWatch.autoReady` (both default true), the watcher
+runs a readiness gate after gathering feedback and before spawning fixes. It calls
+`gh pr ready` only for a draft with mergeability exactly MERGEABLE, no active or
+awaiting-post-fix agent, no fresh/released feedback, and no stored pending/failed
+decisions. Every non-CI feedback row must be handled with decision fixed, declined
+or not_applicable and a `reply_ref`; silently declined unreported items do not
+qualify. Current-head checks must all be settled and none failing/cancelled; zero
+checks is green. Draft checks are fetched even with `fixCi: false`, sharing one
+fetch with failure ingestion; fetch errors block readiness. A clean PR qualifies
+without any prior fix run. On success the watcher latches
+`session_prs.ready_promoted_at`, persists state open and logs it. The latch is never
+cleared, so a human returning the PR to draft is respected. Promotion failures are
+logged and retried next tick. Disable `autoReady` for manual promotion.
+
 With `prWatch.fixCi` (default true), also fetch checks on the current PR head
 using `gh pr checks --json` (GraphQL `statusCheckRollup` for older gh). Wait until
 no check is pending before ingesting any failures; reviews and conflicts still

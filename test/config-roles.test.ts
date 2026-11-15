@@ -27,7 +27,17 @@ describe("role config", () => {
   test("normalizes legacy strings for every role", async () => {
     const config = await loadConfig(configFile({ supervisor: "a", agent: "b", summary: "c" }));
     expect(config.roles).toEqual({ supervisor: ["a"], agent: ["b"], summary: ["c"] });
+    expect(config.draftPrs).toBe(true);
+    expect(config.prWatch.autoReady).toBe(true);
     expect(roleModelKeys(config, "agent")).toEqual(["b"]);
+  });
+
+  test("loads explicit draft and auto-ready opt-outs", async () => {
+    const path = configFile({ supervisor: "a", agent: "b", summary: "c" });
+    writeFileSync(path, readFileSync(path, "utf8").replace("export default {", "export default { draftPrs: false, prWatch: { autoReady: false },"));
+    const config = await loadConfig(path);
+    expect(config.draftPrs).toBe(false);
+    expect(config.prWatch.autoReady).toBe(false);
   });
 
   test("normalizes arrays and removes duplicates in order", async () => {

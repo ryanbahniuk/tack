@@ -90,6 +90,7 @@ export default ({
   prWatch: {
     // enabled: true,          // false = never start a watcher
     // intervalSeconds: 300,   // PR poll cadence for the watcher and tack dashboard (min 60)
+    // autoReady: true,        // promote drafts once comments are addressed and CI is green
     // autoPush: true,         // push fix commits to the PR branch
     // reply: true,            // post a reply on each handled comment
     // fixCi: true, // also fix failing CI checks on the PR head
@@ -100,6 +101,8 @@ export default ({
   // in every affected repo without asking (you still review and merge each). Set to
   // false to have it ask first and confirm each PR before it's opened.
   autoOpenPrs: true,
+  // Force drafts even if open_pr requests ready; PR watch promotes when ready.
+  draftPrs: true,
 
   // Optional session JIRA ticket tracking (track-only — Tack never creates, edits,
   // or transitions tickets). The supervisor links the tickets a session works on;

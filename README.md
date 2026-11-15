@@ -198,11 +198,20 @@ tack session resume <session>      # rejoin the supervisor
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
+PRs open as drafts by default (`draftPrs: true`), even when `open_pr` requests a
+ready PR. Set `draftPrs: false` to honor the tool's `draft` argument. With
+`prWatch.enabled` and `prWatch.autoReady` (both default true), the watcher promotes
+a draft once it is mergeable, no fix is busy, all feedback is handled with explicit
+replies, and CI on the current head is settled with no failures. Clean PRs qualify
+without a fix run; zero checks counts as green. Failed check fetches defer promotion.
+Tack promotes each PR only once, respecting a human's later move back to draft.
+Set `prWatch.autoReady: false` to keep readiness manual.
+
 PR-watch handles review feedback, merge conflicts and failing CI checks on the PR
 head. CI fixes wait for the suite to settle and include bounded failed-job logs for
 GitHub Actions. Agents reproduce failures locally and fix PR code/tests; unrelated
 flaky or infrastructure failures are reported without changes. Set `prWatch.fixCi: false`
-to disable CI fixes (enabled by default).
+to disable CI fixes (enabled by default); draft readiness still checks CI.
 
 PR-watch answers inline review feedback inside its review thread. Replies to
 conversation comments and review summaries are combined into one top-level comment

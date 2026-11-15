@@ -140,6 +140,8 @@ export interface AmendmentRow {
 }
 
 export interface SessionPrRow {
+  /** First automatic promotion; never cleared when a human returns it to draft. */
+  ready_promoted_at: string | null;
   merged_at: string | null;
   id: string;
   session_id: string;
@@ -699,6 +701,13 @@ export function setSessionPrStatus(
       now,
       id,
     );
+}
+
+/** Latches the first successful automatic promotion, preserving it across polls. */
+export function markSessionPrReadyPromoted(id: string): void {
+  const now = nowIso();
+  getDb().prepare(`UPDATE session_prs SET ready_promoted_at = ?, updated_at = ?
+    WHERE id = ? AND ready_promoted_at IS NULL`).run(now, now, id);
 }
 
 /** Records (or clears, with null) the session's PR-watch process id. */

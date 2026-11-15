@@ -310,6 +310,12 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN pr_watch_config_version TEXT;
     `,
   },
+  {
+    version: 15,
+    name: "session_pr_ready_promoted",
+    // A human returning a promoted PR to draft must not trigger another promotion.
+    sql: `ALTER TABLE session_prs ADD COLUMN ready_promoted_at TEXT;`,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

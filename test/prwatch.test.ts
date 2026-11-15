@@ -953,7 +953,7 @@ describe("postFix outcomes", () => {
         ALTER TABLE agents DROP COLUMN continues_agent_id;
         ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
         ALTER TABLE agents DROP COLUMN diff_base;
-        ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; DELETE FROM _migrations WHERE version >= 11;
+        ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; DELETE FROM _migrations WHERE version >= 11;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, post_fixed_at, created_at, updated_at)
           VALUES ('a', 's', 'app', 'done', 'then', 'then', 'then');`);
@@ -977,7 +977,7 @@ test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
         ALTER TABLE agents DROP COLUMN continues_agent_id;
         ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
         ALTER TABLE agents DROP COLUMN diff_base;
-      ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; DELETE FROM _migrations WHERE version >= 12;
+      ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; DELETE FROM _migrations WHERE version >= 12;
       INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
       INSERT INTO agents (id, session_id, project_name, status, kind, created_at, updated_at)
         VALUES ('a', 's', 'app', 'done', 'pr_fix', 'then', 'then');`);
