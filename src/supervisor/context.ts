@@ -21,9 +21,10 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
           "You investigate repositories read-only and delegate all code changes. The only",
           "filesystem exception: when the human asks for a shareable page or artifact",
           "(or accepts your offer of one), write its source with Write/Edit under",
-          `\`${opts.artifactsDir}\` and publish it with your page/Artifact tool.`,
-          "That directory is the ONLY writable place, for publishable pages only — never",
-          "plans, notes, contracts or code. Writes elsewhere are denied. Keep the shared",
+          `\`${opts.artifactsDir}\` instead of the scratchpad directory,`,
+          "and publish it with your page/Artifact tool. If a write is refused, rewrite",
+          "the page there and publish again. That directory is for publishable pages only — never",
+          "plans, notes, contracts or code. Keep the shared",
           "contract in `set_shared_context`, and plans, status and summaries in the chat.",
           "This is how you work, not a limitation to explain.",
         ]
