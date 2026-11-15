@@ -55,7 +55,8 @@ export { buildPrFixPrompt } from "./prompt";
  * healthy after the supervisor opens them.
  *
  * One detached process per session (`tack __watch-prs <sessionId>`, pid in
- * `sessions.pr_watch_pid`) polls every `prWatch.intervalSeconds`. For each PR that
+ * `sessions.pr_watch_pid`) polls every `prWatch.intervalSeconds`, or out of cycle
+ * when SIGUSR1 requests an early pass. Passes never overlap. For each PR that
  * isn't merged/closed it persists GitHub's status, and when there's NEW feedback
  * (review threads, review bodies, conversation comments — bots included) or a merge
  * conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
@@ -79,7 +80,32 @@ export { buildPrFixPrompt } from "./prompt";
  *    carries on (next PR, next tick). Nothing throws out of the loop.
  */
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A serial loop's interruptible wait. Wakes during work coalesce into one skipped wait. */
+export function createWakeableSleep(): { sleep(ms: number): Promise<void>; wake(): void } {
+  let pending = false;
+  let resolveSleep: (() => void) | undefined;
+  return {
+    sleep(ms) {
+      if (pending) {
+        pending = false;
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          resolveSleep = undefined;
+          resolve();
+        };
+        const timer = setTimeout(finish, ms);
+        resolveSleep = finish;
+      });
+    },
+    wake() {
+      if (resolveSleep) resolveSleep();
+      else pending = true;
+    },
+  };
+}
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIVE: ReadonlySet<AgentStatus> = new Set(["pending", "running"]);
 
@@ -118,6 +144,46 @@ export function spawnPrWatcher(sessionId: string, config: TackConfig): number | 
   return child.pid;
 }
 
+export type PrWatchTrigger =
+  | { kind: "disabled" }
+  | { kind: "inactive" }
+  | { kind: "no-open-prs" }
+  | { kind: "signalled"; pid: number }
+  | { kind: "started"; pid: number };
+
+/** Request the normal watcher pass sooner, preserving all watchPass guards. */
+export function triggerPrWatch(
+  sessionId: string,
+  config: TackConfig,
+  deps = {
+    isAlive,
+    signal: (pid: number) => { process.kill(pid, "SIGUSR1"); },
+    spawn: spawnPrWatcher,
+  },
+): PrWatchTrigger {
+  if (!config.prWatch.enabled) return { kind: "disabled" };
+  const session = getSession(sessionId);
+  if (!session || session.status !== "active") return { kind: "inactive" };
+  if (!listSessionPrs(sessionId).some(isWatchablePr)) return { kind: "no-open-prs" };
+  if (session.pr_watch_pid && deps.isAlive(session.pr_watch_pid)) {
+    try {
+      deps.signal(session.pr_watch_pid);
+      return { kind: "signalled", pid: session.pr_watch_pid };
+    } catch {
+      // The watcher may have exited between the liveness check and the signal.
+    }
+  }
+  const pid = deps.spawn(sessionId, config);
+  if (pid !== null) return { kind: "started", pid };
+  // Another caller may have won the spawn race; wake that watcher instead.
+  const winner = getSession(sessionId)?.pr_watch_pid;
+  if (winner && deps.isAlive(winner)) {
+    deps.signal(winner);
+    return { kind: "signalled", pid: winner };
+  }
+  throw new Error(`Failed to start PR watcher for session ${sessionId}`);
+}
+
 /**
  * The `__watch-prs` entrypoint: loops one pass per interval until the session is
  * gone/archived or none of its PRs are open any more, then clears its pid. Each
@@ -151,6 +217,13 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
     });
   }
 
+  const wait = createWakeableSleep();
+  const requestPoll = () => {
+    log("poll requested (SIGUSR1)");
+    wait.wake();
+  };
+  process.on("SIGUSR1", requestPoll);
+
   const intervalMs = config.prWatch.intervalSeconds * 1000;
   log(`watching PRs for ${sessionId} every ${config.prWatch.intervalSeconds}s`);
   try {
@@ -173,9 +246,10 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
       } catch (err) {
         log(`pass failed: ${(err as Error).message}`);
       }
-      await sleep(intervalMs);
+      await wait.sleep(intervalMs);
     }
   } finally {
+    process.off("SIGUSR1", requestPoll);
     release();
   }
 }

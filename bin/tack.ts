@@ -63,7 +63,7 @@ import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor, openInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
-import { runPrWatcher } from "../src/prwatch/watch";
+import { runPrWatcher, triggerPrWatch } from "../src/prwatch/watch";
 import {
   ensureRuntimeInstalled,
   fetchPricingCatalog,
@@ -1285,6 +1285,25 @@ const sessionRetitle = defineCommand({
   },
 });
 
+const sessionPollPrs = defineCommand({
+  meta: { name: "poll-prs", description: "Ask a session's PR watcher to poll now" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const result = triggerPrWatch(id, await loadConfig());
+    switch (result.kind) {
+      case "disabled": console.log(pc.yellow("PR watch is disabled")); break;
+      case "inactive": console.log(pc.yellow(`${id} is not active`)); break;
+      case "no-open-prs": console.log(pc.dim(`${id} has no open PRs`)); break;
+      case "signalled":
+      case "started":
+        console.log(pc.green(`polling PRs for ${id} · ${result.kind} watcher pid ${result.pid}`));
+        break;
+    }
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -1292,9 +1311,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, show, context, retitle, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, show, context, retitle, poll-prs, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, show: sessionShow, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

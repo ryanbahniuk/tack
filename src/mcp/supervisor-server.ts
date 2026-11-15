@@ -41,6 +41,7 @@ import {
   prFixCapReached,
   spawnPrFixAgent,
   spawnPrWatcher,
+  triggerPrWatch,
 } from "../prwatch/watch";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 
@@ -498,16 +499,20 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "check_prs",
     {
       description:
-        "Read-only snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
+        "Snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
         "review feedback (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
         "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
-        "on it. If a PR needs intervention (a conflict persists, a fix run failed), call fix_pr.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
+        "on it. Read-only by default; refresh asks the watcher to poll now asynchronously, so results land " +
+        "on the next check. If a PR needs intervention (a conflict persists, a fix run failed), call fix_pr.",
+      inputSchema: { refresh: z.boolean().optional().default(false) },
+      annotations: { readOnlyHint: false },
     },
-    async () => {
+    async ({ refresh }) => {
+      requireSession();
+      const pollTriggered = refresh ? triggerPrWatch(sessionId, config) : undefined;
       const s = requireSession();
       return text({
+        ...(pollTriggered ? { pollTriggered } : {}),
         watcherPid: s.pr_watch_pid,
         prWatchEnabled: config.prWatch.enabled,
         prs: listSessionPrs(sessionId).map((pr) => {
