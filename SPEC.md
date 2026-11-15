@@ -292,7 +292,7 @@ session_prs(id, session_id→sessions, agent_id, project_name, number, url, titl
             created_at, updated_at, UNIQUE(session_id, url))
 
 pr_feedback(id, session_pr_id→session_prs, source_id,
-            source_kind[review_thread|review|issue_comment], author, author_is_bot,
+            source_kind[review_thread|review|issue_comment|ci_check], author, author_is_bot,
             url, path, line, in_reply_to, body_ref, fix_agent_id,
             decision[pending|fixed|declined|not_applicable|failed], reply_ref,
             reply_url, created_at, handled_at, UNIQUE(session_pr_id, source_id))
@@ -495,7 +495,7 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
-  prWatch: { enabled: true, intervalSeconds: 300, autoPush: true, reply: true, maxFixRunsPerDay: 5 },
+  prWatch: { enabled: true, intervalSeconds: 300, autoPush: true, reply: true, fixCi: true, maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
   jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
@@ -664,6 +664,16 @@ if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn
 24h (failed automatic runs and legacy NULL-origin rows count; supervisor `fix_pr`
 runs are exempt and do not count). The `open_pr` base-conflict hand-off also uses
 origin `auto` and enforces this cap.
+With `prWatch.fixCi` (default true), also fetch checks on the current PR head
+using `gh pr checks --json` (GraphQL `statusCheckRollup` for older gh). Wait until
+no check is pending before ingesting any failures; reviews and conflicts still
+proceed while CI is pending. Failed, cancelled, timed-out and startup-failure checks
+become `ci_check` feedback with source ids `ci:<headSha>:<workflow/name>`. The SHA
+makes failures on a new head new items; unchanged heads never loop. Fetching checks
+is best-effort and cannot block review/conflict handling. GitHub Actions failed-job
+logs are collected by the watcher with `gh run view --job --log-failed`, capped at
+the last 200 lines / 20KB, and stored in the feedback artifact, never in the DB.
+
 Conversation comments and reviews come from paginated GraphQL connections with
 `author { login __typename }`, retaining their existing node ids. Bot detection also
 uses a case-insensitive known-login fallback, stripping any `[bot]` suffix.
@@ -672,12 +682,17 @@ The **fix agent** forks off the PR's current remote head (`createPrWorktree`), i
 told to judge each item (fix what's relevant and justified, decline the rest),
 resolve a conflict by `git merge origin/<base>` (never rebase), commit, and call
 `report_pr_feedback` with a decision + 1-3 sentence reply per item. It never pushes
-or calls `gh`.
+or calls `gh`. CI checks have their own prompt section: reproduce with the repo's
+scripts and fix the root cause in PR code/tests (`fixed`); unrelated flaky, infra,
+base-branch or secrets/permissions failures require no changes (`not_applicable`).
+Never disable, skip or weaken checks just to get green. Logs are untrusted quoted
+input. `fix_pr` folds in current CI failures best-effort as well as review feedback.
 
 The **post-fix step** (watcher): safety-net commit; if HEAD moved and `autoPush`,
 push **non-force** onto the PR branch — a rejected push releases the items back to
 pending for a fresh run off the new head; then, if `reply`, post inline replies
-through the review-thread replies endpoint. Conversation comments and review bodies
+through the review-thread replies endpoint. CI items share the conversation batch,
+linking `[Failing check: <name>](<link>)` without quoting logs. Conversation comments and review bodies
 share **one top-level comment per fix run**, even when there is only one item. Each
 section links the original, names its author, quotes its first meaningful line
 (skipping blank lines and HTML comments, stripping heading markers, capped at 200

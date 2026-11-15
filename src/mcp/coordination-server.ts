@@ -88,10 +88,10 @@ export async function runCoordinationServer(sessionId: string, agentId: string):
       "report_pr_feedback",
       {
         description:
-          "Report your decision and reply for each PR review item you were asked to handle, by its sourceId. " +
+          "Report your decision and reply for each PR review or CI check item you were asked to handle, by its sourceId. " +
           "Call once before finishing, covering EVERY item. decision: 'fixed' (you changed code and committed), " +
           "'declined' (relevant but not justified / you disagree), or 'not_applicable' (not actionable, e.g. " +
-          "informational or bot noise). reply: 1-3 plain sentences saying what you did or why not. Tack posts the " +
+          "informational, bot noise, or CI failures unrelated to the PR). reply: 1-3 plain sentences saying what you did or why not. Tack posts the " +
           "replies on GitHub after pushing your commits — do not push or call gh yourself.",
         inputSchema: {
           items: z

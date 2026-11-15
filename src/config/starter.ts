@@ -79,7 +79,7 @@ export default ({
   ],
 
   // PR watch: every session with open PRs polls them in the background. New review
-  // comments (bots included) or a merge conflict spawn a fix agent (roles.agent) that
+  // comments (bots included), failing CI or a merge conflict spawn a fix agent (roles.agent) that
   // fixes what's warranted — or merges the base branch to resolve the conflict — and
   // then Tack pushes (never force) and replies to each comment explaining what it did.
   // \`maxFixRunsPerDay\` caps automatic (watcher) fix runs per PR per rolling 24h;
@@ -89,6 +89,7 @@ export default ({
     // intervalSeconds: 300,   // PR poll cadence for the watcher and tack dashboard (min 60)
     // autoPush: true,         // push fix commits to the PR branch
     // reply: true,            // post a reply on each handled comment
+    // fixCi: true, // also fix failing CI checks on the PR head
     // maxFixRunsPerDay: 5,
   },
 

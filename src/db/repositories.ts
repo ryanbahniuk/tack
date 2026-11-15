@@ -16,7 +16,7 @@ export type AgentKind = "pr_fix";
 export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
-export type PrFeedbackKind = "review_thread" | "review" | "issue_comment";
+export type PrFeedbackKind = "review_thread" | "review" | "issue_comment" | "ci_check";
 export type PrFeedbackDecision = "pending" | "fixed" | "declined" | "not_applicable" | "failed";
 
 export interface SessionRow {
