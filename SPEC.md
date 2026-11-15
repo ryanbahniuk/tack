@@ -735,9 +735,12 @@ section links the original, names its author, quotes its first meaningful line
 (skipping blank lines and HTML comments, stripping heading markers, capped at 200
 characters), gives the reply, and cites the pushed fix SHA for fixed items. Human
 authors are @-mentioned at most once per batch; bot logins are bold and never
-@-mentioned. The batch ends with one `_— Tack_` signature and one marker; every item
-records the same reply URL. Posting failures are logged and the affected items are
-marked handled without retry, since the request may already have landed. All replies
+@-mentioned. Replies from Claude Code fix agents append
+`🤖 Generated with [Claude Code](https://claude.com/claude-code)`; Codex and unknown
+runtimes append no attribution. Inline replies cite pushed fixes as `Fix: <sha>`
+after the reply text, matching the conversation sections. The batch carries one
+runtime attribution (when present) and one final marker; every item records the same
+reply URL. Posting failures are logged and the affected items are marked handled without retry, since the request may already have landed. All replies
 end with the marker so Tack never ingests itself. Empty declined replies are skipped.
 Unreported items become `declined` with no reply; a failed run marks its items `failed` (never retried
 automatically). It's latched per item (`handled_at`) and per agent
