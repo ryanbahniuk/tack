@@ -110,6 +110,9 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 - MCP servers speak their protocol over **stdout** — the `__mcp` / `__supervisor-mcp`
   subcommands must emit nothing else there (they bypass citty for this reason).
 - The interactive supervisor may draft publishable pages only under
-  `<TACK_HOME>/supervisor/<sessionId>/artifacts`. `__guard-write` is its PreToolUse
-  boundary: keep symlink/ancestor resolution fail-closed and the parent `.claude`
+  `<TACK_HOME>/supervisor/<sessionId>/artifacts` (preferred) or this Claude session's
+  `<claudeTmpRoot>/claude-<uid>/<sanitizedCwd>/<session_id>/scratchpad`.
+  `__guard-write` derives the scratchpad from hook stdin; the temp root is the
+  realpath of `$CLAUDE_CODE_TMPDIR` or `/tmp`. The scratchpad may not exist yet.
+  Keep its symlink/ancestor resolution fail-closed and the parent `.claude`
   settings unwritable. Publishing tools keep their normal permissions.

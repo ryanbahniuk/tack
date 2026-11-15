@@ -58,9 +58,9 @@ describe("supervisor context: publishable pages", () => {
     expect(written).toContain("`/tmp/tack/supervisor/ses_test/artifacts`");
     expect(written).toContain("write its source with Write/Edit");
     expect(written).toContain("publish it with your page/Artifact tool");
-    expect(written).toContain("ONLY writable place");
+    expect(written).toContain("instead of the scratchpad directory");
+    expect(written).toContain("If a write is refused, rewrite\nthe page there and publish again");
     expect(written).toContain("never\nplans, notes, contracts or code");
-    expect(written).toContain("Writes elsewhere are denied");
     expect(written).toContain('Never tell the human you "can\'t write a file"');
     expect(written).not.toContain("never touch the filesystem yourself");
   });

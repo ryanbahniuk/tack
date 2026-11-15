@@ -10,7 +10,8 @@ export type WriteDecision = {
 /** Resolve existing ancestors, including /tmp and /var aliases on macOS. Walk
  * before collapsing `..`: a symlink followed by `..` refers to the target's parent,
  * not the link's parent. Missing tails are fine for new pages; dangling links and
- * all errors other than ENOENT fail closed. Allowed roots must already exist. */
+ * all errors other than ENOENT fail closed. Configured roots must already exist;
+ * the session scratchpad uses the same missing-tail walk as a new page. */
 export function canonicalWritePath(path: string, directory = false): string {
   if (!isAbsolute(path) || path.includes("\0")) throw new Error("Invalid absolute path");
   if (directory) {
@@ -47,10 +48,10 @@ export function canonicalWritePath(path: string, directory = false): string {
 
 /** Pure policy given a path resolver, kept separate from stdin/stdout and filesystem
  * access so hook failures cannot accidentally become an approval. */
-export function decideWrite(input: unknown, allowedDirs: string[], canonicalize: Canonicalize): WriteDecision {
+export function decideWrite(input: unknown, allowedDirs: string[], canonicalize: Canonicalize, scratchpadRoot?: string): WriteDecision {
   const deny: WriteDecision = {
     permissionDecision: "deny",
-    permissionDecisionReason: `The only writable directories are ${allowedDirs.join(", ") || "(none)"}; they are for publishable pages only, never plans, notes, contracts or code. Writes elsewhere are denied.`,
+    permissionDecisionReason: `Write the page under ${allowedDirs.join(", ") || "(no configured directory)"} and publish again. These directories are for publishable pages only, never plans, notes, contracts or code. Writes elsewhere are denied unless inside this session's Claude scratchpad.`,
   };
   try {
     if (!input || typeof input !== "object" || !allowedDirs.length) return deny;
@@ -63,6 +64,7 @@ export function decideWrite(input: unknown, allowedDirs: string[], canonicalize:
     // Do not use resolve/join here: both erase symlink/.. traversal before realpath.
     const target = canonicalize(isAbsolute(path) ? path : `${cwd}${sep}${path}`);
     const roots = allowedDirs.map((dir) => canonicalize(dir, true));
+    if (scratchpadRoot) roots.push(canonicalize(scratchpadRoot));
     if (roots.some((root) => {
       const tail = relative(root, target);
       return tail !== "" && tail !== ".." && !tail.startsWith(`..${sep}`) && !isAbsolute(tail);
@@ -74,8 +76,24 @@ export function decideWrite(input: unknown, allowedDirs: string[], canonicalize:
 }
 
 /** Parse hook stdin without letting malformed JSON escape to the CLI's stdout. */
-export function writeGuardDecision(raw: string, allowedDirs: string[]): WriteDecision {
+export function writeGuardDecision(raw: string, allowedDirs: string[], opts: {
+  env?: Pick<NodeJS.ProcessEnv, "CLAUDE_CODE_TMPDIR">;
+  uid?: number | null;
+} = {}): WriteDecision {
   let input: unknown;
-  try { input = JSON.parse(raw); } catch { /* decideWrite denies undefined */ }
-  return decideWrite(input, allowedDirs, canonicalWritePath);
+  try {
+    input = JSON.parse(raw);
+    const { cwd, session_id } = (input ?? {}) as { cwd?: unknown; session_id?: unknown };
+    const uid = opts.uid === undefined ? process.getuid?.() : opts.uid;
+    if (uid != null && typeof cwd === "string" && isAbsolute(cwd) && !cwd.includes("\0")
+      && typeof session_id === "string" && /^[A-Za-z0-9-]+$/.test(session_id)) {
+      const tmpRoot = canonicalWritePath((opts.env ?? process.env).CLAUDE_CODE_TMPDIR || "/tmp", true);
+      const scratchpadRoot = join(tmpRoot, `claude-${uid}`, cwd.replace(/[^A-Za-z0-9]/g, "-"), session_id, "scratchpad");
+      return decideWrite(input, allowedDirs, canonicalWritePath, scratchpadRoot);
+    }
+    return decideWrite(input, allowedDirs, canonicalWritePath);
+  } catch {
+    // Parsing and scratchpad derivation failures must never grant a write.
+    return decideWrite(undefined, allowedDirs, canonicalWritePath);
+  }
 }

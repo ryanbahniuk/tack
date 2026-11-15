@@ -361,7 +361,15 @@ Adapter specifics, hidden behind the interface:
   code). `writableDirs` and a caller-built `writeGuard` command let Claude replace
   the blanket Edit/Write deny with absolute-path allows plus a PreToolUse
   `tack __guard-write <dir>...` hook. It realpaths roots and existing ancestors,
-  denies malformed input and escapes, and permits only strict descendants. The
+  denies malformed input and escapes, and permits only strict descendants. It also
+  allows this Claude session's scratchpad at
+  `<claudeTmpRoot>/claude-<uid>/<sanitizedCwd>/<session_id>/scratchpad`, derived from
+  hook stdin (`cwd` with non-alphanumeric characters replaced by `-`, and a
+  `session_id` matching `^[A-Za-z0-9-]+$`). The temp root is the realpath of
+  `$CLAUDE_CODE_TMPDIR` or `/tmp`; without a process uid this allowance is skipped.
+  The scratchpad may not exist yet, so its root uses the same symlink-safe
+  ancestor walk as write targets. Page sources should still go in `artifacts`;
+  refused writes must be redone there before publishing again. The
   parent cwd's `.claude` settings stay unwritable; Tack still adds only MCP
   allows to local settings. Publishing tools retain their normal permission flow. Headless
   runs keep the original no-write posture; Codex ignores the writable-dir options.
