@@ -33,6 +33,51 @@ test("session window keeps every cursor visible with bounded expanded detail and
   expect(windowSessionLines([1, 20, 1], 1, 0).end).toBe(1);
 });
 
+for (const columns of [140, 160]) {
+  test(`split dashboard has a full-height guttered divider within ${columns} columns`, async () => {
+    const list = spyOn(repositories, "listSessions").mockReturnValue([]);
+    const output = new PassThrough();
+    Object.assign(output, { columns, rows: 30, isTTY: false });
+    const input = new PassThrough();
+    Object.assign(input, { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+    let frame = "";
+    output.on("data", chunk => { frame = stripVTControlCharacters(chunk.toString()); });
+    const notice = "Divider test notice";
+    const app = render(<Dashboard config={null} onLaunch={() => {}} initialNotice={notice} />, {
+      stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream,
+      debug: true, patchConsole: false, exitOnCtrlC: false,
+    });
+    const checkWidth = () => {
+      const lines = frame.trimEnd().split("\n");
+      for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      return lines;
+    };
+    try {
+      await app.waitUntilRenderFlush();
+      const lines = checkWidth();
+      expect(lines[0]).toContain("split");
+      const footerStart = lines.indexOf(notice);
+      expect(footerStart).toBeGreaterThan(1);
+      const budget = dashboardBodyHeight(30, columns, lines.slice(footerStart));
+      const paneRows = lines.slice(1, footerStart - 1);
+      expect(paneRows).toHaveLength(budget);
+      const listWidth = Math.floor(columns * 0.55);
+      // Ink trims trailing spaces on rows below the last Insights panel.
+      for (const row of paneRows) expect(row.padEnd(columns).slice(listWidth, listWidth + 3)).toBe(" │ ");
+      expect(lines[footerStart - 1]).toBe("");
+
+      input.write("s");
+      await new Promise(resolve => setTimeout(resolve, 25));
+      await app.waitUntilRenderFlush();
+      expect(checkWidth()[0]).toContain("list-only");
+      expect(frame).not.toContain("│");
+    } finally {
+      app.unmount();
+      list.mockRestore();
+    }
+  });
+}
+
 test("short dashboard fits split, list and insights frames while navigating overflowing sessions", async () => {
   const sessions = Array.from({ length: 45 }, () => createSession({ title: "A long session title ".repeat(20) }));
   for (let i = 0; i < 35; i++) {
