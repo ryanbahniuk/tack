@@ -318,7 +318,7 @@ test("real dashboard on scratch TACK_HOME renders split, cycles full-screen, and
   const app = render(<Dashboard config={null} onLaunch={() => {}} />, { stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream, debug: true, patchConsole: false, exitOnCtrlC: false });
   try {
     await app.waitUntilRenderFlush();
-    expect(frame).toContain("split");
+    expect(frame.split("\n")[0]).toContain("│");
     expect(frame).toContain("Insights");
     const press = async (key: string) => {
       frame = "";
