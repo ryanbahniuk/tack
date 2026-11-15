@@ -16,10 +16,12 @@ import {
   listSessionPrs,
   markAgentPostFixed,
   setAgentStatus,
+  setSessionPrWatchPid,
+  setSessionStatus,
   upsertSessionPr,
   type AgentStatus,
 } from "../src/db";
-import { prFixBusy, prFixCapReached } from "../src/prwatch/watch";
+import { createWakeableSleep, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
 import type { TackConfig } from "../src/config/schema";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
@@ -362,5 +364,112 @@ describe("migration v6", () => {
     // Re-running is a no-op.
     migrate(db);
     expect((db.prepare(`SELECT COUNT(*) AS n FROM _migrations WHERE version <= 6`).get() as { n: number }).n).toBe(6);
+  });
+});
+
+
+describe("createWakeableSleep", () => {
+  test("wake resolves an in-flight sleep early", async () => {
+    const wait = createWakeableSleep();
+    const sleeping = wait.sleep(60_000);
+    wait.wake();
+    await sleeping;
+  });
+
+  test("wakes before sleep coalesce into exactly one skipped wait", async () => {
+    const wait = createWakeableSleep();
+    wait.wake();
+    wait.wake();
+    await wait.sleep(60_000);
+    let resolved = false;
+    const next = wait.sleep(60_000).then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    wait.wake();
+    await next;
+    expect(resolved).toBe(true);
+  });
+
+  test("a normal timeout resolves and leaves no pending wake", async () => {
+    const wait = createWakeableSleep();
+    let resolved = false;
+    const sleeping = wait.sleep(5).then(() => { resolved = true; });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    await sleeping;
+    expect(resolved).toBe(true);
+    const next = wait.sleep(60_000);
+    wait.wake();
+    await next;
+  });
+});
+
+describe("triggerPrWatch", () => {
+  const config = { prWatch: { enabled: true } } as TackConfig;
+  function setup(state?: string, pid: number | null = null) {
+    const session = createSession({ title: "trigger PR watch" });
+    setSessionPrWatchPid(session.id, pid);
+    if (state !== undefined) {
+      upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, state, number: 7 });
+    }
+    const calls: string[] = [];
+    const deps = {
+      isAlive: (candidate: number | null | undefined) => candidate === 123,
+      signal: (candidate: number) => { calls.push(`signal ${candidate}`); },
+      spawn: (id: string, _config: TackConfig): number | null => {
+        expect(id).toBe(session.id);
+        calls.push("spawn");
+        return 456;
+      },
+    };
+    return { session, calls, deps };
+  }
+
+  test("disabled takes precedence over a missing session", () => {
+    expect(triggerPrWatch("missing", { prWatch: { enabled: false } } as TackConfig)).toEqual({ kind: "disabled" });
+  });
+
+  test("inactive for missing or non-active sessions", () => {
+    expect(triggerPrWatch("missing", config)).toEqual({ kind: "inactive" });
+    const { session, calls, deps } = setup("open", 123);
+    setSessionStatus(session.id, "archived");
+    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "inactive" });
+    expect(calls).toEqual([]);
+  });
+
+  test("no-open-prs for no PRs or only closed/merged PRs, even with a live watcher", () => {
+    for (const state of [undefined, "closed", "merged"]) {
+      const { session, calls, deps } = setup(state, 123);
+      expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "no-open-prs" });
+      expect(calls).toEqual([]);
+    }
+  });
+
+  test("starts a missing or dead watcher for open, draft, or unpolled PRs", () => {
+    for (const [state, pid] of [["open", null], ["draft", 999], ["unknown", null]] as const) {
+      const { session, calls, deps } = setup(state, pid);
+      expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
+      expect(calls).toEqual(["spawn"]);
+    }
+  });
+
+  test("signals a live watcher without spawning", () => {
+    const { session, calls, deps } = setup("open", 123);
+    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
+    expect(calls).toEqual(["signal 123"]);
+  });
+
+  test("falls back to spawning when the watcher dies before signalling", () => {
+    const { session, calls, deps } = setup("open", 123);
+    deps.signal = () => { calls.push("signal failed"); throw new Error("ESRCH"); };
+    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "started", pid: 456 });
+    expect(calls).toEqual(["signal failed", "spawn"]);
+  });
+
+  test("signals a watcher that won a concurrent spawn", () => {
+    const { session, calls, deps } = setup("open");
+    deps.spawn = () => { setSessionPrWatchPid(session.id, 123); return null; };
+    expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
+    expect(calls).toEqual(["signal 123"]);
   });
 });
