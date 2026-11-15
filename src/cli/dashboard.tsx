@@ -149,6 +149,73 @@ type Confirm =
   | { action: "delete" | "stop"; id: string }
   | { action: "unarchive"; id: string; count: number };
 
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit";
+
+/** Render the same wrapped rows we count, including wide characters in notices.
+ * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
+export function wrapFooter(line: string, columns: number): string[] {
+  const width = Math.max(1, columns);
+  return line.split("\n").flatMap(part => {
+    const lines: string[] = [];
+    let current = "";
+    for (const word of part.split(/ +/)) {
+      const joined = current ? `${current} ${word}` : word;
+      if (Bun.stringWidth(joined) <= width) {
+        current = joined;
+        continue;
+      }
+      if (current) lines.push(current);
+      current = "";
+      for (const char of word) {
+        if (current && Bun.stringWidth(current + char) > width) {
+          lines.push(current);
+          current = "";
+        }
+        current += char;
+      }
+    }
+    lines.push(current);
+    return lines;
+  });
+}
+
+/** Reserve one header row, the footer margin and one spare terminal row. */
+export function dashboardBodyHeight(rows: number, columns: number, footer: readonly string[]): number {
+  return Math.max(0, rows - 1 - 1 - footer.reduce((n, line) => n + wrapFooter(line, columns).length, 0) - 1);
+}
+
+/** Flatten only structural Boxes; each Text is a line unit, including expanded
+ * agent activity/errors, PRs and tickets. Truncation keeps these units one row. */
+function flattenSessionLines(node: React.ReactNode): React.ReactElement<React.ComponentProps<typeof Text>>[] {
+  return React.Children.toArray(node).flatMap(child => {
+    if (!React.isValidElement<{ children?: React.ReactNode }>(child)) return [];
+    return child.type === Text ? [child as React.ReactElement<React.ComponentProps<typeof Text>>] : flattenSessionLines(child.props.children);
+  });
+}
+
+/** Prefer the selected session's row and details, then fill spare space with
+ * preceding sessions. Indicators count hidden sessions (not expanded lines). */
+export function windowSessionLines(counts: readonly number[], cursor: number, height: number) {
+  const total = counts.reduce((a, b) => a + b, 0);
+  const selected = Math.max(0, Math.min(cursor, counts.length - 1));
+  const anchor = counts.slice(0, selected).reduce((a, b) => a + b, 0);
+  if (total <= height) return { start: 0, end: total, above: 0, below: 0 };
+  if (height <= 0) return { start: anchor, end: anchor, above: 0, below: 0 };
+  // Reserve indicators only when there is room alongside the cursor row.
+  const aboveRoom = selected > 0 && height >= 2 ? 1 : 0;
+  const belowRoom = selected < counts.length - 1 && height >= 2 + aboveRoom ? 1 : 0;
+  const room = height - aboveRoom - belowRoom;
+  const start = Math.max(0, anchor - Math.max(0, room - (counts[selected] ?? 1)));
+  const end = Math.min(total, start + room);
+  let offset = 0, above = 0, below = 0;
+  counts.forEach((count, i) => {
+    if (offset < start && i !== selected) above++;
+    if (offset >= end && i !== selected) below++;
+    offset += count;
+  });
+  return { start, end, above: aboveRoom ? above : 0, below: belowRoom ? below : 0 };
+}
+
 export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -465,138 +532,139 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   const liveCount = rows.filter((v) => v.live).length;
   const needsCount = rows.filter((v) => v.needsInput).length;
 
+  const confirmText = confirm ? (confirm.action === "delete"
+    ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
+    : confirm.action === "unarchive"
+      ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
+      : `Stop ${confirm.id} and its agents? (y/N)`) : null;
+  const footer = confirmText ? [confirmText] : [
+    notice,
+    ghMissing ? "gh not found — PR status not updating" : "",
+    jiraUnavailable ? "jira unavailable — ticket status not updating" : "",
+    KEY_HINT,
+  ].filter(Boolean);
+  const budget = dashboardBodyHeight(size.rows, size.columns, footer);
+  const sessionLines = rows.map((v, i) => flattenSessionLines(
+    <Box key={v.session.id} flexDirection="column">
+      <Text>
+        <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
+        <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
+        <Text bold>{v.session.id}</Text>
+        <Text dimColor> {v.session.status} </Text>
+        <Text color="green">{usd(v.cost)}</Text>
+        {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
+        {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
+        {v.amendments.length > 0 ? (
+          <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
+        ) : null}
+        {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+        {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
+        <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
+      </Text>
+      {i === cursor &&
+        v.agents.map((a) => {
+          const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
+          return (
+            <Box key={a.id} flexDirection="column">
+              <Text>
+                {`    ├─ ${agentLabel(a, v.prs)} `}
+                <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
+                <Text dimColor>
+                  {" "}
+                  {a.runtime}:{a.model}
+                </Text>
+                <Text color="green"> {usd(a.cost)}</Text>
+                {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
+              </Text>
+              {/* Live "what it's doing now" for a non-terminal agent (#4). */}
+              {!terminal && a.activity ? (
+                <Text dimColor>
+                  {"    │    ↳ "}
+                  {oneLine(a.activity, Number.MAX_SAFE_INTEGER)}
+                  {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
+                </Text>
+              ) : null}
+              {/* Why it failed, inline, without opening the output file (#8). */}
+              {a.status === "failed" && a.error ? (
+                <Text color="red">
+                  {"    │    ✖ "}
+                  {oneLine(a.error, 100)}
+                </Text>
+              ) : null}
+            </Box>
+          );
+        })}
+      {i === cursor &&
+        v.prs.map((pr) => {
+          const { glyph, color, label } = prStateDisplay(pr.state);
+          const w = v.prWatch[pr.id];
+          return (
+            <Text key={pr.id}>
+              {"    └─ PR "}
+              {pr.number ?? "?"}{" "}
+              <Text color={color}>
+                {glyph} {label}
+              </Text>
+              {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
+              {w && w.openFeedback > 0 ? (
+                <Text color="yellow">
+                  {" "}
+                  {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
+                </Text>
+              ) : null}
+              {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
+              <Text underline>{pr.url}</Text>
+            </Text>
+          );
+        })}
+      {i === cursor &&
+        v.tickets.map((t) => {
+          const { glyph, color } = ticketStatusDisplay(t.status_category);
+          return (
+            <Text key={t.id}>
+              {"    └─ JIRA "}
+              {t.key}{" "}
+              <Text color={color}>
+                {glyph} {t.status ?? "?"}
+              </Text>
+              {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
+              {t.url ? (
+                <>
+                  {"  "}
+                  <Text underline>{t.url}</Text>
+                </>
+              ) : null}
+            </Text>
+          );
+        })}
+    </Box>
+  ));
+  const window = windowSessionLines(sessionLines.map(lines => lines.length), cursor, budget);
+  const visibleLines = sessionLines.flat().slice(window.start, window.end);
+
   return (
-    <Box flexDirection="column">
-      <Text bold>
+    <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
+      <Text bold wrap="truncate">
         Tack · {effectiveLayout === "list" ? "list-only" : effectiveLayout} · {range} {showArchived ? "(all)" : "(active)"} · {rows.length} session{rows.length === 1 ? "" : "s"} ·{" "}
         <Text color="green">{liveCount} live</Text> ·{" "}
         {needsCount > 0 ? <Text color="yellow">{needsCount} need input</Text> : <Text dimColor>0 need input</Text>} ·{" "}
         <Text color="green">{usd(totalCost)}</Text> <Text dimColor>in flight</Text>
       </Text>
-      <Box flexDirection="row">
+      <Box flexDirection="row" height={budget} flexShrink={0} overflowY="hidden">
         {effectiveLayout !== "insights" && (
           <Box width={listWidth} flexShrink={0} flexDirection="column" overflowX="hidden">
-            {rows.length === 0 && <Text dimColor>No sessions. Press c to create one.</Text>}
-            {rows.map((v, i) => (
-              <Box key={v.session.id} flexDirection="column">
-                <Text>
-                  <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
-                  <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
-                  <Text bold>{v.session.id}</Text>
-                  <Text dimColor> {v.session.status} </Text>
-                  <Text color="green">{usd(v.cost)}</Text>
-                  {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
-                  {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
-                  {v.amendments.length > 0 ? (
-                    <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
-                  ) : null}
-                  {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
-                  {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
-                  <Text dimColor> {v.session.title ?? ""}</Text>
-                </Text>
-                {i === cursor &&
-                  v.agents.map((a) => {
-                    const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
-                    return (
-                      <Box key={a.id} flexDirection="column">
-                        <Text>
-                          {`    ├─ ${agentLabel(a, v.prs)} `}
-                          <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
-                          <Text dimColor>
-                            {" "}
-                            {a.runtime}:{a.model}
-                          </Text>
-                          <Text color="green"> {usd(a.cost)}</Text>
-                          {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
-                        </Text>
-                        {/* Live "what it's doing now" for a non-terminal agent (#4). */}
-                        {!terminal && a.activity ? (
-                          <Text dimColor>
-                            {"    │    ↳ "}
-                            {a.activity}
-                            {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
-                          </Text>
-                        ) : null}
-                        {/* Why it failed, inline, without opening the output file (#8). */}
-                        {a.status === "failed" && a.error ? (
-                          <Text color="red">
-                            {"    │    ✖ "}
-                            {oneLine(a.error, 100)}
-                          </Text>
-                        ) : null}
-                      </Box>
-                    );
-                  })}
-                {i === cursor &&
-                  v.prs.map((pr) => {
-                    const { glyph, color, label } = prStateDisplay(pr.state);
-                    const w = v.prWatch[pr.id];
-                    return (
-                      <Text key={pr.id}>
-                        {"    └─ PR "}
-                        {pr.number ?? "?"}{" "}
-                        <Text color={color}>
-                          {glyph} {label}
-                        </Text>
-                        {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
-                        {w && w.openFeedback > 0 ? (
-                          <Text color="yellow">
-                            {" "}
-                            {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
-                          </Text>
-                        ) : null}
-                        {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
-                        <Text underline>{pr.url}</Text>
-                      </Text>
-                    );
-                  })}
-                {i === cursor &&
-                  v.tickets.map((t) => {
-                    const { glyph, color } = ticketStatusDisplay(t.status_category);
-                    return (
-                      <Text key={t.id}>
-                        {"    └─ JIRA "}
-                        {t.key}{" "}
-                        <Text color={color}>
-                          {glyph} {t.status ?? "?"}
-                        </Text>
-                        {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
-                        {t.url ? (
-                          <>
-                            {"  "}
-                            <Text underline>{t.url}</Text>
-                          </>
-                        ) : null}
-                      </Text>
-                    );
-                  })}
-              </Box>
-            ))}
+            {rows.length === 0 && <Text dimColor wrap="truncate">No sessions. Press c to create one.</Text>}
+            {window.above > 0 && <Text dimColor wrap="truncate">↑ {window.above} more</Text>}
+            {visibleLines.map((line, i) => React.cloneElement(line, { key: i, wrap: "truncate" }))}
+            {window.below > 0 && <Text dimColor wrap="truncate">↓ {window.below} more</Text>}
           </Box>
         )}
         {effectiveLayout !== "list" && (
-          <Insights stats={stats} width={insightWidth} rows={size.rows} full={effectiveLayout === "insights"} />
+          <Insights stats={stats} width={insightWidth} rows={size.rows} height={budget} full={effectiveLayout === "insights"} />
         )}
       </Box>
-      <Box marginTop={1} flexDirection="column">
-        {confirm ? (
-          <Text color="yellow">
-            {confirm.action === "delete"
-              ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
-              : confirm.action === "unarchive"
-                ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
-                : `Stop ${confirm.id} and its agents? (y/N)`}
-          </Text>
-        ) : (
-          <>
-            {notice ? <Text dimColor>{notice}</Text> : null}
-            {ghMissing ? <Text dimColor>gh not found — PR status not updating</Text> : null}
-            {jiraUnavailable ? <Text dimColor>jira unavailable — ticket status not updating</Text> : null}
-            <Text dimColor>
-              s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit
-            </Text>
-          </>
-        )}
+      <Box marginTop={1} flexDirection="column" flexShrink={0}>
+        {footer.flatMap(line => wrapFooter(line, size.columns)).map((line, i) => <Text key={i} wrap="truncate" color={confirm ? "yellow" : undefined} dimColor={!confirm}>{line}</Text>)}
       </Box>
     </Box>
   );

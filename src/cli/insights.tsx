@@ -3,8 +3,11 @@ import { Box, Text } from "ink";
 import type { InsightStats, Totals } from "./stats";
 import { heatmap, horizontalBars, pairedBars, sparkline, timeAxis } from "./charts";
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return <Box borderStyle="round" flexDirection="column" paddingX={1}><Text dimColor wrap="truncate-end">{title}</Text>{children}</Box>;
+function Panel({ title, lines }: { title: string; lines: React.ReactNode[] }) {
+  return <Box borderStyle="round" flexDirection="column" paddingX={1} flexShrink={0}>
+    <Text dimColor wrap="truncate">{title}</Text>
+    {lines.map((line, i) => <Text key={i} wrap="truncate">{line}</Text>)}
+  </Box>;
 }
 const money = (n: number) => `$${n.toFixed(2)}`;
 function delta(value: number, cost = false): string {
@@ -16,8 +19,11 @@ export function insightChartWidth(column: number): number {
   return Math.max(1, inner - (inner < 28 ? 0 : 15) - (inner >= 65 ? 30 : 0));
 }
 
-/** Shared split/full panels keep labels and units identical at every size. */
-export function Insights({ stats, width, rows = 40, full = false }: { stats: InsightStats; width: number; rows?: number; full?: boolean }) {
+type PanelSpec = { title: string; lines: React.ReactNode[] };
+
+/** Each panel is indivisible: two borders, a title, then explicit content rows.
+ * Use the same budget independently in each full-screen column. */
+export function Insights({ stats, width, rows = 40, height = rows, full = false }: { stats: InsightStats; width: number; rows?: number; height?: number; full?: boolean }) {
   const grid = full && width >= 70;
   const column = grid ? Math.floor(width / 2) : width;
   const inner = Math.max(1, column - 4), chartWidth = insightChartWidth(column);
@@ -44,42 +50,55 @@ export function Insights({ stats, width, rows = 40, full = false }: { stats: Ins
     </Panel>;
   };
   const top = stats.repos.slice(0, rows < 38 ? 3 : full ? 8 : 5);
-  const kpis = ([["Sessions", "sessions"], ["Agents", "agents"], ["Opened", "prs"], ["Merged", "merged"], ["Linked", "tickets"], ["Done (approx.)", "done"], ["Cost", "cost"]] as const);
-  const valueWidth = Math.max(...kpis.map(([, key]) => (key === "cost" ? money(stats.totals[key]) : String(stats.totals[key])).length));
-  const deltaWidth = Math.max(...kpis.map(([, key]) => delta(stats.deltas[key], key === "cost").length));
-  const kpiStack = 16 + valueWidth + deltaWidth > inner;
-  const tinyKpi = 15 + valueWidth > inner;
-  const left = <>
-    <Panel title="Totals · vs previous period">
-      {kpis.map(([label, key]) => <React.Fragment key={key}>
-        {tinyKpi && <Text>{label}</Text>}
-        <Text wrap="truncate-end">{!tinyKpi && `${label.padEnd(14)} `}{(key === "cost" ? money(stats.totals[key]) : String(stats.totals[key])).padStart(valueWidth)}{!kpiStack && " "}<Text color={stats.deltas[key] < 0 ? "red" : key === "cost" ? "yellow" : "green"}>{!kpiStack && delta(stats.deltas[key], key === "cost")}</Text></Text>
-        {kpiStack && <Text color={stats.deltas[key] < 0 ? "red" : key === "cost" ? "yellow" : "green"}>{delta(stats.deltas[key], key === "cost")}</Text>}
-      </React.Fragment>)}
-    </Panel>
-    {timeChart("Pull requests", [["Opened", "prs", "green"], ["Merged", "merged", "magenta"]])}
-    {timeChart("Sessions + agents", [["Sessions", "sessions", "cyan"], ["Agents", "agents", "blue"]])}
-    {timeChart("Cost", [["Cost", "cost", "yellow"]])}
-  </>;
-  const repoWidth = Math.max(1, inner - 27);
-  const right = <>
-    <Panel title="Repositories · agent count"><Text>{horizontalBars(top.map(r => ({ label: r.repo, value: r.agents })), inner)}</Text></Panel>
-    <Panel title="Daily contributions">
-      <Text>{heatmap(stats.daily, inner)}</Text>
-      <Text dimColor wrap="wrap">Sessions, agents, PRs, tickets</Text>
-      <Text dimColor wrap="wrap">Done uses last status refresh</Text>
-    </Panel>
-    {timeChart("Tickets", [["Linked", "tickets", "cyan"], ["Done (approx.)", "done", "green"]])}
-    {full && <Panel title="Repos · agent cost">
-      <Text dimColor wrap="truncate-end">Supervisor cost is unassigned</Text>
-      <Text dimColor wrap="truncate-end">{"Repository".slice(0, repoWidth).padEnd(repoWidth)} {"Agents".padStart(6)} {"PRs".padStart(4)} {"Merged".padStart(6)} {"Cost".padStart(7)}</Text>
-      {stats.repos.length ? stats.repos.map(r => <Text key={r.repo} wrap="truncate-end">{r.repo.slice(0, repoWidth).padEnd(repoWidth)} {String(r.agents).padStart(6)} {String(r.prs).padStart(4)} {String(r.merged).padStart(6)} {money(r.cost).padStart(7)}</Text>) : <Text dimColor>no repos in range</Text>}
-    </Panel>}
-  </>;
-  return <Box width={width} flexDirection="column">
-    <Text bold wrap="truncate-end">Insights · {stats.range} · all sessions</Text>
+  const kpis = ([ ["Sessions", "sessions"], ["Agents", "agents"], ["PRs", "prs"], ["Merged", "merged"], ["Tickets", "tickets"], ["Done≈", "done"], ["Cost", "cost"] ] as const);
+  // Pack explicit rows rather than relying on Yoga's flex-wrap, so large totals
+  // and narrow columns cannot silently increase a panel's measured height.
+  const kpiLines: string[] = [];
+  for (const [label, key] of kpis) {
+    const text = `${label} ${key === "cost" ? money(stats.totals[key]) : stats.totals[key]} ${delta(stats.deltas[key], key === "cost")}`;
+    const last = kpiLines.length - 1;
+    if (last >= 0 && kpiLines[last]!.length + 2 + text.length <= column - 4) kpiLines[last] += `  ${text}`;
+    else kpiLines.push(text);
+  }
+  const primary: PanelSpec[] = [
+    { title: "Totals · change vs previous period", lines: kpiLines },
+    { title: `PRs over time · ${stats.bucket}`, lines: [
+      ...(stats.totals.prs || stats.totals.merged ? [<Text color="green">opened {opened}</Text>, <Text color="magenta">merged {merged}</Text>] : [<Text dimColor>no PRs in range</Text>]),
+      <Text dimColor>{stats.start} → {stats.end}</Text>,
+    ] },
+    { title: "Cost · supervisor + agents", lines: [<Text color="green">{sparkline(series("cost"), chartWidth)}</Text>] },
+    { title: "Sessions / agents", lines: [`ses ${sparkline(series("sessions"), chartWidth - 4)}`, `agt ${sparkline(series("agents"), chartWidth - 4)}`] },
+  ];
+  const secondary: PanelSpec[] = [
+    { title: "Top repos · agents", lines: horizontalBars(top.map(r => ({ label: r.repo, value: r.agents })), chartWidth).split("\n") },
+    { title: "Tickets linked / done≈", lines: [`link ${sparkline(series("tickets"), chartWidth - 5)}`, `done ${sparkline(series("done"), chartWidth - 5)}`] },
+    { title: "Contributions · Mon–Sun · · ░ ▒ ▓ █", lines: [...heatmap(stats.daily, chartWidth).split("\n"), <Text dimColor>sessions, agents, PRs, tickets · done≈refresh</Text>] },
+  ];
+  const renderColumn = (panels: PanelSpec[], table = false) => {
+    let remaining = Math.max(0, height - 1);
+    const fitted: PanelSpec[] = [];
+    for (const panel of panels) {
+      const cost = panel.lines.length + 3;
+      if (cost > remaining) continue;
+      fitted.push(panel);
+      remaining -= cost;
+    }
+    // The table can use the remaining rows, but always includes its own header
+    // and at least one repository (or the empty-state row).
+    if (table && remaining >= 5) {
+      const labelWidth = Math.max(1, chartWidth - 27);
+      fitted.push({ title: "Repos · agent cost (supervisor unassigned)", lines: [
+        <Text dimColor>{"repo".padEnd(labelWidth)} agents  PRs merged  cost</Text>,
+        ...(stats.repos.length ? stats.repos.slice(0, remaining - 4).map(r => `${r.repo.slice(0, labelWidth).padEnd(labelWidth)} ${String(r.agents).padStart(6)} ${String(r.prs).padStart(4)} ${String(r.merged).padStart(6)} ${money(r.cost).padStart(7)}`) : [<Text dimColor>no repos in range</Text>]),
+      ] });
+    }
+    return fitted.map(panel => <Panel key={panel.title} {...panel} />);
+  };
+  if (height < 1) return null;
+  return <Box width={width} flexDirection="column" flexShrink={0}>
+    <Text bold wrap="truncate">Insights · {stats.range} · all sessions</Text>
     <Box flexDirection={grid ? "row" : "column"}>
-      {grid ? <><Box width={column} flexDirection="column">{left}</Box><Box width={width - column} flexDirection="column">{right}</Box></> : <Box width={width} flexDirection="column">{left}{right}</Box>}
+      {grid ? <><Box width={column} flexDirection="column">{renderColumn(primary)}</Box><Box width={width - column} flexDirection="column">{renderColumn(secondary, true)}</Box></> : <Box width={width} flexDirection="column">{renderColumn([...primary, ...secondary], full)}</Box>}
     </Box>
   </Box>;
 }
