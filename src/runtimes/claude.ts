@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -167,7 +168,8 @@ export class ClaudeRuntime implements Runtime {
     }
     if (m.effort) args.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) args.push("--resume", opts.sessionRef);
-    else if (opts.sessionRef) args.push("--session-id", opts.sessionRef);
+    if (opts.resume && opts.sessionRef && opts.fork && supportsFork(opts.bin)) args.push("--fork-session");
+    else if (!opts.resume && opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
     // Human gates use PreToolUse ask hooks for their plain-language wording.
@@ -384,7 +386,8 @@ export class ClaudeRuntime implements Runtime {
     }
     if (m.effort) cmd.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) cmd.push("--resume", opts.sessionRef);
-    else if (opts.sessionRef) cmd.push("--session-id", opts.sessionRef);
+    if (opts.resume && opts.sessionRef && opts.fork && supportsFork(opts.bin)) cmd.push("--fork-session");
+    else if (!opts.resume && opts.sessionRef) cmd.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) cmd.push("--add-dir", dir);
     if (opts.contextFile) cmd.push("--append-system-prompt-file", opts.contextFile);
     // Always mount exactly the servers Tack provides (an empty set when none) and
@@ -552,4 +555,15 @@ function previewOf(content: unknown): string {
         ? content.map((c: any) => (typeof c === "string" ? c : c?.text ?? "")).join("")
         : "";
   return text.slice(0, 200);
+}
+
+// Older pins may lack forking; resuming the same ref still preserves context.
+// Probe the CLI interface only, never its native conversation store.
+const forkSupport = new Map<string, boolean>();
+function supportsFork(bin: string): boolean {
+  if (!forkSupport.has(bin)) {
+    const help = spawnSync(bin, ["--help"], { encoding: "utf8", timeout: 5000 });
+    forkSupport.set(bin, help.status === 0 && help.stdout.includes("--fork-session"));
+  }
+  return forkSupport.get(bin)!;
 }

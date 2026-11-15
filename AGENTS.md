@@ -35,8 +35,8 @@ bin/tack.ts              CLI entry (citty) + hidden __mcp / __supervisor-mcp / _
 src/config/              schema, load, starter template
 src/db/                  connection, migrate (schema), repositories, index
 src/runtimes/            types (Runtime/AgentEvent), claude.ts, codex.ts, proc.ts, pricing.ts, pricing-sync.ts (models.dev), resolve.ts, install.ts
-src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor: spawn/touches/dependsOn, check_conflicts)
-src/agent/               execute.ts (prepare/run + activity/error), detached.ts (background runner, dependency self-gate + retry)
+src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor: spawn/continue/touches/dependsOn, check_conflicts)
+src/agent/               execute.ts (prepare/run + activity/error), continue.ts (pre-PR continuation), detached.ts (background runner, dependency self-gate + retry)
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection), write-guard.ts (publishable-page write scope)
 src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees, supervisor snapshots (syncSnapshot) + PR branch nomenclature

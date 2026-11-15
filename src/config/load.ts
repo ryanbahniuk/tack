@@ -59,6 +59,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       command: expandHome(s.command),
     })),
     prWatch: parsed.prWatch,
+    agentReuse: parsed.agentReuse,
     autoOpenPrs: parsed.autoOpenPrs,
     jira: parsed.jira,
   };

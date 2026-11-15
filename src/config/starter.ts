@@ -84,6 +84,9 @@ export default ({
   // then Tack pushes (never force) and replies to each comment explaining what it did.
   // \`maxFixRunsPerDay\` caps automatic (watcher) fix runs per PR per rolling 24h;
   // supervisor fix_pr runs are exempt. All fields optional.
+  // Continue eligible PR conversations in their existing worktree.
+  agentReuse: { enabled: true, maxIdleHours: 24 },
+
   prWatch: {
     // enabled: true,          // false = never start a watcher
     // intervalSeconds: 300,   // PR poll cadence for the watcher and tack dashboard (min 60)

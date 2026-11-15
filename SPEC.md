@@ -177,7 +177,7 @@ affected projects and checks each default-branch tip out into a detached snapsho
 worktree under `snapshots/<sessionId>/<project>` — the only project code the
 supervisor reads), `set_shared_context`,
 `request_plan_approval` (the attended plan gate, see §9),
-`spawn_agent` (with `touches`/`dependsOn`), `check_agents`, `wait_for_agents` (blocks
+`spawn_agent` (with `touches`/`dependsOn`), `continue_agent` (pre-PR follow-ups), `check_agents`, `wait_for_agents` (blocks
 server-side so the planner doesn't burn tokens polling, and returns early with any
 `pendingAmendments` so the system routes an agent's proposal back to the supervisor
 to adjudicate), `check_conflicts`, `read_agent_output`, `list_amendments`,
@@ -303,7 +303,9 @@ session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, statu
 ```
 
 `sessions` also carries `pr_watch_pid`; `agents` carries `kind` (NULL | `pr_fix`),
-`session_pr_id`, `post_fixed_at`, `fix_outcome`, and `fix_pushed_sha` (see §11 PR watch).
+`session_pr_id`, `post_fixed_at`, `fix_outcome`, `fix_pushed_sha`, and
+`continues_agent_id` (see §11 PR watch). Continuation prompt refs, start markers,
+and per-fix diff baselines survive detached retries and archive restore.
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
 bodies) is a `*_ref` path, never inline text.
@@ -609,10 +611,24 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   Restored agents with `resume_ref` continue the runtime conversation with a short
   continuation prompt: Claude uses `--resume`, Codex uses `exec … resume`.
   Without a handle they run the original prompt in the same worktree. Normal
-  first runs and transient retries stay fresh. Unarchive does not launch the
+  first runs stay fresh; continuation retries keep resuming the active conversation. Unarchive does not launch the
   supervisor: rejoin via `tack session resume <id>` or dashboard `enter/o`.
   Dashboard `a` archives immediately, confirms unarchive with the interrupted
   count, and reports the resumed count; `z` reveals archived sessions.
+
+### Pre-PR agent continuation
+
+`continue_agent({ agentId, prompt, model? })` is plan-gated like `spawn_agent`.
+Prefer it for follow-ups or reconciliation on a unit an agent already owns; use
+`spawn_agent` for new units. It reuses the same row, conversation and worktree.
+Only done/failed agents in this session qualify; pending/running/stopped agents,
+PR-fix rows, agents with an open/draft session PR (use `fix_pr`), missing resume
+refs or worktrees, and cross-runtime model switches are refused. Same-runtime
+model switches are allowed. Each next-turn prompt has its own artifact; the
+original assignment remains intact. Output reflects the latest invocation,
+the diff stays cumulative, and cost/usage accumulate with streaming updates
+replacing only the current invocation's contribution. The active prompt persists
+across interruption, unarchive and transient retry.
 
 ### Refresh onto updated Tack code
 
@@ -668,7 +684,19 @@ Conversation comments and reviews come from paginated GraphQL connections with
 `author { login __typename }`, retaining their existing node ids. Bot detection also
 uses a case-insensitive known-login fallback, stripping any `[bot]` suffix.
 
-The **fix agent** forks off the PR's current remote head (`createPrWorktree`), is
+The **fix agent** continues the newest successful PR-fix run with a non-failed
+post-fix outcome, falling back to the PR owner as lineage head. Reuse requires
+`agentReuse.enabled` (default true), no `fix_pr({ fresh: true })` override, a done
+head with a resume ref on the chosen runtime, completion within
+`agentReuse.maxIdleHours` (default 24), and an existing clean worktree that can be
+fetched and fast-forwarded to `origin/<head_branch>`. Otherwise it forks fresh
+off the PR's current remote head (`createPrWorktree`). The decision is returned as
+`continued` (head id or null) and `fallbackReason`, and logged by the watcher.
+Each fix still gets its own row and feedback/post-fix bookkeeping. A continuation
+stores `continues_agent_id`, reuses that head's cwd/branch and resume ref, and
+captures its diff against its own starting commit. Claude forks resumed sessions
+when the CLI supports `--fork-session`; Codex resumes its thread directly. No
+native session store is copied or read for continuation. The fix agent is
 told to judge each item (fix what's relevant and justified, decline the rest),
 resolve a conflict by `git merge origin/<base>` (never rebase), commit, and call
 `report_pr_feedback` with a decision + 1-3 sentence reply per item. It never pushes
@@ -701,8 +729,8 @@ legacy rows without an outcome keep their original display status. The PR's
 to an open PR: follow-ups the human asks for (passed as `prompt`), a conflict that
 persists, or a fix run that failed (e.g. its model wasn't offered to the login —
 `fix_pr` takes a `model` and runs `checkModelOffered` like `spawn_agent`). Guidance is rendered in the fix prompt as a `## Supervisor guidance`
-section just before `## Rules`. These runs share the `pr_fix` kind forked off the
-PR head (`spawnPrFixAgent`, shared with the watcher), the one-at-a-time rule
+section just before `## Rules`. These runs share the `pr_fix` kind continuing the
+PR lineage or forking fresh off its head (`spawnPrFixAgent`, shared with the watcher), the one-at-a-time rule
 (`prFixBusy`: refused while a fix is pending/running or finished but not yet
 post-fixed), and the same watcher post-fix push + replies — `fix_pr` polls the PR
 live, folds in any not-yet-ingested feedback, spawns the agent, and (re)starts the

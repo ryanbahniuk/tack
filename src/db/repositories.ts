@@ -55,6 +55,10 @@ export interface SessionRow {
 }
 
 export interface AgentRow {
+  continues_agent_id: string | null;
+  continuation_prompt_ref: string | null;
+  continuation_started_at: string | null;
+  diff_base: string | null;
   id: string;
   session_id: string;
   project_name: string;
@@ -483,7 +487,7 @@ export function setAgentRefs(
   if (!cur) return;
   getDb()
     .prepare(`UPDATE agents SET output_ref = ?, diff_ref = ?, updated_at = ? WHERE id = ?`)
-    .run(refs.outputRef ?? cur.output_ref, refs.diffRef ?? cur.diff_ref, nowIso(), id);
+    .run(refs.outputRef === undefined ? cur.output_ref : refs.outputRef, refs.diffRef === undefined ? cur.diff_ref : refs.diffRef, nowIso(), id);
 }
 
 /** Records what the agent is doing right now (its latest tool call), for the live

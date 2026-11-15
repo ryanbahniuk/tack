@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import { isAlive, selfInvocation } from "../process/self";
@@ -9,6 +9,8 @@ import {
   assignPrFeedback,
   countPrFixRunsSince,
   getSession,
+  getAgent,
+  getDb,
   insertPrFeedback,
   listAgentPrFeedback,
   listPrFixAgents,
@@ -20,6 +22,7 @@ import {
   releaseAgentPrFeedback,
   setAgentError,
   setAgentStatus,
+  setAgentPid,
   setSessionPrStatus,
   setSessionPrWatchPid,
   setPrWatchCodeVersion,
@@ -47,7 +50,7 @@ import {
   type PrFeedbackItem,
   type PrStatus,
 } from "../projects/prs";
-import { commitWorktreeAsync, worktreeBase, worktreeHead } from "../worktree/worktree";
+import { commitWorktreeAsync, fastForwardPrWorktree, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
 import { currentCodeVersion } from "../process/version";
 import { nowIso } from "../util/id";
@@ -320,14 +323,14 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
     );
   }
 
-  const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+  const { agent, items, continued, fallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
     origin: "auto",
     conflict,
     baseBranch: status.baseRefName,
     title: status.title,
     fresh,
   });
-  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s)${conflict ? ", merge conflict" : ""})`);
+  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s)${conflict ? ", merge conflict" : ""}); ${continued ? `continued ${continued}` : `fresh: ${fallbackReason}`}`);
 }
 
 /**
@@ -378,20 +381,48 @@ export function prFixCapReached(sessionPrId: string, config: TackConfig): { reac
   return { reached: runs >= config.prWatch.maxFixRunsPerDay, runs };
 }
 
+/** Failed fixes never become a lineage head, including successful runtime runs
+ * whose push was rejected. Legacy successful rows have no post-fix outcome. */
+export function prLineageHead(pr: SessionPrRow): AgentRow | null {
+  return listPrFixAgents(pr.id).reverse().find(a =>
+    a.status === "done" && !["failed", "stopped", "push_rejected"].includes(a.fix_outcome ?? "")
+  ) ?? (pr.agent_id ? getAgent(pr.agent_id) : null);
+}
+
+export async function prContinuationDecision(pr: SessionPrRow, model: Model, config: TackConfig, fresh = false):
+  Promise<{ head: AgentRow; base: string } | { head: null; reason: string }> {
+  const fallback = (reason: string) => ({ head: null, reason } as const);
+  if (config.agentReuse?.enabled === false) return fallback("reuse disabled");
+  if (fresh) return fallback("fresh requested");
+  const head = prLineageHead(pr);
+  if (!head) return fallback("no lineage head");
+  if (head.status !== "done") return fallback("head is not done");
+  if (!head.resume_ref) return fallback("missing resume_ref");
+  if (head.runtime !== model.runtime) return fallback("runtime mismatch");
+  const finished = Date.parse(head.finished_at ?? "");
+  if (!Number.isFinite(finished) || Date.now() - finished > (config.agentReuse?.maxIdleHours ?? 24) * 3600_000)
+    return fallback("idle window exceeded");
+  if (!head.worktree_path || !head.branch || !existsSync(head.worktree_path)) return fallback("worktree missing");
+  if (!pr.head_branch) return fallback("PR head branch missing");
+  const result = await fastForwardPrWorktree(head.worktree_path, pr.head_branch);
+  if ("reason" in result) return fallback(result.reason);
+  return { head, base: result.base };
+}
+
 /**
  * Starts one `pr_fix` agent on a PR: the shared tail of the watcher's tick and the
  * supervisor's `fix_pr`. Records any `fresh` feedback (bodies to disk), hands the
  * agent every unassigned item on the PR (new ones plus any released back to
- * pending), builds its prompt, and launches it detached — forked off the PR head
- * (`kind: "pr_fix"` routes `prepareAgent` to the PR worktree). The watcher's
+ * pending), builds its prompt, and launches it detached — continuing the eligible
+ * lineage or forking fresh off the PR head. The watcher's
  * post-fix step later pushes and replies for it regardless of who spawned it.
  *
- * Callers own the guards (`isWatchablePr`, `prFixBusy`, and `prFixCapReached` for
- * automatic runs only); this only spawns. `baseBranch`/`title` are the freshly
+ * Callers own the watchability and automatic-cap guards; this also claims the
+ * busy slot atomically before any async work. `baseBranch`/`title` are the freshly
  * polled values, falling back to the row's. Returns the agent and how many feedback
  * items it was given.
  */
-export function spawnPrFixAgent(
+export async function spawnPrFixAgent(
   session: SessionRow,
   pr: SessionPrRow,
   project: Project,
@@ -404,45 +435,71 @@ export function spawnPrFixAgent(
     fresh?: PrFeedbackItem[];
     model?: Model;
     guidance?: string;
+    forceFresh?: boolean;
   },
-): { agent: AgentRow; items: number } {
-  for (const item of opts.fresh ?? []) {
-    insertPrFeedback({
-      sessionPrId: pr.id,
-      sourceId: item.sourceId,
-      sourceKind: item.kind,
-      author: item.author,
-      authorIsBot: item.isBot,
-      url: item.url,
-      path: item.path ?? null,
-      line: item.line ?? null,
-      inReplyTo: item.inReplyTo ?? null,
-      bodyRef: writePrFeedbackArtifact(session.id, pr.id, item.sourceId, "body", item.body),
+): Promise<{ agent: AgentRow; items: number; continued: string | null; fallbackReason?: string }> {
+  if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
+  const model = opts.model ?? modelForRole(config, "agent");
+  // Claim the PR before fetching: another process must not fast-forward this
+  // worktree while its new runner is already modifying it.
+  const { agent, rows } = getDb().transaction(() => {
+    if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
+    for (const item of opts.fresh ?? []) {
+      insertPrFeedback({
+        sessionPrId: pr.id,
+        sourceId: item.sourceId,
+        sourceKind: item.kind,
+        author: item.author,
+        authorIsBot: item.isBot,
+        url: item.url,
+        path: item.path ?? null,
+        line: item.line ?? null,
+        inReplyTo: item.inReplyTo ?? null,
+        bodyRef: writePrFeedbackArtifact(session.id, pr.id, item.sourceId, "body", item.body),
+      });
+    }
+    const rows = listUnassignedPrFeedback(pr.id);
+    const prompt = buildPrFixPrompt({
+      pr: { number: pr.number, title: opts.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
+      conflict: opts.conflict,
+      baseBranch: opts.baseBranch ?? pr.base_branch,
+      items: rows.map((r) => feedbackItem(r, pr)),
+      guidance: opts.guidance,
     });
+    const agent = prepareAgent({
+      session,
+      project,
+      model,
+      prompt,
+      kind: "pr_fix",
+      sessionPrId: pr.id,
+      fixOrigin: opts.origin,
+    });
+    assignPrFeedback(
+      rows.map((r) => r.id),
+      agent.id,
+    );
+    // The launcher owns this pending row during the bounded fetch. Watchers use
+    // this pid to distinguish preparation from a dead detached runner.
+    setAgentPid(agent.id, process.pid);
+    return { agent, rows };
+  }).immediate();
+  try {
+    const decision = await prContinuationDecision(pr, model, config, opts.forceFresh);
+    if (decision.head) {
+      getDb().prepare(`UPDATE agents SET continues_agent_id = ?, worktree_path = ?, branch = ?, resume_ref = ?, diff_base = ? WHERE id = ?`)
+        .run(decision.head.id, decision.head.worktree_path, decision.head.branch, decision.head.resume_ref, decision.base, agent.id);
+    }
+    spawnAgentRunner(session.id, agent.id);
+    return {
+      agent: getAgent(agent.id)!, items: rows.length, continued: decision.head?.id ?? null,
+      ...(decision.head ? {} : { fallbackReason: decision.reason }),
+    };
+  } catch (err) {
+    setAgentError(agent.id, (err as Error).message);
+    setAgentStatus(agent.id, "failed");
+    throw err;
   }
-  const rows = listUnassignedPrFeedback(pr.id);
-  const prompt = buildPrFixPrompt({
-    pr: { number: pr.number, title: opts.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
-    conflict: opts.conflict,
-    baseBranch: opts.baseBranch ?? pr.base_branch,
-    items: rows.map((r) => feedbackItem(r, pr)),
-    guidance: opts.guidance,
-  });
-  const agent = prepareAgent({
-    session,
-    project,
-    model: opts.model ?? modelForRole(config, "agent"),
-    prompt,
-    kind: "pr_fix",
-    sessionPrId: pr.id,
-    fixOrigin: opts.origin,
-  });
-  assignPrFeedback(
-    rows.map((r) => r.id),
-    agent.id,
-  );
-  spawnAgentRunner(session.id, agent.id);
-  return { agent, items: rows.length };
 }
 
 /** Rehydrates a stored feedback row (body from disk) into the prompt's item shape. */
@@ -503,7 +560,7 @@ export async function postFix(
       log(`${tag}: safety-net commit failed: ${(err as Error).message}`);
     }
     const head = await worktreeHead(agent.worktree_path);
-    const base = await worktreeBase(project.path, agent.branch);
+    const base = agent.diff_base ?? await worktreeBase(project.path, agent.branch);
     if (head && head !== base) {
       if (config.prWatch.autoPush) {
         const push = await pushBranch(project.path, agent.branch, pr.head_branch);

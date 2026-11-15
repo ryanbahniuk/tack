@@ -90,11 +90,13 @@ export async function runAgentToCompletion(agentId: string, config: TackConfig, 
 
   // Transient-failure retry: re-run a failed agent (in the same worktree, so partial
   // committed work persists) when the error looks like a provider/network blip, with
-  // exponential backoff. A fresh runtime session loses prior conversation context —
-  // acceptable for the start-of-run blips this targets; resume-on-retry is future work.
+  // exponential backoff. Continuations retain their conversation across retries.
   for (let attempt = 0; ; attempt++) {
-    // Only the restored attempt resumes; transient retries keep their fresh-run behavior.
-    await drain(runAgent(agentId, config, { resume: options.resume && attempt === 0 }));
+    // A continuation retry must never replay the original cold assignment.
+    const continuation = Boolean(getAgent(agentId)?.continuation_prompt_ref || agent.continues_agent_id);
+    await drain(runAgent(agentId, config, {
+      resume: (options.resume && attempt === 0) || (attempt > 0 && continuation),
+    }));
     const row = getAgent(agentId);
     if (!row || row.status !== "failed") return;
     if (attempt >= MAX_TRANSIENT_RETRIES || !isTransientError(row.error)) return;
