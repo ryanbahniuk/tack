@@ -24,6 +24,7 @@ import {
   setSessionPrWatchPid,
   setPrWatchCodeVersion,
   type AgentRow,
+  type AgentFixOutcome,
   type AgentStatus,
   type PrFeedbackRow,
   type PrMergeable,
@@ -458,7 +459,7 @@ function feedbackItem(r: PrFeedbackRow, pr: SessionPrRow): PrFeedbackItem {
  * agent is latched with `post_fixed_at` at the end, so a crash midway resumes
  * cleanly on the next tick (re-pushing an already-pushed sha is a no-op).
  */
-async function postFix(
+export async function postFix(
   agent: AgentRow,
   pr: SessionPrRow,
   project: Project,
@@ -472,7 +473,7 @@ async function postFix(
   // back for a later run rather than declaring them handled.
   if (agent.status === "stopped") {
     const n = releaseAgentPrFeedback(agent.id);
-    markAgentPostFixed(agent.id);
+    markAgentPostFixed(agent.id, "stopped");
     return log(`${tag}: was stopped; released ${n} item(s) back to pending`);
   }
 
@@ -481,12 +482,13 @@ async function postFix(
   if (agent.status === "failed") {
     for (const f of items) if (!f.handled_at) markPrFeedbackHandled(f.id, { decision: "failed" });
     if (!agent.error) setAgentError(agent.id, "PR fix run failed");
-    markAgentPostFixed(agent.id);
+    markAgentPostFixed(agent.id, "failed");
     return log(`${tag}: failed; marked ${items.filter((f) => !f.handled_at).length} item(s) failed`);
   }
 
   // Done: push first, so replies can cite the commit that reached the PR.
   let pushedSha: string | null = null;
+  let outcome: AgentFixOutcome = "no_changes";
   if (agent.worktree_path && agent.branch && pr.head_branch) {
     try {
       await commitWorktreeAsync(agent.worktree_path, `Tack: finalize PR fix ${agent.id}`);
@@ -502,12 +504,14 @@ async function postFix(
           // Someone moved the PR branch since we forked (or the remote refused).
           // Never force: release the items so the next tick re-forks off the new head.
           const n = releaseAgentPrFeedback(agent.id);
-          markAgentPostFixed(agent.id);
+          markAgentPostFixed(agent.id, "push_rejected");
           return log(`${tag}: push rejected (${push.error}); released ${n} item(s) to retry next tick`);
         }
-        pushedSha = head.slice(0, 7);
-        log(`${tag}: pushed ${pushedSha} to ${pr.head_branch}`);
+        pushedSha = head;
+        outcome = "pushed";
+        log(`${tag}: pushed ${pushedSha.slice(0, 7)} to ${pr.head_branch}`);
       } else {
+        outcome = "not_pushed";
         log(`${tag}: autoPush is off; commits left on ${agent.branch}`);
       }
     }
@@ -530,7 +534,7 @@ async function postFix(
       isBot: f.author_is_bot === 1,
       original: readArtifact(f.body_ref),
       reply: readArtifact(f.reply_ref),
-      fixSha: f.decision === "fixed" ? pushedSha : null,
+      fixSha: f.decision === "fixed" ? pushedSha?.slice(0, 7) : null,
     });
     try {
       const url =
@@ -545,6 +549,6 @@ async function postFix(
       markPrFeedbackHandled(f.id);
     }
   }
-  markAgentPostFixed(agent.id);
+  markAgentPostFixed(agent.id, outcome, pushedSha ?? undefined);
   log(`${tag}: post-fix complete (${items.length} item(s))`);
 }

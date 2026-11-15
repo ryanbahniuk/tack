@@ -273,6 +273,15 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN supervisor_turn_started_at TEXT;
     `,
   },
+  {
+    version: 11,
+    name: "agent_fix_outcome",
+    // Runtime completion precedes the watcher's push; NULL preserves legacy rows.
+    sql: `
+      ALTER TABLE agents ADD COLUMN fix_outcome TEXT;
+      ALTER TABLE agents ADD COLUMN fix_pushed_sha TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

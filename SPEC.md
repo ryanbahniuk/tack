@@ -303,7 +303,7 @@ session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, statu
 ```
 
 `sessions` also carries `pr_watch_pid`; `agents` carries `kind` (NULL | `pr_fix`),
-`session_pr_id`, and `post_fixed_at` (see §11 PR watch).
+`session_pr_id`, `post_fixed_at`, `fix_outcome`, and `fix_pushed_sha` (see §11 PR watch).
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
 bodies) is a `*_ref` path, never inline text.
@@ -670,7 +670,13 @@ reply, or a conversation comment addressing the author and quoting the original)
 always ending with the marker so Tack never ingests itself. Unreported items become
 `declined` with no reply; a failed run marks its items `failed` (never retried
 automatically). It's latched per item (`handled_at`) and per agent
-(`post_fixed_at`), so it never double-posts.
+(`post_fixed_at`), so it never double-posts. The agent stores the post-fix outcome
+and full pushed SHA independently of its runtime status. The dashboard shows
+`pushing` between successful runtime completion and post-fix completion, then
+`done` only for a successful push, `no-op` for no commits, `rejected` for a rejected
+push, or `unpushed` when autoPush is off. Failed/stopped runs keep their status;
+legacy rows without an outcome keep their original display status. The PR's
+`fixing` badge stays on through the pushing step.
 
 **Supervisor-initiated fix runs** (`fix_pr`) cover what the watcher won't retry on
 its own: a conflict that persists, a fix run that failed (e.g. its model wasn't

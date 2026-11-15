@@ -82,6 +82,8 @@ test("v8 upgrades an existing database, preserves agents, and is idempotent", ()
   const db = new Database(":memory:");
   migrate(db);
   db.exec(`ALTER TABLE agents DROP COLUMN interrupted_at;
+    ALTER TABLE agents DROP COLUMN fix_outcome;
+    ALTER TABLE agents DROP COLUMN fix_pushed_sha;
     ALTER TABLE sessions DROP COLUMN tokens_input;
     ALTER TABLE sessions DROP COLUMN tokens_output;
     ALTER TABLE sessions DROP COLUMN cache_read;
@@ -94,7 +96,7 @@ test("v8 upgrades an existing database, preserves agents, and is idempotent", ()
   db.exec("INSERT INTO agents (id, session_id, project_name, status, created_at, updated_at) VALUES ('a', 's', 'test', 'stopped', 'then', 'then')");
   migrate(db);
   expect(db.query("SELECT id, interrupted_at FROM agents").all()).toEqual([{ id: "a", interrupted_at: null }]);
-  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 10 });
+  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 11 });
   migrate(db);
   db.close();
 });

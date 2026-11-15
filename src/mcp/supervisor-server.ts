@@ -576,6 +576,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
               cost: a.cost,
               error: a.error,
               postFixed: Boolean(a.post_fixed_at),
+              outcome: a.fix_outcome,
+              pushedSha: a.fix_pushed_sha,
             })),
           };
         }),
