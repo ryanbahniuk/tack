@@ -19,7 +19,7 @@ import * as configLoad from "../src/config/load";
 import { migrate } from "../src/db/migrate";
 import {
   approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getDb, listSessionPrs,
-  markAgentPostFixed, setAgentCost, setAgentResumeRef, setAgentStatus, setAgentUsage, setAgentWorktree, upsertSessionPr,
+  listPrFixAgents, setSessionPrStatus, markAgentPostFixed, setAgentCost, setAgentResumeRef, setAgentStatus, setAgentUsage, setAgentWorktree, upsertSessionPr,
 } from "../src/db";
 import { readArtifact } from "../src/artifacts/store";
 import { prContinuationDecision, prLineageHead, spawnPrFixAgent } from "../src/prwatch/watch";
@@ -172,6 +172,7 @@ test("lineage selection skips runtime and post-fix failures; continuation row re
   expect(prLineageHead(pr)!.id).toBe(good.id);
   mocks.push(spyOn(worktrees, "fastForwardPrWorktree").mockResolvedValue({ base: "run-base" }));
   mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  setSessionPrStatus(pr.id, { state: "open" });
   const result = await spawnPrFixAgent(session, pr, project, config, { origin: "supervisor", conflict: false, baseBranch: "main", title: "PR" });
   expect(result.continued).toBe(good.id);
   expect(result.agent).toMatchObject({ continues_agent_id: good.id, resume_ref: "latest", worktree_path: "/tmp", branch: "lineage-branch", diff_base: "run-base", cost: 0 });
@@ -237,6 +238,7 @@ test("real Git: fast-forward lineage, push its branch to PR, reject dirty/diverg
   const remoteHead = git(peer, "rev-parse", "HEAD");
   setAgentWorktree(a.id, repo, "main");
   mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  setSessionPrStatus(pr.id, { state: "open" });
   const result = await spawnPrFixAgent(session, pr, { ...project, path: repo }, config,
     { origin: "supervisor", conflict: false, baseBranch: "main", title: "PR" });
   expect(result.continued).toBe(a.id);
@@ -285,8 +287,24 @@ test("a queued PR continuation reserves the lineage during its remote fetch", as
     new Promise(resolve => { release = resolve; })));
   mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
   const opts = { origin: "supervisor", conflict: false, baseBranch: "main", title: "PR" } as const;
+  setSessionPrStatus(pr.id, { state: "open" });
   const first = spawnPrFixAgent(session, pr, project, config, opts);
   await expect(spawnPrFixAgent(session, pr, project, config, opts)).rejects.toThrow("already running");
   release({ base: "base" });
   expect((await first).continued).not.toBeNull();
 });
+
+for (const state of ["merged", "closed"]) {
+  test(`PR fix refuses a stored ${state} PR without creating an agent`, async () => {
+    const { session, project, config, pr } = fixture();
+    // The caller's snapshot can predate the status update; trust the row instead.
+    setSessionPrStatus(pr.id, { state });
+    const launch = spyOn(detached, "spawnAgentRunner").mockReturnValue(123);
+    mocks.push(launch);
+    await expect(spawnPrFixAgent(session, { ...pr, state: "open" }, project, config, {
+      origin: "supervisor", conflict: false, baseBranch: "main", title: "PR",
+    })).rejects.toThrow(`PR #1 is ${state}; nothing to fix.`);
+    expect(listPrFixAgents(pr.id)).toEqual([]);
+    expect(launch).not.toHaveBeenCalled();
+  });
+}

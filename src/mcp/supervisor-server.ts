@@ -573,15 +573,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
         "review feedback and failing CI checks (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
         "spawned to address it. Tack handles PR feedback, merge conflicts and failing CI automatically — use this to report " +
-        "on it. Read-only by default; refresh asks the watcher to poll now asynchronously, so results land " +
-        "on the next check. For any change to an open PR (human follow-ups, a persistent conflict, a failed " +
-        "run), call fix_pr to update the same PR branch.",
+        "on it. Read-only by default; refresh updates PR statuses immediately and wakes or starts the watcher " +
+        "only if PRs remain open. Feedback handling happens asynchronously in the watcher. For any change " +
+        "to an open PR (human follow-ups, a persistent conflict, a failed run), call fix_pr to update the same PR branch.",
       inputSchema: { refresh: z.boolean().optional().default(false) },
       annotations: { readOnlyHint: false },
     },
     async ({ refresh }) => {
       requireSession();
-      const pollTriggered = refresh ? triggerPrWatch(sessionId, config) : undefined;
+      const pollTriggered = refresh ? await triggerPrWatch(sessionId, config) : undefined;
       const s = requireSession();
       return text({
         ...(pollTriggered ? { pollTriggered } : {}),

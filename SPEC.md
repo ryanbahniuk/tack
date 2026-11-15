@@ -665,10 +665,12 @@ and a dead watcher. It exits when the session is archived/gone or no PR is
 open; `stop`/`archive` SIGTERM it.
 
 Out-of-cycle polling is available through `tack session poll-prs <session>`, dashboard
-`p`, or supervisor `check_prs` with `refresh: true` (read-only by default; results
-land on the next check). These send SIGUSR1 to a live watcher or start a missing
-one. SIGUSR1 interrupts its sleep; requests during a pass coalesce into one
-immediate extra pass. Passes never overlap and all normal fix guards still apply.
+`p`, or supervisor `check_prs` with `refresh: true` (read-only by default). These
+refresh each watchable PR's status first, persisting merged/closed states immediately.
+Only if any PRs remain open do they send SIGUSR1 to a live watcher or start a missing
+one; feedback handling happens asynchronously. Per-PR refresh failures retain the
+stored status and do not prevent other PRs from refreshing. SIGUSR1 interrupts its
+sleep; requests during a pass coalesce into one immediate extra pass. Passes never overlap and all normal fix guards still apply.
 
 Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
 closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that

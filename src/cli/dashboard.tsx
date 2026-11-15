@@ -536,18 +536,18 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     } else if (input === "p") {
       if (!config) return setNotice("config is unavailable");
       const id = selected.session.id;
-      try {
-        const result = triggerPrWatch(id, config);
+      setNotice(`polling PRs for ${id}…`);
+      void triggerPrWatch(id, config).then((result) => {
         switch (result.kind) {
           case "disabled": setNotice("PR watch is disabled"); break;
           case "inactive": setNotice(`${id} is not active`); break;
-          case "no-open-prs": setNotice(`${id} has no open PRs`); break;
+          case "no-open-prs": setNotice(`${id} has no open PRs (statuses refreshed)`); break;
           case "signalled":
           case "started": setNotice(`polling PRs for ${id} · ${result.kind} watcher pid ${result.pid}`); break;
         }
-      } catch (err) {
+      }).catch((err) => {
         setNotice(`PR poll failed: ${(err as Error).message}`);
-      }
+      }).finally(refresh);
     } else if (input === "J") {
       // Tickets linked before a `jira` block existed have no url — skip them.
       const urls = selected.tickets.map((t) => t.url).filter((u): u is string => Boolean(u));
