@@ -255,6 +255,17 @@ const migrations: Migration[] = [
   },
   {
     version: 9,
+    name: "session_usage",
+    // Historical supervisor usage is unknown and remains zero; no backfill.
+    sql: `
+      ALTER TABLE sessions ADD COLUMN tokens_input INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN tokens_output INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN cache_read INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN cache_write INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    version: 10,
     name: "session_code_version_and_turn",
     sql: `
       ALTER TABLE sessions ADD COLUMN supervisor_code_version TEXT;

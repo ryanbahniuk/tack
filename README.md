@@ -211,12 +211,20 @@ does not mark agents for restoration. Unarchive leaves the supervisor for you to
 rejoin with `enter/o` or `tack session resume <session>`.
 
 Insights includes archived sessions regardless of the list's `z` filter. It shows
-sessions, agents, PRs opened/merged, tickets linked/done, cost, changes against the
+sessions, agents, PRs opened/merged, tickets linked/done, tokens, cost, changes against the
 previous equal-length period, top repos, and a contribution heatmap. Full-screen
 Insights adds a per-repo table, sorted by agent count. Daily/weekly/monthly buckets
 adapt to range and width; dates use local time. PR creation means first linked to
 a session, and ticket completion is approximated by its last status refresh.
 Costs include supervisor and agent spend; repo costs include agents only.
+A Models table shows sessions, agents (including PR-fix agents), tokens and cost
+per stored model handle; missing models appear as "unknown". Tokens include input,
+output, cache reads and cache writes for supervisors and agents. Usage and cost
+follow each row's creation date. Historical supervisor tokens remain zero; new
+headless usage overwrites with the runtime's latest run figure, like cost, while
+interactive transcript recovery replaces both with cumulative figures. Tokens
+and cost do not count toward the contributions heatmap. The table appears in
+split and full-screen views when space permits.
 Time charts use block heights (▁▂▃▄▅▆▇█, · for zero), shared scales for paired
 series, full-word labels, totals and peaks when space allows, and dated axes.
 Short series stretch across the chart. Heatmap shades (░▒▓█) have weekday/date

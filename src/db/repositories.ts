@@ -26,6 +26,10 @@ export interface SessionRow {
   resume_ref: string | null;
   status: SessionStatus;
   cost: number;
+  tokens_input: number;
+  tokens_output: number;
+  cache_read: number;
+  cache_write: number;
   pid: number | null;
   heartbeat_at: string | null;
   /** When the human approved this session's plan (gates `spawn_agent`); null = not
@@ -243,6 +247,18 @@ export function addSessionCost(id: string, delta: number): void {
 /** Sets the supervisor-conversation cost outright (for a cumulative cost figure). */
 export function setSessionCost(id: string, usd: number): void {
   getDb().prepare(`UPDATE sessions SET cost = ?, updated_at = ? WHERE id = ?`).run(usd, nowIso(), id);
+}
+
+/** Overwrite usage, matching setSessionCost's latest-figure semantics. */
+export function setSessionUsage(
+  id: string,
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number },
+): void {
+  getDb()
+    .prepare(
+      `UPDATE sessions SET tokens_input = ?, tokens_output = ?, cache_read = ?, cache_write = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(usage.input, usage.output, usage.cacheRead, usage.cacheWrite, nowIso(), id);
 }
 
 /**
@@ -915,8 +931,9 @@ export function unlinkSessionJiraTicket(sessionId: string, key: string): boolean
   return res.changes > 0;
 }
 
-export type InsightMetric = "sessions" | "agents" | "prFix" | "prs" | "merged" | "tickets" | "done" | "cost";
+export type InsightMetric = "sessions" | "agents" | "prFix" | "prs" | "merged" | "tickets" | "done" | "cost" | "tokens";
 export interface InsightEvent {
+  model: string | null;
   at: string;
   repo: string | null;
   metric: InsightMetric;
@@ -927,18 +944,22 @@ export interface InsightEvent {
  * crossing into JS; no session fan-out or large prompt/artifact columns needed. */
 export function readInsightEvents(db: Database = getDb()): InsightEvent[] {
   return db.query(`
-    SELECT at, repo, metric, SUM(value) AS value FROM (
-      SELECT created_at AS at, NULL AS repo, 'sessions' AS metric, 1 AS value FROM sessions
-      UNION ALL SELECT created_at, NULL, 'cost', cost FROM sessions WHERE cost != 0
-      UNION ALL SELECT created_at, project_name, 'agents', 1 FROM agents
-      UNION ALL SELECT created_at, project_name, 'prFix', 1 FROM agents WHERE kind = 'pr_fix'
-      UNION ALL SELECT created_at, project_name, 'cost', cost FROM agents WHERE cost != 0
-      UNION ALL SELECT created_at, project_name, 'prs', 1 FROM session_prs
-      UNION ALL SELECT COALESCE(merged_at, updated_at), project_name, 'merged', 1
+    SELECT at, repo, model, metric, SUM(value) AS value FROM (
+      SELECT created_at AS at, NULL AS repo, supervisor_model AS model, 'sessions' AS metric, 1 AS value FROM sessions
+      UNION ALL SELECT created_at, NULL, supervisor_model, 'cost', cost FROM sessions WHERE cost != 0
+      UNION ALL SELECT created_at, NULL, supervisor_model, 'tokens', tokens_input + tokens_output + cache_read + cache_write
+        FROM sessions WHERE tokens_input + tokens_output + cache_read + cache_write != 0
+      UNION ALL SELECT created_at, project_name, model, 'agents', 1 FROM agents
+      UNION ALL SELECT created_at, project_name, model, 'prFix', 1 FROM agents WHERE kind = 'pr_fix'
+      UNION ALL SELECT created_at, project_name, model, 'cost', cost FROM agents WHERE cost != 0
+      UNION ALL SELECT created_at, project_name, model, 'tokens', tokens_input + tokens_output + cache_read + cache_write
+        FROM agents WHERE tokens_input + tokens_output + cache_read + cache_write != 0
+      UNION ALL SELECT created_at, project_name, NULL, 'prs', 1 FROM session_prs
+      UNION ALL SELECT COALESCE(merged_at, updated_at), project_name, NULL, 'merged', 1
         FROM session_prs WHERE LOWER(state) = 'merged'
-      UNION ALL SELECT created_at, NULL, 'tickets', 1 FROM session_jira_tickets
-      UNION ALL SELECT updated_at, NULL, 'done', 1 FROM session_jira_tickets WHERE status_category = 'done'
-    ) GROUP BY at, repo, metric
+      UNION ALL SELECT created_at, NULL, NULL, 'tickets', 1 FROM session_jira_tickets
+      UNION ALL SELECT updated_at, NULL, NULL, 'done', 1 FROM session_jira_tickets WHERE status_category = 'done'
+    ) GROUP BY at, repo, model, metric
   `).all() as InsightEvent[];
 }
 

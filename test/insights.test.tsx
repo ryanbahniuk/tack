@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import React from "react";
 import { PassThrough } from "node:stream";
 import { Box, Text, render } from "ink";
-import { migrate, getDb, readInsightEvents, createSession, upsertSessionPr, listSessionPrs, setSessionPrStatus } from "../src/db";
+import { migrate, getDb, readInsightEvents, createSession, upsertSessionPr, listSessionPrs, setSessionPrStatus, setSessionUsage, getSession } from "../src/db";
 import { aggregateInsights, localDay } from "../src/cli/stats";
 import { compress, heatmap, horizontalBars, pairedBars, sparkline, timeAxis } from "../src/cli/charts";
 import { Dashboard } from "../src/cli/dashboard";
@@ -34,7 +34,7 @@ describe("insight aggregation", () => {
   test("all sessions, per-event dates, costs, repo order and legacy merged_at fallback", () => {
     const db = fixture();
     const stats = aggregateInsights(readInsightEvents(db), "7d", now);
-    expect(stats.totals).toEqual({ sessions: 1, agents: 3, prFix: 1, prs: 1, merged: 2, tickets: 1, done: 1, cost: 13 });
+    expect(stats.totals).toEqual({ sessions: 1, agents: 3, prFix: 1, prs: 1, merged: 2, tickets: 1, done: 1, cost: 13, tokens: 0 });
     expect(stats.series).toHaveLength(7);
     expect(stats.series[5]).toMatchObject({ day: "2026-11-13", merged: 1, agents: 1, cost: 5 });
     expect(stats.series[6]).toMatchObject({ day: "2026-11-14", merged: 1, sessions: 1, done: 1, cost: 7 });
@@ -47,13 +47,47 @@ describe("insight aggregation", () => {
     expect(stats.daily.at(-1)).toEqual({ day: "2026-11-14", count: 4 });
     db.close();
   });
+  test("model totals include supervisor and agent usage, unknown models and range filtering", () => {
+    const db = fixture();
+    db.exec("UPDATE sessions SET supervisor_model = 'super', tokens_input = 100, tokens_output = 20, cache_read = 30, cache_write = 5");
+    db.exec("UPDATE agents SET model = 'worker', tokens_input = 1000, tokens_output = 200, cache_read = 300, cache_write = 50 WHERE id IN ('a', 'b')");
+    db.exec("UPDATE agents SET tokens_input = 10 WHERE id = 'c'");
+    const events = readInsightEvents(db);
+    expect(events).toContainEqual({ at: at(14), repo: null, model: "super", metric: "tokens", value: 155 });
+    expect(events).toContainEqual({ at: at(14), repo: "alpha", model: "worker", metric: "tokens", value: 1550 });
+    expect(events.filter(e => ["prs", "merged", "tickets", "done"].includes(e.metric)).every(e => e.model === null)).toBe(true);
+    const stats = aggregateInsights(events, "7d", now);
+    expect(stats.models).toEqual([
+      { model: "worker", sessions: 0, agents: 2, tokens: 3100, cost: 9 },
+      { model: "super", sessions: 1, agents: 0, tokens: 155, cost: 3 },
+      { model: "unknown", sessions: 0, agents: 1, tokens: 10, cost: 1 },
+    ]);
+    expect(stats.models.reduce((sum, m) => sum + m.cost, 0)).toBe(stats.totals.cost);
+    expect(stats.totals.tokens).toBe(3265);
+    expect(stats.previous.tokens).toBe(155);
+    expect(stats.deltas.tokens).toBe(3110);
+    expect(stats.series.reduce((sum, b) => sum + b.tokens, 0)).toBe(3265);
+    expect(stats.daily.at(-1)?.count).toBe(4);
+    expect(aggregateInsights(events, "all", now).models.find(m => m.model === "super")).toMatchObject({ sessions: 2, tokens: 310, cost: 5 });
+    db.close();
+  });
+  test("model ordering breaks ties by tokens, agents, sessions then name", () => {
+    const events = [
+      { model: "tokens", metric: "tokens" as const, value: 1 },
+      { model: "agents", metric: "agents" as const, value: 1 },
+      { model: "sessions", metric: "sessions" as const, value: 1 },
+      { model: "z", metric: "cost" as const, value: 0 },
+      { model: "a", metric: "cost" as const, value: 0 },
+    ].map(e => ({ ...e, at: at(14), repo: null }));
+    expect(aggregateInsights(events, "7d", now).models.map(m => m.model)).toEqual(["tokens", "agents", "sessions", "a", "z"]);
+  });
   test("local day boundaries, partial comparison, and future events", () => {
     const events = [
-      { at: new Date(2026, 10, 8, 0).toISOString(), repo: null, metric: "sessions" as const, value: 1 },
-      { at: new Date(2026, 10, 7, 23, 59).toISOString(), repo: null, metric: "sessions" as const, value: 2 },
-      { at: new Date(2026, 10, 7, 13).toISOString(), repo: null, metric: "sessions" as const, value: 100 },
-      { at: new Date(2026, 10, 14, 13).toISOString(), repo: null, metric: "sessions" as const, value: 100 },
-      { at: "invalid", repo: null, metric: "sessions" as const, value: 100 },
+      { at: new Date(2026, 10, 8, 0).toISOString(), repo: null, model: null, metric: "sessions" as const, value: 1 },
+      { at: new Date(2026, 10, 7, 23, 59).toISOString(), repo: null, model: null, metric: "sessions" as const, value: 2 },
+      { at: new Date(2026, 10, 7, 13).toISOString(), repo: null, model: null, metric: "sessions" as const, value: 100 },
+      { at: new Date(2026, 10, 14, 13).toISOString(), repo: null, model: null, metric: "sessions" as const, value: 100 },
+      { at: "invalid", repo: null, model: null, metric: "sessions" as const, value: 100 },
     ];
     const stats = aggregateInsights(events, "7d", now);
     expect(stats.series[0]).toMatchObject({ day: "2026-11-08", sessions: 1 });
@@ -77,7 +111,7 @@ describe("insight aggregation", () => {
     db.close();
   });
   test("negative and zero deltas, empty ranges", () => {
-    const stats = aggregateInsights([{ at: at(1), repo: "repo", metric: "agents", value: 4 }], "7d", now);
+    const stats = aggregateInsights([{ at: at(1), repo: "repo", model: null, metric: "agents", value: 4 }], "7d", now);
     expect(stats.deltas.agents).toBe(-4);
     expect(stats.totals.agents).toBe(0);
     expect(stats.repos).toEqual([]);
@@ -85,11 +119,39 @@ describe("insight aggregation", () => {
   });
 });
 
+describe("supervisor usage persistence and migration", () => {
+  test("v9 defaults existing sessions to zero and is safe to rerun", () => {
+    const db = fixture();
+    db.exec("ALTER TABLE sessions DROP COLUMN tokens_input; ALTER TABLE sessions DROP COLUMN tokens_output; ALTER TABLE sessions DROP COLUMN cache_read; ALTER TABLE sessions DROP COLUMN cache_write; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; DELETE FROM _migrations WHERE version >= 9");
+    migrate(db);
+    expect(db.query("SELECT tokens_input, tokens_output, cache_read, cache_write FROM sessions WHERE id = 'old'").get())
+      .toEqual({ tokens_input: 0, tokens_output: 0, cache_read: 0, cache_write: 0 });
+    expect(readInsightEvents(db).filter(e => e.metric === "tokens")).toEqual([]);
+    migrate(db);
+    db.close();
+  });
+  test("session usage overwrites the prior figure", () => {
+    const session = createSession({});
+    setSessionUsage(session.id, { input: 100, output: 200, cacheRead: 300, cacheWrite: 400 });
+    setSessionUsage(session.id, { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
+    expect(getSession(session.id)).toMatchObject({ tokens_input: 1, tokens_output: 2, cache_read: 3, cache_write: 4 });
+  });
+});
+
 describe("merged_at persistence and migration", () => {
   test("v7 upgrades an existing v6 table without rewriting its data; rerun is safe", () => {
     const db = fixture();
     // Reconstruct the pre-v7 schema, removing later columns while preserving legacy rows.
-    db.exec("ALTER TABLE session_prs DROP COLUMN merged_at; DELETE FROM _migrations WHERE version >= 7; ALTER TABLE agents DROP COLUMN interrupted_at; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at");
+    db.exec(`ALTER TABLE session_prs DROP COLUMN merged_at;
+    ALTER TABLE agents DROP COLUMN interrupted_at;
+    ALTER TABLE sessions DROP COLUMN tokens_input;
+    ALTER TABLE sessions DROP COLUMN tokens_output;
+    ALTER TABLE sessions DROP COLUMN cache_read;
+    ALTER TABLE sessions DROP COLUMN cache_write;
+    ALTER TABLE sessions DROP COLUMN supervisor_code_version;
+    ALTER TABLE sessions DROP COLUMN pr_watch_code_version;
+    ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at;
+    DELETE FROM _migrations WHERE version >= 7`);
     migrate(db);
     expect(db.query("SELECT merged_at FROM session_prs WHERE id = 'p'").get()).toEqual({ merged_at: null });
     expect(db.query("SELECT COUNT(*) AS n FROM session_prs").get()).toEqual({ n: 2 });
@@ -194,6 +256,31 @@ describe("Insights Ink smoke render", () => {
       db.close();
     });
   }
+  test("compact token KPI values and deltas", async () => {
+    for (const [count, formatted] of [[950, "950"], [12300, "12.3k"], [4100000, "4.1M"]] as const) {
+      const stats = aggregateInsights([], "7d", now);
+      stats.totals.tokens = count;
+      stats.deltas.tokens = -count;
+      const frame = await renderFrame(<Insights stats={stats} width={160} height={60} full />, 160);
+      expect(frame).toMatch(new RegExp(`Tokens +${formatted.replace(".", "\\.")}`));
+      expect(frame).toContain(`−${formatted} vs prev`);
+    }
+  });
+  test("model table fits wide and stacked layouts and drops whole at short heights", async () => {
+    const stats = aggregateInsights([], "7d", now);
+    stats.models = Array.from({ length: 30 }, (_, i) => ({ model: `long-model-name-${i}`, sessions: 1, agents: 2, tokens: 12300, cost: 4 }));
+    for (const full of [false, true]) for (const width of [24, 40, 72, 160]) {
+      const frame = await renderFrame(<Insights stats={stats} width={width} height={60} full={full} />, width);
+      expect(frame).toContain("Models");
+      for (const label of ["Sessions", "Agents", "Tokens", "Cost", "12.3k", "$4.00"]) expect(frame).toContain(label);
+      for (const line of frame.trimEnd().split("\n")) expect(line.length).toBeLessThanOrEqual(width);
+      expect(frame.trimEnd().split("\n").length).toBeLessThanOrEqual(60);
+      const short = await renderFrame(<Insights stats={stats} width={width} height={12} full={full} />, width);
+      expect(short).not.toContain("Models");
+    }
+    const empty = await renderFrame(<Insights stats={aggregateInsights([], "7d", now)} width={80} height={70} />, 80);
+    expect(empty).toContain("no models in range");
+  });
   test("signed KPI comparisons, dollar scales, dates and explicit empty states", async () => {
     const db = fixture();
     const stats = aggregateInsights(readInsightEvents(db), "7d", now);
@@ -272,6 +359,7 @@ for (const full of [false, true]) {
       const db = fixture();
       const stats = aggregateInsights(readInsightEvents(db), "30d", now);
       stats.repos = Array.from({ length: 30 }, (_, i) => ({ repo: `repo-${i}`, agents: 20, prs: 4, merged: 3, cost: 100 }));
+      stats.models = Array.from({ length: 30 }, (_, i) => ({ model: `model-${i}`, sessions: 1, agents: 20, tokens: 12300000, cost: 100 }));
       stats.totals.sessions = 123456789;
       try {
         for (const height of [0, 1, 5, 12, 24, 40]) {
