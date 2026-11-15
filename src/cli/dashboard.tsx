@@ -20,6 +20,9 @@ import {
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, isSessionStale, refreshSession } from "../session/refresh";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
+import { collapseHome } from "../paths";
+import { editorInvocation } from "../util/editor";
+import { resolveEditTarget } from "../session/edit";
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
@@ -143,15 +146,17 @@ function openUrl(url: string): void {
 }
 
 /** What the human asked for by leaving the dashboard: open the highlighted session,
- *  create a new one, or page through an agent's output. */
+ *  create a new one, page through output, or edit an agent's worktree. */
 type Launch =
   | { kind: "resume"; id: string; message?: string }
+  | { kind: "edit"; path: string; agentId: string }
   | { kind: "create" }
   | { kind: "output"; ref: string; title: string };
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
 type Confirm =
   | { action: "delete" | "stop" | "refresh"; id: string }
+  | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number };
 
 const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
@@ -389,8 +394,12 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     // else cancels (stop/delete also accept enter). Keeps a stray `d` from deleting a session's
     // worktrees and artifacts irreversibly.
     if (confirm) {
-      if (input === "y" || input === "Y" || (key.return && confirm.action !== "unarchive" && confirm.action !== "refresh")) {
-        if (confirm.action === "refresh") {
+      if (input === "y" || input === "Y" || (key.return && (confirm.action === "delete" || confirm.action === "stop"))) {
+        if (confirm.action === "edit") {
+          onLaunch({ kind: "edit", path: confirm.path, agentId: confirm.agentId });
+          setConfirm(null);
+          return exit();
+        } else if (confirm.action === "refresh") {
           const id = confirm.id;
           setConfirm(null);
           if (!config) { setNotice("Configuration unavailable"); return; }
@@ -435,13 +444,24 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       return;
     }
 
-    // Agent-output picker: drill into the selected session's agents and page one's
-    // output. A navigation-only mode; only "view" hands the terminal to a pager.
+    // Agent picker: output and editing both hand the terminal to a child process.
     if (mode === "agents") {
       const agents = pickerView?.agents ?? [];
       if (input === "q" || key.escape || !pickerView) return setMode("list");
       if (key.downArrow || input === "j") return setAgentCursor((c) => Math.min(c + 1, Math.max(0, agents.length - 1)));
       if (key.upArrow || input === "k") return setAgentCursor((c) => Math.max(c - 1, 0));
+      if (input === "e") {
+        const a = agents[Math.min(agentCursor, agents.length - 1)];
+        if (!a) return;
+        const target = resolveEditTarget(agents, a.id, existsSync, {});
+        if (!target.ok) {
+          if (target.reason === "running") setConfirm({ action: "edit", agentId: a.id, path: a.worktree_path! });
+          else setNotice(target.message);
+          return;
+        }
+        onLaunch({ kind: "edit", path: target.path, agentId: a.id });
+        return exit();
+      }
       if (key.return || input === "o" || input === "v") {
         const a = agents[Math.min(agentCursor, agents.length - 1)];
         if (!a) return;
@@ -554,8 +574,18 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     }
   });
 
+  const confirmText = confirm ? (confirm.action === "edit"
+    ? `Agent ${confirm.agentId} is still running. Edit its worktree anyway? (y/N)`
+    : confirm.action === "delete"
+    ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
+    : confirm.action === "refresh"
+      ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
+    : confirm.action === "unarchive"
+      ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
+      : `Stop ${confirm.id} and its agents? (y/N)`) : null;
+
   if (mode === "agents" && pickerView) {
-    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} />;
+    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} />;
   }
 
   if (mode === "amendments" && pickerView) {
@@ -572,13 +602,6 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   const liveCount = rows.filter((v) => v.live).length;
   const needsCount = rows.filter((v) => v.needsInput).length;
 
-  const confirmText = confirm ? (confirm.action === "delete"
-    ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
-    : confirm.action === "refresh"
-      ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
-    : confirm.action === "unarchive"
-      ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
-      : `Stop ${confirm.id} and its agents? (y/N)`) : null;
   const footer = confirmText ? [confirmText] : [
     notice,
     ghMissing ? "gh not found — PR status not updating" : "",
@@ -716,8 +739,8 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   );
 }
 
-/** The agent-output picker for one session: choose an agent, page its output. */
-function AgentsPanel({ view, cursor, notice }: { view: View; cursor: number; notice: string }) {
+/** The agent picker shows worktree paths alongside output so the human can inspect or edit. */
+function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor: number; notice: string; confirmText: string | null }) {
   return (
     <Box flexDirection="column">
       <Text bold>
@@ -740,12 +763,14 @@ function AgentsPanel({ view, cursor, notice }: { view: View; cursor: number; not
             <Text color="green"> {usd(a.cost)}</Text>
             <Text dimColor> {a.project_name}</Text>
             {ref ? null : <Text dimColor> (no output)</Text>}
+            {a.worktree_path ? <Text dimColor> {collapseHome(a.worktree_path)}</Text> : null}
           </Text>
         );
       })}
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
-        <Text dimColor>j/k move · enter/v view output · esc/q back</Text>
+        {confirmText ? <Text color="yellow">{confirmText}</Text> : null}
+        <Text dimColor>j/k move · enter/v view output · e edit worktree · esc/q back</Text>
       </Box>
     </Box>
   );
@@ -949,8 +974,11 @@ export async function runDashboard(): Promise<void> {
     const { command, args } =
       launch.kind === "output"
         ? pagerInvocation(launch.ref)
+        : launch.kind === "edit"
+          ? editorInvocation(".")
         : selfCommand(launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id, ...(launch.message ? ["--message", launch.message] : [])]);
     const proc = Bun.spawn([command, ...args], {
+      cwd: launch.kind === "edit" ? launch.path : undefined,
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",

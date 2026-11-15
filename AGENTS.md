@@ -43,6 +43,7 @@ src/worktree/            session-scoped worktrees, supervisor snapshots (syncSna
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
+src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
 src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts

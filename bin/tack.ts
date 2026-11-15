@@ -48,6 +48,7 @@ import {
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
 import { REFRESH_MESSAGE, isSessionStale, refreshBlockedReason, refreshSession } from "../src/session/refresh";
+import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { tmuxAvailable } from "../src/session/tmux";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
@@ -63,7 +64,7 @@ import type { Model, Project, Roles } from "../src/config/schema";
 import { runDashboard } from "../src/cli/dashboard";
 import { startSpinner } from "../src/cli/spinner";
 import { renderStreamEvent, type Pending } from "../src/cli/render";
-import { captureViaEditor, openInEditor } from "../src/util/editor";
+import { captureViaEditor, openInEditor, openWorktreeInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
 import { runPrWatcher, triggerPrWatch } from "../src/prwatch/watch";
@@ -1343,6 +1344,42 @@ const sessionRetitle = defineCommand({
   },
 });
 
+const sessionEdit = defineCommand({
+  meta: { name: "edit", description: "Open an agent's worktree in $VISUAL or $EDITOR" },
+  args: {
+    session: { type: "positional", description: "Session id", required: true },
+    agent: { type: "positional", description: "Agent id (required when several worktrees exist)", required: false },
+    force: { type: "boolean", description: "Allow editing a pending or running agent's worktree" },
+    "print-path": { type: "boolean", description: "Print just the worktree path without opening an editor" },
+  },
+  run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    const target = resolveEditTarget(listAgents(id), args.agent, existsSync, { force: args.force });
+    if (!target.ok) {
+      console.error(pc.red(target.message));
+      for (const a of target.candidates ?? [])
+        console.error(`${a.id}  ${a.project_name}  ${a.status}  ${a.branch ?? "(no branch)"}  ${a.worktree_path}`);
+      return process.exit(1);
+    }
+    if (args["print-path"]) { console.log(target.path); return; }
+    try {
+      openWorktreeInEditor(target.path);
+    } catch (err) {
+      console.error(pc.red(`Could not open an editor: ${(err as Error).message}`));
+      console.error(pc.dim("Set $VISUAL or $EDITOR."));
+      return process.exit(1);
+    }
+    try {
+      worktreeEditSummary(target.agent, listSessionPrs(id), target.path)
+        .forEach((line, i) => console.log(i < 2 ? line : pc.dim(line)));
+    } catch (err) {
+      console.error(pc.red(`Could not summarize the worktree: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  },
+});
+
 const sessionPollPrs = defineCommand({
   meta: { name: "poll-prs", description: "Ask a session's PR watcher to poll now" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1369,9 +1406,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, show, context, retitle, poll-prs, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
