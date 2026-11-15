@@ -204,6 +204,18 @@ per fix run, linking and quoting each original and citing pushed fixes. Human au
 are mentioned at most once; bots are never mentioned. Set `prWatch.reply: false` to
 disable replies.
 
+### Edit an agent's worktree
+
+Run `tack session edit <session> [agent]` to open a worktree in `$VISUAL`,
+then `$EDITOR`, falling back to `vi`. Omit the agent id when only one worktree
+exists. Pending or running agents require `--force`; `--print-path` prints just
+the path for use with other tools. After editing, Tack reports the branch and Git
+status with a push hint when needed. It never commits or pushes automatically.
+
+In `tack dashboard`, press `v` to open the agents picker, then `e` to edit the
+highlighted agent's worktree. Editing a pending or running agent requires `y`
+confirmation. The picker shows worktree paths so you can see which tree will open.
+
 `tack dashboard` defaults to a split view on terminals at least 140 columns wide:
 work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
 full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
