@@ -211,3 +211,42 @@ test("real dashboard on scratch TACK_HOME renders split, cycles full-screen, and
     db.query("DELETE FROM sessions WHERE id IN ('old','new')").run();
   }
 }, 15000);
+
+// Budget checks use real Ink frames, so Yoga borders, wrapping and column layout
+// are covered alongside the arithmetic (without clipping the Insights component).
+for (const full of [false, true]) {
+  for (const width of [24, 72, 160]) {
+    test(`Insights respects small budgets at width ${width}, full=${full}`, async () => {
+      const db = fixture();
+      const stats = aggregateInsights(readInsightEvents(db), "30d", now);
+      stats.repos = Array.from({ length: 30 }, (_, i) => ({ repo: `repo-${i}`, agents: 20, prs: 4, merged: 3, cost: 100 }));
+      stats.totals.sessions = 123456789;
+      try {
+        for (const height of [0, 1, 5, 12, 24, 40]) {
+          const output = new PassThrough();
+          Object.assign(output, { columns: width, rows: 100, isTTY: false });
+          let frame = "";
+          output.on("data", chunk => { frame += chunk.toString(); });
+          const app = render(<Insights stats={stats} width={width} height={height} full={full} />, {
+            stdout: output as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream,
+            debug: true, patchConsole: false, exitOnCtrlC: false,
+          });
+          try {
+            await app.waitUntilRenderFlush();
+            const lines = frame.trimEnd() ? frame.trimEnd().split("\n").length : 0;
+            expect(lines).toBeLessThanOrEqual(height);
+            if (height === 12) {
+              expect(frame).toContain("Totals");
+              expect(frame).not.toContain("Contributions");
+              if (!full || width < 70) expect(frame).not.toContain("Top repos");
+            }
+          } finally {
+            app.unmount();
+          }
+        }
+      } finally {
+        db.close();
+      }
+    });
+  }
+}
