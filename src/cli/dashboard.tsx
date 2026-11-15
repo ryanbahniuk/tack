@@ -36,6 +36,8 @@ import type { TackConfig } from "../config/schema";
 import { readInsights, RANGES, type InsightRange } from "./stats";
 import { Insights, insightChartWidth } from "./insights";
 
+const DIVIDER_WIDTH = 3;
+
 interface View {
   session: SessionRow;
   agents: AgentRow[];
@@ -245,7 +247,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   );
   const effectiveLayout = layout === "split" && size.columns < 140 ? "list" : layout;
   const listWidth = effectiveLayout === "split" ? Math.floor(size.columns * 0.55) : size.columns;
-  const insightWidth = effectiveLayout === "split" ? size.columns - listWidth : size.columns;
+  const insightWidth = effectiveLayout === "split" ? size.columns - listWidth - DIVIDER_WIDTH : size.columns;
   const [range, setRange] = useState<InsightRange>("30d");
   const [stats, setStats] = useState(() => readInsights(range, new Date(), insightChartWidth(insightWidth)));
   const statsSig = useRef(JSON.stringify(stats));
@@ -735,6 +737,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
             {visibleLines.map((line, i) => React.cloneElement(line, { key: i, wrap: "truncate" }))}
             {window.below > 0 && <Text dimColor wrap="truncate">↓ {window.below} more</Text>}
           </Box>
+        )}
+        {effectiveLayout === "split" && (
+          <Box width={1} height={budget} marginX={1} flexShrink={0} borderStyle="single" borderLeft borderRight={false} borderTop={false} borderBottom={false} borderDimColor />
         )}
         {effectiveLayout !== "list" && (
           <Insights stats={stats} width={insightWidth} rows={size.rows} height={budget} full={effectiveLayout === "insights"} />
