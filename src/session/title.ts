@@ -5,9 +5,12 @@ import { LOGS_DIR } from "../paths";
 import type { TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import { resolveRuntime, selectRuntime } from "../runtimes";
-import { latestSharedContext, setSessionTitle } from "../db";
+import { getSession, latestSharedContext, setSessionTitle } from "../db";
 import { readArtifact } from "../artifacts/store";
 import { selfInvocation } from "../process/self";
+import { isApprovePrompt } from "../supervisor/approve-prompt";
+import { supervisorPromptPath, writeSupervisorPrompt } from "../supervisor/prompt";
+import { REFRESH_MESSAGE } from "./refresh-message";
 import { tidy } from "../projects/summarize";
 
 /** How much source text the titler sends the model — a title needs the gist, not
@@ -24,20 +27,45 @@ const PROMPT_HEAD =
   "single line.\n\nThe task text is between the markers below.\n\n";
 
 /**
+ * Capture an unseeded session's first human ask before the supervisor responds.
+ * Set an instant stand-in, then refine it asynchronously; the first shared contract
+ * refines it again later. Silent for hook stdout; callers must fail open on errors.
+ * The injected spawner lets tests avoid launching a model process.
+ */
+export function titleFromFirstPrompt(
+  sessionId: string,
+  prompt: string,
+  spawnTitler: (sessionId: string) => void = spawnSessionTitler,
+): boolean {
+  const trimmed = prompt.trim();
+  if (!trimmed || trimmed.startsWith("/") || isApprovePrompt(prompt) || trimmed.startsWith(REFRESH_MESSAGE)) return false;
+  const session = getSession(sessionId);
+  if (!session || session.title?.trim()) return false;
+  const promptFile = supervisorPromptPath(sessionId);
+  if (existsSync(promptFile) && readFileSync(promptFile, "utf8").trim()) return false;
+
+  setSessionTitle(sessionId, trimmed.slice(0, MAX_TITLE_CHARS));
+  writeSupervisorPrompt(sessionId, prompt);
+  spawnTitler(sessionId);
+  return true;
+}
+
+/**
  * The best text to name a session from: the latest shared contract (the
  * supervisor's distilled plan — sharper than the raw ask) when one exists, else the
- * seed prompt stashed at creation. Throws if the session has neither yet.
+ * seed prompt stashed at creation or the first human prompt saved by the hook.
+ * Throws if the session has neither yet.
  */
 function titleSource(sessionId: string): string {
   const contract = latestSharedContext(sessionId);
   const body = contract ? readArtifact(contract.body_ref).trim() : "";
   if (body) return body;
-  const promptFile = join(LOGS_DIR, sessionId, "supervisor.prompt");
+  const promptFile = supervisorPromptPath(sessionId);
   if (existsSync(promptFile)) {
     const prompt = readFileSync(promptFile, "utf8").trim();
     if (prompt) return prompt;
   }
-  throw new Error(`Session ${sessionId} has no shared contract or seed prompt to title it from yet.`);
+  throw new Error(`Session ${sessionId} has no shared contract or stashed prompt to title it from yet.`);
 }
 
 /** Model output → one clean title line: collapse, first line, no trailing period, capped. */
@@ -51,7 +79,7 @@ function cleanTitle(raw: string): string {
 /**
  * Generates a short title for a session with the `summary`-role model and writes it
  * to `sessions.title`, replacing the truncated-prompt stand-in (or the empty title
- * of an unseeded interactive run). Runs read-only with no shell, in the
+ * of a run without a captured prompt). Runs read-only with no shell, in the
  * session's log dir — it only reads the text it's handed, never a repo. Throws on
  * any failure; callers on the session/supervisor path go through
  * `spawnSessionTitler`, which keeps that best-effort. Its cost is deliberately not
@@ -90,10 +118,10 @@ export async function generateSessionTitle(config: TackConfig, sessionId: string
 
 /**
  * Fires off `tack __title-session <sessionId>` as a detached background process
- * (mirroring `spawnSupervisorRunner`), so titling never blocks session creation or
- * a supervisor tool call. Best-effort end to end: a spawn failure is swallowed here
- * and a titling failure lands only in `title.runner.log`. Prints nothing, so it's
- * safe to call from the MCP servers (whose stdout is the protocol).
+ * (mirroring `spawnSupervisorRunner`), so titling never blocks session creation,
+ * a prompt-submit hook, or a supervisor tool call. Best-effort end to end: a spawn
+ * failure is swallowed here and a titling failure lands only in `title.runner.log`.
+ * Prints nothing, so hook and MCP stdout stay reserved for their protocols.
  */
 export function spawnSessionTitler(sessionId: string): void {
   try {

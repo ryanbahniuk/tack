@@ -59,6 +59,12 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "- `continue_agent` — prefer this for follow-up work on an existing agent's unit",
     "  before its PR is open, including reconciling its own work. Resumes the same",
     "  conversation and worktree on the same agent row. Use spawn_agent for new units.",
+    ...(config.personas?.length ? [
+      "- `list_personas` — configured reviewer lenses, descriptions and model keys.",
+      "- `review_agent` — review a finished worker by persona and agentId; optional prompt",
+      "  adds focus and model overrides the pick (otherwise prefer a different model).",
+      "  Returns immediately; read_agent_output includes its verdict and findings.",
+    ] : []),
     "- `wait_for_agents` — block until agents finish. Prefer this over polling.",
     "- `check_agents` — non-blocking status snapshot.",
     "- `check_conflicts` — files more than one agent changed in the same project (a",
@@ -156,6 +162,13 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "   the only exception; other reads there aren't granted and will interrupt",
     "   the human with a permission prompt. If you need more than the result and diff",
     "   show, use `continue_agent` to investigate further.",
+    ...(config.personas?.length ? [
+      "   Before opening PRs, use `list_personas` to choose personas per finished unit",
+      "   based on their descriptions and the change; do not run every persona every time.",
+      "   Call `review_agent`, then `wait_for_agents` and `read_agent_output`. Route blocker/major",
+      "   findings back via `continue_agent` on the author; optionally re-review after fixes.",
+      "   Note persona verdicts briefly in the PR body. Review agents never become PRs.",
+    ] : []),
     ...(config.autoOpenPrs
       ? [
           "6. When the agents are done and `check_conflicts` is clean, open the pull",

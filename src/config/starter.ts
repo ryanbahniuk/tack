@@ -36,6 +36,16 @@ export default ({
     summary: "sonnet-5",
   },
 
+  // Personas have a unique name and a description: when to use the reviewer,
+  // and the instructions it follows. Optional model accepts a key or non-empty
+  // list; omitted uses roles.agent. Reviews prefer a different model than the
+  // author when a candidate is available, otherwise use the same model.
+  // personas: [
+  //   { name: "adversarial", description: "Strict adversarial reviewer. Assume the change is wrong; find concrete correctness and security failures.", model: "opus-5" },
+  //   { name: "implementation", description: "Review implementation correctness, edge cases and test coverage with an independent perspective.", model: ["opus-5", "gpt-6.1-sol"] },
+  //   { name: "design-standards", description: "Review user-facing changes against the project's design standards, accessibility and interaction conventions." },
+  // ],
+
   // Pin the CLI runtimes. \`bin\` points at a specific executable (defaults to the
   // runtime name on PATH); \`version\` is checked against \`<bin> --version\` before any
   // run. \`versionPolicy\` decides what a mismatch does: "warn" (default) logs once and

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR, supervisorCwd, supervisorArtifactsDir } from "../paths";
 import type { TackConfig } from "../config/schema";
@@ -35,6 +35,7 @@ import {
   SUPERVISOR_PLAN_APPROVAL_PROMPT,
   SUPERVISOR_PLAN_APPROVAL_TOOL,
 } from "../mcp/supervisor-server";
+import { supervisorPromptPath } from "./prompt";
 import { buildSupervisorContext } from "./context";
 import { sessionSnapshotsRoot } from "../worktree/worktree";
 import {
@@ -47,6 +48,8 @@ import {
   tmuxSetStatusHint,
 } from "../session/tmux";
 
+export { writeSupervisorPrompt } from "./prompt";
+
 /**
  * Creates the session row for a new supervisor run and pins the model/runtime it
  * will use. Split out from the run loop so the foreground path and the detached
@@ -57,8 +60,8 @@ export function createSupervisorSession(problem: string, config: TackConfig): Se
   const model = modelForRole(config, "supervisor");
   return createSession({
     // The truncated prompt is only a stand-in until the summary model's title lands
-    // (`src/session/title.ts`); with no seed there's nothing worth showing, so leave
-    // it null rather than storing a placeholder.
+    // (`src/session/title.ts`). Without a seed, the prompt-submit hook installs
+    // the stand-in and starts the titler when the human submits their first ask.
     title: problem.trim() ? problem.slice(0, 80) : null,
     supervisorModel: model.key,
     runtime: model.runtime,
@@ -404,22 +407,6 @@ export function recoverSupervisorCost(opts: {
 export type SupervisorRunMode = "fresh" | "resume";
 
 /**
- * Where a launcher stashes the prompt for a detached supervisor run. The prompt
- * can be long/multiline, so we hand it off via a file rather than argv — the
- * runner reads it once at startup, mirroring how `spawnAgentRunner` prepares an
- * agent row before the detached `__run-agent` process picks it up.
- */
-function promptPath(sessionId: string): string {
-  return join(LOGS_DIR, sessionId, "supervisor.prompt");
-}
-
-/** Persists the prompt for a detached supervisor run keyed by session id. */
-export function writeSupervisorPrompt(sessionId: string, prompt: string): void {
-  mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
-  writeFileSync(promptPath(sessionId), prompt, "utf8");
-}
-
-/**
  * The `__run-supervisor` entrypoint: drive a supervisor session to completion in
  * a detached background process. Reads the stashed prompt, then runs a fresh turn
  * (session pre-created by the launcher) or resumes an existing one. Events are
@@ -430,7 +417,7 @@ export async function runSupervisorToCompletion(
   mode: SupervisorRunMode,
   config: TackConfig,
 ): Promise<void> {
-  const prompt = readFileSync(promptPath(sessionId), "utf8");
+  const prompt = readFileSync(supervisorPromptPath(sessionId), "utf8");
   const gen =
     mode === "resume"
       ? resumeSupervise(sessionId, prompt, config)

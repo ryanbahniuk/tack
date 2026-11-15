@@ -312,6 +312,16 @@ const migrations: Migration[] = [
   },
   {
     version: 15,
+    name: "agent_personas",
+    // Reports stay on disk; the row records the lens, target and report reference.
+    sql: `
+      ALTER TABLE agents ADD COLUMN persona TEXT;
+      ALTER TABLE agents ADD COLUMN reviews_agent_id TEXT;
+      ALTER TABLE agents ADD COLUMN review_ref TEXT;
+    `,
+  },
+  {
+    version: 16,
     name: "session_pr_ready_promoted",
     // A human returning a promoted PR to draft must not trigger another promotion.
     sql: `ALTER TABLE session_prs ADD COLUMN ready_promoted_at TEXT;`,

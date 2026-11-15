@@ -88,17 +88,21 @@ describe("PR readiness config and persistence", () => {
     expect(PrWatchSchema.parse({}).autoReady).toBe(true);
     expect(PrWatchSchema.parse({ autoReady: false }).autoReady).toBe(false);
   });
-  test("v15 upgrades existing PRs with a nullable latch and is idempotent", () => {
+  test("v16 upgrades existing PRs with a nullable latch and is idempotent", () => {
     const db = new Database(":memory:");
     try {
       migrate(db);
       db.exec(`ALTER TABLE session_prs DROP COLUMN ready_promoted_at;
-        DELETE FROM _migrations WHERE version = 15;
+        DELETE FROM _migrations WHERE version = 16;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
+        INSERT INTO agents (id, session_id, project_name, status, persona, created_at, updated_at)
+          VALUES ('a', 's', 'app', 'done', 'strict', 'then', 'then');
         INSERT INTO session_prs (id, session_id, url, created_at, updated_at)
           VALUES ('p', 's', 'url', 'then', 'then');`);
       migrate(db);
       expect(db.query("SELECT ready_promoted_at FROM session_prs").get()).toEqual({ ready_promoted_at: null });
+      expect(db.query("SELECT persona FROM agents WHERE id = 'a'").get()).toEqual({ persona: "strict" });
+      expect(db.query("SELECT name FROM _migrations WHERE version = 15").get()).toEqual({ name: "agent_personas" });
       db.exec("UPDATE session_prs SET ready_promoted_at = 'first'");
       migrate(db);
       expect(db.query("SELECT ready_promoted_at FROM session_prs").get()).toEqual({ ready_promoted_at: "first" });

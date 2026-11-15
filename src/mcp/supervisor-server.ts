@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadConfig, modelForRole, resolveModel } from "../config/load";
+import { loadConfig, modelForRole, modelForPersona, resolvePersona, resolveModel } from "../config/load";
 import { getSession } from "../db";
 import {
   addSharedContext,
@@ -129,6 +129,38 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       ),
   );
 
+  server.registerTool("list_personas", {
+    description: "List configured reviewer personas, their descriptions and model keys.",
+    inputSchema: {}, annotations: { readOnlyHint: true },
+  }, async () => text(config.personas));
+
+  server.registerTool("review_agent", {
+    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Returns immediately.",
+    inputSchema: { persona: z.string(), agentId: z.string(), prompt: z.string().optional(), model: z.string().optional() },
+  }, async ({ persona: name, agentId, prompt, model }) => {
+    const session = requireSession();
+    if (!session.plan_approved_at) throw new Error("Plan not approved. Use request_plan_approval before review_agent.");
+    const persona = resolvePersona(config, name);
+    const target = getAgent(agentId);
+    if (!target || target.session_id !== sessionId) throw new Error("Reviewed agent is not in this session.");
+    if (target.kind) throw new Error("Only normal worker agents can be reviewed; review and PR-fix agents cannot.");
+    if (target.status !== "done") throw new Error("Reviewed agent must be done; use wait_for_agents first.");
+    if (!readArtifact(target.diff_ref).trim()) throw new Error("Reviewed agent has no diff to review.");
+    if (!target.branch || !target.diff_base) throw new Error("Reviewed agent has no local branch/baseline.");
+    const project = config.projects.find((p) => p.name === target.project_name);
+    if (!project) throw new Error(`Unknown project "${target.project_name}"`);
+    const m = model ? resolveModel(config, model) : modelForPersona(config, persona, { avoidKey: target.model });
+    const offered = checkModelOffered(config, m);
+    if (!offered.ok) throw new Error(`Refusing to review: ${offered.message}`);
+    const agent = prepareAgent({ session, project, model: m, kind: "review", persona: name,
+      reviewsAgentId: target.id,
+      prompt: `Review agent ${target.id}'s work using your persona and the shared contract. Report findings with report_review.` +
+        (prompt ? `\n\nExtra focus:\n${prompt}` : ""),
+    });
+    spawnAgentRunner(session.id, agent.id);
+    return text({ agentId: agent.id, persona: name, model: m.key, reviews: target.id });
+  });
+
   // Not plan-gated: syncing is read-only investigation prep (it never touches the
   // user's checkouts), and the supervisor needs it BEFORE it can form a plan.
   // `readOnlyHint` is honest here: its only writes are Tack-owned snapshot worktrees
@@ -191,7 +223,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const ref = writeSharedContext(sessionId, version, body);
       addSharedContext({ sessionId, bodyRef: ref, authoredBy: "supervisor" });
       // The first contract is the best summary of what the session is about — title
-      // (or retitle, if it came from the seed prompt) from it. Detached and silent,
+      // (or retitle, after the seed or first human prompt) from it. Detached and silent,
       // so it neither blocks this tool call nor touches the MCP stdout.
       if (version === 1) spawnSessionTitler(sessionId);
       return text({ ok: true, version });
@@ -295,7 +327,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         ? overlapWithSiblings(
             touches,
             siblings
-              .filter((s) => s.project_name === project && !TERMINAL.includes(s.status))
+              .filter((s) => s.kind !== "review" && s.project_name === project && !TERMINAL.includes(s.status))
               .map((s) => ({ id: s.id, touches: agentTouches(s) })),
           )
         : [];
@@ -373,6 +405,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
+      if (a.kind === "review") throw new Error("Review agents report findings and cannot open PRs.");
       if (!a.branch || !a.worktree_path)
         throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
       // The diff is captured (against the fork point) when the agent finishes, so no
@@ -756,6 +789,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         cost: a.cost,
         branch: a.branch,
         output: output || "(no textual output captured)",
+        ...(a.kind === "review" ? { review: a.review_ref ? JSON.parse(readArtifact(a.review_ref)) : null } : {}),
         diffPreview: diff ? diff.split("\n").slice(0, 200).join("\n") : "(no diff)",
       });
     },

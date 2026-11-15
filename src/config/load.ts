@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { CONFIG_PATH, expandHome } from "../paths";
-import { ConfigSchema, type Model, type ResolvedRoles, type TackConfig } from "./schema";
+import { ConfigSchema, type Model, type ResolvedRoles, type ResolvedPersona, type TackConfig } from "./schema";
 
 /**
  * Loads and validates the user's config. The config file is a `.ts` module that
@@ -34,6 +34,19 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     }
   }
 
+  const names = new Set<string>();
+  const personas = parsed.personas.map((persona) => {
+    if (names.has(persona.name)) throw new Error(`Duplicate persona name "${persona.name}".`);
+    names.add(persona.name);
+    const model = [...new Set(typeof persona.model === "string" ? [persona.model] : persona.model ?? [])];
+    for (const key of model) {
+      if (!byKey.has(key)) {
+        throw new Error(`personas.${persona.name}.model = "${key}" is not a defined model. Known: ${[...byKey.keys()].join(", ") || "(none)"}`);
+      }
+    }
+    return { ...persona, model };
+  });
+
   // `jira.mcpServer` must name a mounted server — a typo would otherwise surface only
   // as a silent "jira unavailable" on the dashboard, so fail loudly here instead.
   if (parsed.jira && !parsed.supervisorMcpServers.some((s) => s.name === parsed.jira!.mcpServer)) {
@@ -47,6 +60,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
     models: parsed.models,
     roles,
+    personas,
     runtimes: {
       claude: expandBin(parsed.runtimes.claude),
       codex: expandBin(parsed.runtimes.codex),
@@ -92,5 +106,21 @@ export function roleModelKeys(config: TackConfig, role: keyof ResolvedRoles): st
 /** Picks uniformly among a role's models; a single candidate is always used. */
 export function modelForRole(config: TackConfig, role: keyof ResolvedRoles, rng = Math.random): Model {
   const keys = roleModelKeys(config, role);
+  return resolveModel(config, keys.length === 1 ? keys[0]! : keys[Math.floor(rng() * keys.length)]!);
+}
+
+/** Resolve a configured reviewer lens, with actionable typo feedback. */
+export function resolvePersona(config: TackConfig, name: string): ResolvedPersona {
+  const persona = config.personas.find((p) => p.name === name);
+  if (!persona) throw new Error(`Unknown persona "${name}". Known: ${config.personas.map((p) => p.name).join(", ") || "(none)"}`);
+  return persona;
+}
+
+/** Prefer another model's perspective without making a single-model setup unusable. */
+export function modelForPersona(config: TackConfig, persona: ResolvedPersona,
+  { avoidKey, rng = Math.random }: { avoidKey?: string | null; rng?: () => number } = {}): Model {
+  const candidates = persona.model.length ? persona.model : roleModelKeys(config, "agent");
+  const different = candidates.filter((key) => key !== avoidKey);
+  const keys = different.length ? different : candidates;
   return resolveModel(config, keys.length === 1 ? keys[0]! : keys[Math.floor(rng() * keys.length)]!);
 }

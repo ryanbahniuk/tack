@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readArtifact, writeAmendmentArtifact, writePrFeedbackArtifact } from "../artifacts/store";
+import { readArtifact, writeAmendmentArtifact, writePrFeedbackArtifact, writeAgentArtifact } from "../artifacts/store";
 import {
+  setAgentReviewRef,
   createAmendment,
   getAgent,
   latestSharedContext,
@@ -79,6 +80,27 @@ export async function runCoordinationServer(sessionId: string, agentId: string):
       };
     },
   );
+
+  server.registerTool("report_review", {
+    description: "Report a persona review once before finishing. Only review agents may use this tool.",
+    inputSchema: {
+      verdict: z.enum(["approve", "changes_requested", "comment"]),
+      summary: z.string(),
+      findings: z.array(z.object({
+        severity: z.enum(["blocker", "major", "minor", "nit"]),
+        file: z.string().optional(), line: z.number().int().positive().optional(),
+        title: z.string(), detail: z.string(),
+      })),
+    },
+  }, async (report) => {
+    const agent = getAgent(agentId);
+    if (agent?.kind !== "review" || agent.session_id !== sessionId)
+      throw new Error("report_review is only available to review agents in this session.");
+    if (agent.review_ref) throw new Error("Review already reported; call report_review exactly once.");
+    const ref = writeAgentArtifact(sessionId, agentId, "review", JSON.stringify(report, null, 2));
+    setAgentReviewRef(agentId, ref);
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+  });
 
   // PR-fix agents only: the channel through which a fix agent hands its per-comment
   // verdicts back to the PR watcher. The agent never talks to GitHub; the watcher

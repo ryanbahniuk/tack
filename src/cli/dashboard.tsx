@@ -36,6 +36,8 @@ import type { TackConfig } from "../config/schema";
 import { readInsights, RANGES, type InsightRange } from "./stats";
 import { Insights, insightChartWidth } from "./insights";
 
+const DIVIDER_WIDTH = 3;
+
 interface View {
   session: SessionRow;
   agents: AgentRow[];
@@ -245,7 +247,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   );
   const effectiveLayout = layout === "split" && size.columns < 140 ? "list" : layout;
   const listWidth = effectiveLayout === "split" ? Math.floor(size.columns * 0.55) : size.columns;
-  const insightWidth = effectiveLayout === "split" ? size.columns - listWidth : size.columns;
+  const insightWidth = effectiveLayout === "split" ? size.columns - listWidth - DIVIDER_WIDTH : size.columns;
   const [range, setRange] = useState<InsightRange>("30d");
   const [stats, setStats] = useState(() => readInsights(range, new Date(), insightChartWidth(insightWidth)));
   const statsSig = useRef(JSON.stringify(stats));
@@ -736,6 +738,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
             {window.below > 0 && <Text dimColor wrap="truncate">↓ {window.below} more</Text>}
           </Box>
         )}
+        {effectiveLayout === "split" && (
+          <Box width={1} height={budget} marginX={1} flexShrink={0} borderStyle="single" borderLeft borderRight={false} borderTop={false} borderBottom={false} borderDimColor />
+        )}
         {effectiveLayout !== "list" && (
           <Insights stats={stats} width={insightWidth} rows={size.rows} height={budget} full={effectiveLayout === "insights"} />
         )}
@@ -762,7 +767,7 @@ function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
             <Text bold>{a.id}</Text>
-            {a.kind === "pr_fix" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
+            {a.kind === "pr_fix" || a.kind === "review" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
             <Text color={display.color}>{display.label.padEnd(8)}</Text>
             <Text dimColor>
               {" "}
@@ -867,6 +872,7 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
 /** The dashboard's name for an agent row: "Agent", or `pr-fix #<n>` for a PR-watch
  * fix agent so it's obvious which PR it's working on. */
 function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
+  if (a.kind === "review") return `review:${a.persona ?? "?"}`;
   if (a.kind !== "pr_fix") return "Agent";
   const pr = prs.find((p) => p.id === a.session_pr_id);
   return `pr-fix #${pr?.number ?? "?"}`;
