@@ -17,7 +17,7 @@ import {
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { agentLive, sessionLive, sessionNeedsInput } from "./liveness";
+import { agentDisplayStatus, sessionLive, sessionNeedsInput } from "./liveness";
 import { REFRESH_MESSAGE, isSessionStale, refreshSession } from "../session/refresh";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { selfCommand } from "../process/self";
@@ -81,7 +81,7 @@ function snapshot(showArchived: boolean): View[] {
                 (a) =>
                   a.kind === "pr_fix" &&
                   a.session_pr_id === pr.id &&
-                  (a.status === "pending" || a.status === "running"),
+                  (a.status === "pending" || a.status === "running" || (a.status === "done" && !a.post_fixed_at)),
               ),
             },
           ]),
@@ -99,7 +99,7 @@ function signature(views: View[]): string {
       (v) =>
         `${v.session.id}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
-          .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
+          .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
         ";" +
         v.prs
@@ -603,12 +603,13 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       </Text>
       {i === cursor &&
         v.agents.map((a) => {
+          const display = agentDisplayStatus(a);
           const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
           return (
             <Box key={a.id} flexDirection="column">
               <Text>
                 {`    ├─ ${agentLabel(a, v.prs)} `}
-                <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
+                <Text color={display.color}>{display.label.padEnd(8)}</Text>
                 <Text dimColor>
                   {" "}
                   {a.runtime}:{a.model}
@@ -719,13 +720,14 @@ function AgentsPanel({ view, cursor, notice }: { view: View; cursor: number; not
       </Text>
       {view.agents.length === 0 && <Text dimColor>No agents.</Text>}
       {view.agents.map((a, i) => {
+        const display = agentDisplayStatus(a);
         const ref = agentOutputRef(a);
         return (
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
             <Text bold>{a.id}</Text>
             {a.kind === "pr_fix" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
-            <Text color={agentLive(a) ? "yellow" : agentStatusColor(a.status)}>{a.status.padEnd(8)}</Text>
+            <Text color={display.color}>{display.label.padEnd(8)}</Text>
             <Text dimColor>
               {" "}
               {a.runtime}:{a.model}
@@ -817,12 +819,6 @@ function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
   if (a.kind !== "pr_fix") return "Agent";
   const pr = prs.find((p) => p.id === a.session_pr_id);
   return `pr-fix #${pr?.number ?? "?"}`;
-}
-
-function agentStatusColor(status: string): string | undefined {
-  if (status === "done") return "green";
-  if (status === "failed") return "red";
-  return "gray";
 }
 
 /** Glyph + color shared by both PR render sites (expanded row, collapsed roll-up)

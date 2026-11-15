@@ -79,7 +79,7 @@ test("migration upgrades an existing v9 session and is idempotent", () => {
     // Build v9 by removing only the new columns after a full migration, retaining
     // the real earlier schema and a persisted session to verify upgrade defaults.
     migrate(db);
-    db.exec("ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; DELETE FROM _migrations WHERE version = 10;");
+    db.exec("ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; ALTER TABLE agents DROP COLUMN fix_outcome; ALTER TABLE agents DROP COLUMN fix_pushed_sha; DELETE FROM _migrations WHERE version >= 10;");
     db.exec("INSERT INTO sessions (id,status,created_at,updated_at,tokens_input) VALUES ('old','active','then','then',42)");
     migrate(db); migrate(db);
     expect(db.query("SELECT tokens_input FROM sessions WHERE id='old'").get()).toEqual({ tokens_input: 42 });

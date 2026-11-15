@@ -37,3 +37,22 @@ export function sessionNeedsInput(s: SessionRow, agents: AgentRow[]): boolean {
       (s.last_seen_at === null || a.finished_at > s.last_seen_at),
   );
 }
+
+/** Display publication progress without changing the runtime lifecycle or liveness. */
+export function agentDisplayStatus(a: AgentRow): { label: string; color?: string } {
+  if (a.kind === "pr_fix") {
+    if (a.status === "done" && !a.post_fixed_at) return { label: "pushing", color: "yellow" };
+    switch (a.fix_outcome) {
+      case "pushed": return { label: "done", color: "green" };
+      case "no_changes": return { label: "no-op", color: "gray" };
+      case "push_rejected": return { label: "rejected", color: "yellow" };
+      case "not_pushed": return { label: "unpushed", color: "yellow" };
+      case "failed": return { label: "failed", color: "red" };
+      case "stopped": return { label: "stopped", color: "gray" };
+    }
+  }
+  return {
+    label: a.status,
+    color: agentLive(a) ? "yellow" : a.status === "done" ? "green" : a.status === "failed" ? "red" : "gray",
+  };
+}

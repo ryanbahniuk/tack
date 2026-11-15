@@ -13,6 +13,7 @@ export type CostSource = "runtime" | "pricing";
 /** NULL = a normal agent the supervisor spawned; `pr_fix` = spawned by the PR watcher
  * to address review feedback / a merge conflict on one session PR. */
 export type AgentKind = "pr_fix";
+export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 export type PrFeedbackKind = "review_thread" | "review" | "issue_comment";
@@ -103,6 +104,10 @@ export interface AgentRow {
   /** When the PR watcher finished this fix agent's post-fix step (push + replies) —
    * the idempotency latch that keeps it from ever re-pushing or double-posting. */
   post_fixed_at: string | null;
+  /** Watcher result, independent of runtime status; NULL until post-fix or for legacy rows. */
+  fix_outcome: AgentFixOutcome | null;
+  /** Full commit SHA successfully pushed to the PR, otherwise NULL. */
+  fix_pushed_sha: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -707,12 +712,23 @@ export function listPrFixAgents(sessionPrId: string): AgentRow[] {
     .all(sessionPrId) as AgentRow[];
 }
 
-/** Latches a fix agent's post-fix step as complete (idempotent: first stamp wins). */
-export function markAgentPostFixed(id: string): void {
-  const now = nowIso();
+/** Records what reached the PR, independently of the runtime's terminal status. */
+export function setAgentFixOutcome(id: string, outcome: AgentFixOutcome, sha?: string): void {
   getDb()
-    .prepare(`UPDATE agents SET post_fixed_at = COALESCE(post_fixed_at, ?), updated_at = ? WHERE id = ?`)
-    .run(now, now, id);
+    .prepare(`UPDATE agents SET fix_outcome = ?, fix_pushed_sha = ?, updated_at = ? WHERE id = ?`)
+    .run(outcome, outcome === "pushed" ? sha ?? null : null, nowIso(), id);
+}
+
+/** Latches post-fix completion, atomically recording its outcome when supplied.
+ * Optional for legacy callers; the first stamp/result wins. */
+export function markAgentPostFixed(id: string, outcome?: AgentFixOutcome, sha?: string): void {
+  const db = getDb();
+  db.transaction(() => {
+    if (getAgent(id)?.post_fixed_at) return;
+    if (outcome) setAgentFixOutcome(id, outcome, sha);
+    const now = nowIso();
+    db.prepare(`UPDATE agents SET post_fixed_at = ?, updated_at = ? WHERE id = ?`).run(now, now, id);
+  })();
 }
 
 /**

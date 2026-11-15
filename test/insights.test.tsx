@@ -122,7 +122,7 @@ describe("insight aggregation", () => {
 describe("supervisor usage persistence and migration", () => {
   test("v9 defaults existing sessions to zero and is safe to rerun", () => {
     const db = fixture();
-    db.exec("ALTER TABLE sessions DROP COLUMN tokens_input; ALTER TABLE sessions DROP COLUMN tokens_output; ALTER TABLE sessions DROP COLUMN cache_read; ALTER TABLE sessions DROP COLUMN cache_write; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; DELETE FROM _migrations WHERE version >= 9");
+    db.exec("ALTER TABLE sessions DROP COLUMN tokens_input; ALTER TABLE sessions DROP COLUMN tokens_output; ALTER TABLE sessions DROP COLUMN cache_read; ALTER TABLE sessions DROP COLUMN cache_write; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; ALTER TABLE agents DROP COLUMN fix_outcome; ALTER TABLE agents DROP COLUMN fix_pushed_sha; DELETE FROM _migrations WHERE version >= 9");
     migrate(db);
     expect(db.query("SELECT tokens_input, tokens_output, cache_read, cache_write FROM sessions WHERE id = 'old'").get())
       .toEqual({ tokens_input: 0, tokens_output: 0, cache_read: 0, cache_write: 0 });
@@ -144,6 +144,8 @@ describe("merged_at persistence and migration", () => {
     // Reconstruct the pre-v7 schema, removing later columns while preserving legacy rows.
     db.exec(`ALTER TABLE session_prs DROP COLUMN merged_at;
     ALTER TABLE agents DROP COLUMN interrupted_at;
+    ALTER TABLE agents DROP COLUMN fix_outcome;
+    ALTER TABLE agents DROP COLUMN fix_pushed_sha;
     ALTER TABLE sessions DROP COLUMN tokens_input;
     ALTER TABLE sessions DROP COLUMN tokens_output;
     ALTER TABLE sessions DROP COLUMN cache_read;

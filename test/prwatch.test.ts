@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { migrate } from "../src/db/migrate";
 import {
@@ -10,7 +13,13 @@ import {
 } from "../src/projects/prs";
 import { buildPrFixPrompt } from "../src/prwatch/prompt";
 import {
+  assignPrFeedback,
   createAgent,
+  getAgent,
+  insertPrFeedback,
+  listAgentPrFeedback,
+  listUnassignedPrFeedback,
+  setAgentWorktree,
   createSession,
   getDb,
   listSessionPrs,
@@ -21,8 +30,8 @@ import {
   upsertSessionPr,
   type AgentStatus,
 } from "../src/db";
-import { createWakeableSleep, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
-import type { TackConfig } from "../src/config/schema";
+import { createWakeableSleep, postFix, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
+import type { Project, TackConfig } from "../src/config/schema";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
 
@@ -471,5 +480,115 @@ describe("triggerPrWatch", () => {
     deps.spawn = () => { setSessionPrWatchPid(session.id, 123); return null; };
     expect(triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
     expect(calls).toEqual(["signal 123"]);
+  });
+});
+
+
+describe("postFix outcomes", () => {
+  function setup(status: AgentStatus = "done") {
+    const session = createSession({ title: "post-fix outcomes" });
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open", headBranch: "pr" });
+    const pr = listSessionPrs(session.id)[0]!;
+    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id });
+    setAgentStatus(a.id, status);
+    const f = insertPrFeedback({ sessionPrId: pr.id, sourceId: "IC_1", sourceKind: "issue_comment" });
+    assignPrFeedback([f.id], a.id);
+    return { a: getAgent(a.id)!, pr };
+  }
+  const config = (autoPush = true) => ({ prWatch: { autoPush, reply: false } }) as TackConfig;
+  const project = (path = "unused") => ({ path }) as Project;
+  const log = (_message: string) => {};
+
+  for (const status of ["stopped", "failed"] as const) {
+    test(`${status} records the outcome and keeps feedback semantics`, async () => {
+      const { a, pr } = setup(status);
+      await postFix(a, pr, project(), config(), log);
+      expect(getAgent(a.id)).toMatchObject({ status, fix_outcome: status, fix_pushed_sha: null });
+      expect(getAgent(a.id)!.post_fixed_at).not.toBeNull();
+      if (status === "stopped") expect(listUnassignedPrFeedback(pr.id)).toHaveLength(1);
+      else expect(listAgentPrFeedback(a.id)[0]).toMatchObject({ decision: "failed", handled_at: expect.any(String) });
+    });
+  }
+
+  for (const missing of ["worktree_path", "branch", "head_branch"] as const) {
+    test(`missing ${missing} records no_changes`, async () => {
+      const { a, pr } = setup();
+      const candidate = { ...a, worktree_path: "unused", branch: "tack/fix" };
+      const pullRequest = { ...pr };
+      if (missing === "head_branch") pullRequest.head_branch = null;
+      else candidate[missing] = null;
+      await postFix(candidate, pullRequest, project(), config(), log);
+      expect(getAgent(a.id)).toMatchObject({ fix_outcome: "no_changes", fix_pushed_sha: null, post_fixed_at: expect.any(String) });
+    });
+  }
+
+  for (const outcome of ["pushed", "no_changes", "not_pushed", "push_rejected"] as const) {
+    test(`${outcome} from local git post-fix`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "tack-post-fix-"));
+      const git = (...args: string[]) => {
+        const result = Bun.spawnSync(["git", ...args], { cwd: root });
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+        return result.stdout.toString().trim();
+      };
+      try {
+        git("init", "--bare", "remote.git");
+        git("init", "-b", "tack/fix", "repo");
+        const repo = join(root, "repo");
+        const local = (...args: string[]) => git("-C", repo, ...args);
+        local("config", "user.name", "Test");
+        local("config", "user.email", "test@example.com");
+        local("config", "commit.gpgsign", "false");
+        local("commit", "--allow-empty", "-m", "base");
+        const base = local("rev-parse", "HEAD");
+        local("update-ref", "refs/tack-base/fix", base);
+        local("remote", "add", "origin", join(root, "remote.git"));
+        local("push", "origin", "HEAD:refs/heads/pr");
+        if (outcome === "push_rejected") {
+          // Advance the remote along a divergent history; postFix must never force.
+          local("commit", "--allow-empty", "-m", "remote advance");
+          local("push", "origin", "HEAD:refs/heads/pr");
+          local("reset", "--hard", base);
+        }
+        // Exercise the safety-net commit, not just already-committed work.
+        if (outcome !== "no_changes") writeFileSync(join(repo, "fix.txt"), "fixed\n");
+        const { a, pr } = setup();
+        setAgentWorktree(a.id, repo, "tack/fix");
+        await postFix(getAgent(a.id)!, pr, project(repo), config(outcome !== "not_pushed"), log);
+        const result = getAgent(a.id)!;
+        expect(result.status).toBe("done");
+        expect(result.post_fixed_at).not.toBeNull();
+        expect(result.fix_outcome).toBe(outcome);
+        const head = local("rev-parse", "HEAD");
+        expect(result.fix_pushed_sha).toBe(outcome === "pushed" ? head : null);
+        if (outcome === "pushed") expect(git("--git-dir", "remote.git", "rev-parse", "refs/heads/pr")).toBe(head);
+        if (outcome === "push_rejected") expect(listUnassignedPrFeedback(pr.id)).toHaveLength(1);
+        // The outcome and timestamp are latched together and survive repeat completion.
+        markAgentPostFixed(a.id, "failed");
+        expect(getAgent(a.id)!.fix_outcome).toBe(outcome);
+        expect(getAgent(a.id)!.post_fixed_at).toBe(result.post_fixed_at);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test("v11 upgrades legacy agents with unknown outcomes", () => {
+    const db = new Database(":memory:");
+    try {
+      migrate(db);
+      db.exec(`ALTER TABLE agents DROP COLUMN fix_outcome;
+        ALTER TABLE agents DROP COLUMN fix_pushed_sha;
+        DELETE FROM _migrations WHERE version = 11;
+        INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
+        INSERT INTO agents (id, session_id, project_name, status, post_fixed_at, created_at, updated_at)
+          VALUES ('a', 's', 'app', 'done', 'then', 'then', 'then');`);
+      migrate(db);
+      expect(db.query("SELECT status, post_fixed_at, fix_outcome, fix_pushed_sha FROM agents").get()).toEqual({
+        status: "done", post_fixed_at: "then", fix_outcome: null, fix_pushed_sha: null,
+      });
+      migrate(db);
+    } finally {
+      db.close();
+    }
   });
 });
