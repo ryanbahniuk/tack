@@ -310,6 +310,16 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN pr_watch_config_version TEXT;
     `,
   },
+  {
+    version: 15,
+    name: "agent_personas",
+    // Reports stay on disk; the row records the lens, target and report reference.
+    sql: `
+      ALTER TABLE agents ADD COLUMN persona TEXT;
+      ALTER TABLE agents ADD COLUMN reviews_agent_id TEXT;
+      ALTER TABLE agents ADD COLUMN review_ref TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

@@ -1,3 +1,4 @@
+import { readArtifact } from "../artifacts/store";
 import { isAlive } from "../process/self";
 import type { AgentRow, SessionRow } from "../db";
 
@@ -49,6 +50,13 @@ export function sessionNeedsInput(s: SessionRow, agents: AgentRow[]): boolean {
 
 /** Display publication progress without changing the runtime lifecycle or liveness. */
 export function agentDisplayStatus(a: AgentRow): { label: string; color?: string } {
+  if (a.kind === "review" && a.review_ref) {
+    try {
+      const { verdict } = JSON.parse(readArtifact(a.review_ref));
+      if (["approve", "changes_requested", "comment"].includes(verdict))
+        return { label: verdict, color: verdict === "approve" ? "green" : "yellow" };
+    } catch { /* A missing report should not prevent rendering agent status. */ }
+  }
   if (a.kind === "pr_fix") {
     if (a.status === "done" && !a.post_fixed_at) return { label: "pushing", color: "yellow" };
     switch (a.fix_outcome) {

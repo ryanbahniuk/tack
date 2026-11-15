@@ -98,8 +98,8 @@ export function sessionFileCollisions(agents: AgentRow[], config: TackConfig): F
     if (!a.worktree_path || !a.branch) continue;
     // PR-fix agents build ON TOP of an existing PR branch (and are diffed against its
     // head), so overlapping the agent that produced that PR is the point, not a
-    // collision between sibling branches.
-    if (a.kind === "pr_fix") continue;
+    // collision between sibling branches. Review agents never ship their changes.
+    if (a.kind === "pr_fix" || a.kind === "review") continue;
     const repo = projectPath.get(a.project_name);
     if (!repo) continue;
     const files = changedFiles(repo, a.branch, a.worktree_path);

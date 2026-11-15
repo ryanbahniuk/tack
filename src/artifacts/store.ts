@@ -30,17 +30,17 @@ export function readArtifact(ref: string | null | undefined): string {
 export function agentArtifactPath(
   sessionId: string,
   agentId: string,
-  kind: "prompt" | "output" | "diff",
+  kind: "prompt" | "output" | "diff" | "review",
 ): string {
-  const ext = kind === "diff" ? "patch" : "md";
+  const ext = kind === "diff" ? "patch" : kind === "review" ? "json" : "md";
   return join(ARTIFACTS_DIR, sessionId, agentId, `${kind}.${ext}`);
 }
 
-/** Writes an agent artifact (prompt/output/diff) and returns its ref path. */
+/** Writes an agent artifact (including structured JSON reviews) and returns its ref path. */
 export function writeAgentArtifact(
   sessionId: string,
   agentId: string,
-  kind: "prompt" | "output" | "diff",
+  kind: "prompt" | "output" | "diff" | "review",
   body: string,
 ): string {
   return write(agentArtifactPath(sessionId, agentId, kind), body);

@@ -808,3 +808,28 @@ supervisor never uses them to change an existing one.
 - Pricing can be synced from models.dev (folded into `tack models sync`) instead of
   hand-maintained; it's the one network call Tack makes and only on demand.
 - The interactive `claude attach` escape hatch is unimplemented.
+
+## 13. Personas
+
+`personas` in `config.ts` defines optional reviewer lenses (`name`, `description`,
+optional `model` key or non-empty list). Names are unique. Descriptions guide both
+supervisor selection and the reviewer's instructions. Model keys normalize to
+ordered distinct lists; omitted models use `roles.agent`. Reviews prefer a model
+different from the author's when available, picking uniformly among candidates;
+an explicit tool model overrides that choice.
+
+After workers finish and conflicts are reconciled, the supervisor selects relevant
+personas per unit with `list_personas` and `review_agent`, waits for reports, and
+routes blocker/major findings to the author with `continue_agent`. It may re-review
+and briefly records verdicts in the PR body. No personas means no added review step.
+
+A `review` agent is a full session agent with its own local branch/worktree forked
+from the author's local branch head. Its pinned diff base is the author's baseline,
+so `git diff <base>` shows the work under review. Resume/retry reuses the worktree.
+Reviewers may inspect, test and experiment, but never commit or open PRs. They call
+`report_review` exactly once with a verdict (`approve`, `changes_requested`, or
+`comment`), summary and findings (severity, optional file/line, title and detail).
+The JSON artifact is referenced by `agents.review_ref`; `persona` and
+`reviews_agent_id` identify its lens and author. Normal output remains `output_ref`.
+Reviews can be continued for questions, are excluded from file collision checks,
+and appear as `review:<persona>` with their reported verdict in the dashboard.

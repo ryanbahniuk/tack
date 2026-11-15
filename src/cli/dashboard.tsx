@@ -767,7 +767,7 @@ function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
             <Text bold>{a.id}</Text>
-            {a.kind === "pr_fix" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
+            {a.kind === "pr_fix" || a.kind === "review" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
             <Text color={display.color}>{display.label.padEnd(8)}</Text>
             <Text dimColor>
               {" "}
@@ -872,6 +872,7 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
 /** The dashboard's name for an agent row: "Agent", or `pr-fix #<n>` for a PR-watch
  * fix agent so it's obvious which PR it's working on. */
 function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
+  if (a.kind === "review") return `review:${a.persona ?? "?"}`;
   if (a.kind !== "pr_fix") return "Agent";
   const pr = prs.find((p) => p.id === a.session_pr_id);
   return `pr-fix #${pr?.number ?? "?"}`;
