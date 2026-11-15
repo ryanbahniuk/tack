@@ -36,6 +36,7 @@ import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import {
   buildReplyBody,
+  buildConversationReplyBody,
   fetchPrStatus,
   fetchReviewThreads,
   normalizeFeedback,
@@ -64,7 +65,7 @@ export { buildPrFixPrompt } from "./prompt";
  * (review threads, review bodies, conversation comments — bots included) or a merge
  * conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
  * finishes, the watcher (never the agent) pushes its commits non-force onto the PR
- * branch and replies to each comment with the agent's verdict.
+ * branch and posts the agent's verdicts (threaded inline, batched in conversation).
  *
  * The supervisor can also start a fix run itself (`fix_pr`, for a conflict that
  * persists, a failed run, or follow-ups the human asked for). It goes through the
@@ -455,8 +456,8 @@ function feedbackItem(r: PrFeedbackRow, pr: SessionPrRow): PrFeedbackItem {
 
 /**
  * The post-fix step for one finished fix agent: push its commits, then reply to each
- * item it reported on. Idempotent — items already `handled_at` are skipped and the
- * agent is latched with `post_fixed_at` at the end, so a crash midway resumes
+ * item it reported on (conversation items share one comment). Items already
+ * `handled_at` are skipped and the agent is latched with `post_fixed_at` at the end, so a crash midway resumes
  * cleanly on the next tick (re-pushing an already-pushed sha is a no-op).
  */
 export async function postFix(
@@ -517,6 +518,7 @@ export async function postFix(
     }
   }
 
+  const conversation: PrFeedbackRow[] = [];
   for (const f of items) {
     if (f.handled_at) continue;
     // Never reported by the agent: declined, no reply (nothing to say on its behalf).
@@ -526,6 +528,15 @@ export async function postFix(
     }
     if (!config.prWatch.reply) {
       markPrFeedbackHandled(f.id);
+      continue;
+    }
+    // Empty declined replies have nothing to publish on the agent's behalf.
+    if (f.decision === "declined" && !readArtifact(f.reply_ref).trim()) {
+      markPrFeedbackHandled(f.id);
+      continue;
+    }
+    if (f.source_kind !== "review_thread") {
+      conversation.push(f);
       continue;
     }
     const body = buildReplyBody({
@@ -548,6 +559,24 @@ export async function postFix(
       log(`${tag}: reply to ${f.source_id} failed: ${(err as Error).message}`);
       markPrFeedbackHandled(f.id);
     }
+  }
+  if (conversation.length) {
+    const body = buildConversationReplyBody(conversation.map((f) => ({
+      url: f.url ?? pr.url,
+      author: f.author,
+      isBot: f.author_is_bot === 1,
+      original: readArtifact(f.body_ref),
+      reply: readArtifact(f.reply_ref),
+      fixSha: f.decision === "fixed" ? pushedSha?.slice(0, 7) : null,
+    })));
+    let url: string | null = null;
+    try {
+      url = await postIssueComment(project.path, pr.number!, body);
+    } catch (err) {
+      // Same no-retry policy as thread replies: a failed request may have landed.
+      log(`${tag}: conversation reply failed: ${(err as Error).message}`);
+    }
+    for (const f of conversation) markPrFeedbackHandled(f.id, { replyUrl: url });
   }
   markAgentPostFixed(agent.id, outcome, pushedSha ?? undefined);
   log(`${tag}: post-fix complete (${items.length} item(s))`);

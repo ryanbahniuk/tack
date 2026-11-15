@@ -254,7 +254,7 @@ export interface GhAuthor {
   __typename?: string;
 }
 
-/** An issue-level (conversation) comment from `gh pr view --json comments`. */
+/** An issue-level conversation comment from GraphQL (stable node id). */
 export interface GhIssueComment {
   id: string;
   author?: GhAuthor | null;
@@ -264,7 +264,7 @@ export interface GhIssueComment {
   isMinimized?: boolean;
 }
 
-/** A submitted review from `gh pr view --json reviews` (its summary body; inline
+/** A submitted review from GraphQL (its summary body; inline
  * comments arrive separately as review threads). */
 export interface GhReview {
   id: string;
@@ -274,7 +274,7 @@ export interface GhReview {
   url?: string | null;
 }
 
-/** The subset of `gh pr view --json …` the watcher consumes. */
+/** PR metadata from `gh pr view`, with conversation feedback from GraphQL. */
 export interface PrStatus {
   mergedAt?: string | null;
   state: string; // OPEN | MERGED | CLOSED
@@ -322,7 +322,7 @@ export interface PrFeedbackItem {
 }
 
 const PR_STATUS_FIELDS =
-  "state,mergedAt,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title,comments,reviews";
+  "state,mergedAt,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title";
 
 /** Fetches a PR's state, mergeability, refs, conversation comments, and reviews. */
 export async function fetchPrStatus(repoPath: string, number: number): Promise<PrStatus> {
@@ -332,6 +332,10 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
     "gh pr view",
   );
   const raw = JSON.parse(out) as Partial<PrStatus>;
+  const [comments, reviews] = await Promise.all([
+    fetchConversationItems<GhIssueComment>(repoPath, number, "comments"),
+    fetchConversationItems<GhReview>(repoPath, number, "reviews"),
+  ]);
   return {
     state: raw.state ?? "OPEN",
     mergedAt: raw.mergedAt ?? null,
@@ -343,8 +347,8 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
     headRefName: raw.headRefName ?? null,
     url: raw.url ?? "",
     title: raw.title ?? null,
-    comments: Array.isArray(raw.comments) ? raw.comments : [],
-    reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
+    comments,
+    reviews,
   };
 }
 
@@ -366,6 +370,44 @@ export function ghRepo(repoPath: string): Promise<{ owner: string; name: string 
     ghRepoCache.set(repoPath, p);
   }
   return p;
+}
+
+/** `gh pr view` omits actor types, so fetch conversation feedback through GraphQL.
+ * Node ids match the old input exactly: changing them would re-ingest handled items.
+ * Page each connection independently so busy PRs don't lose feedback after 100 items. */
+async function fetchConversationItems<T>(
+  repoPath: string,
+  number: number,
+  connection: "comments" | "reviews",
+): Promise<T[]> {
+  const { owner, name } = await ghRepo(repoPath);
+  const query = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        ${connection}(first: 100, after: $cursor) {
+          nodes { id author { login __typename } body url ${connection === "comments" ? "isMinimized" : "state"} }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+  const items: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const args = ["gh", "api", "graphql", "-f", `query=${query}`,
+      "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`];
+    if (cursor) args.push("-f", `cursor=${cursor}`);
+    const out = await runOk(args, repoPath, `gh api graphql (${connection})`);
+    const raw = JSON.parse(out);
+    const page = raw.data?.repository?.pullRequest?.[connection] as {
+      nodes: T[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    } | undefined;
+    if (!page) throw new Error(`gh api graphql returned no ${connection}`);
+    items.push(...page.nodes);
+    cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (cursor);
+  return items;
 }
 
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
@@ -414,11 +456,17 @@ function authorLogin(a: GhAuthor | null | undefined): string {
   return a?.login || "ghost";
 }
 
-/** Bot/app detection across the shapes `gh` returns. Bots are still feedback — this
- * only steers how Tack addresses them (see `buildReplyBody`). */
+const KNOWN_BOT_LOGINS = new Set([
+  "cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot",
+  "github-actions", "dependabot", "sonarcloud", "codecov",
+]);
+
+/** Bots are still feedback; detection only steers how Tack addresses them. The
+ * login fallback also covers older persisted items without GitHub actor metadata. */
 export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
   if (!a) return false;
-  return a.is_bot === true || a.__typename === "Bot" || /\[bot\]$/i.test(a.login ?? "");
+  return a.is_bot === true || a.__typename === "Bot" || /\[bot\]$/i.test(a.login ?? "")
+    || KNOWN_BOT_LOGINS.has((a.login ?? "").replace(/\[bot\]$/i, "").toLowerCase());
 }
 
 /**
@@ -513,8 +561,9 @@ export function buildReplyBody(input: {
 }): string {
   const parts: string[] = [];
   if (input.kind !== "review_thread") {
-    const first = (input.original.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 200);
-    const who = input.author && !input.isBot ? `@${input.author}` : input.author ? `**${input.author}**` : "";
+    const first = feedbackQuote(input.original);
+    const mention = input.author && !input.isBot && !isBotAuthor({ login: input.author });
+    const who = input.author ? (mention ? `@${input.author}` : `**${input.author}**`) : "";
     if (who) parts.push(who);
     if (first) parts.push(`> ${first}`);
     if (parts.length) parts.push("");
@@ -522,6 +571,42 @@ export function buildReplyBody(input: {
   parts.push(input.reply.trim());
   const sig = input.fixSha ? `_— Tack (fix: ${input.fixSha})_` : "_— Tack_";
   return `${parts.join("\n")}\n\n${sig}\n${PR_WATCH_MARKER}`;
+}
+
+/** Quote only visible text: bot comments often start with multiline HTML metadata. */
+export function feedbackQuote(original: string): string {
+  return (original.replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .split("\n").map((line) => line.trim().replace(/^#+\s*/, "").trim())
+    .find(Boolean) ?? "").slice(0, 200);
+}
+
+/** GitHub cannot thread conversation comments or review summaries. Collect their
+ * answers in one linked comment, mentioning each human at most once. */
+export function buildConversationReplyBody(items: Array<{
+  url: string;
+  author: string | null;
+  isBot?: boolean;
+  original: string;
+  reply: string;
+  fixSha?: string | null;
+}>): string {
+  const mentioned = new Set<string>();
+  const sections = items.map((item) => {
+    const login = item.author;
+    const key = login?.toLowerCase();
+    const mention = login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
+    if (mention) mentioned.add(key);
+    const who = login ? (mention ? `@${login}` : `**${login}**`) : "";
+    const quote = feedbackQuote(item.original);
+    return [
+      `[Original feedback](${item.url})${who ? ` — ${who}` : ""}`,
+      ...(quote ? [`> ${quote}`] : []),
+      "",
+      item.reply.trim(),
+      ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),
+    ].join("\n");
+  });
+  return `${sections.join("\n\n---\n\n")}\n\n_— Tack_\n${PR_WATCH_MARKER}`;
 }
 
 /** Replies inside a review thread (attached to the thread's root comment). Returns

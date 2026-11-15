@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test, spyOn } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -7,6 +7,10 @@ import { migrate } from "../src/db/migrate";
 import {
   PR_WATCH_MARKER,
   buildReplyBody,
+  buildConversationReplyBody,
+  feedbackQuote,
+  fetchPrStatus,
+  isBotAuthor,
   normalizeFeedback,
   type PrStatus,
   type ReviewThread,
@@ -14,6 +18,7 @@ import {
 import { buildPrFixPrompt } from "../src/prwatch/prompt";
 import {
   assignPrFeedback,
+  recordPrFeedbackDecision,
   createAgent,
   getAgent,
   insertPrFeedback,
@@ -31,6 +36,7 @@ import {
   type AgentStatus,
 } from "../src/db";
 import { createWakeableSleep, postFix, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
+import { writePrFeedbackArtifact } from "../src/artifacts/store";
 import type { Project, TackConfig } from "../src/config/schema";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
@@ -299,6 +305,106 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
   });
 });
 
+describe("conversation reply formatting", () => {
+  test("recognizes GraphQL bots and known logins without gh bot metadata", () => {
+    expect(isBotAuthor({ login: "custom-app", __typename: "Bot" })).toBe(true);
+    for (const login of ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot",
+      "github-actions", "dependabot", "sonarcloud", "codecov"]) {
+      expect(isBotAuthor({ login: login.toUpperCase() })).toBe(true);
+      expect(isBotAuthor({ login: `${login}[BoT]` })).toBe(true);
+    }
+    expect(isBotAuthor({ login: "alice", __typename: "User" })).toBe(false);
+    expect(isBotAuthor(null)).toBe(false);
+  });
+
+  test("quotes the first visible line, skipping HTML metadata and heading markers", () => {
+    expect(feedbackQuote("\n<!-- hidden\n# metadata\n-->\n<!-- more -->\n### Please fix\nDetails"))
+      .toBe("Please fix");
+    expect(feedbackQuote("<!-- inline --> ## Visible <!-- hidden --> title")).toBe("Visible  title");
+    expect(feedbackQuote("<!-- nothing visible")).toBe("");
+    expect(feedbackQuote("# " + "x".repeat(250))).toBe("x".repeat(200));
+  });
+
+  test("links each item, mentions humans once case-insensitively, and signs once", () => {
+    const item = { url: `${PR_URL}#issuecomment-1`, author: "alice", original: "# Rename it", reply: "Done." };
+    const body = buildConversationReplyBody([
+      { ...item, fixSha: "abc1234" }, { ...item, author: "Alice" },
+      { ...item, author: "cursor" }, { ...item, author: "custom-app", isBot: true },
+    ]);
+    expect(body).toContain(`[Original feedback](${item.url}) — @alice`);
+    expect(body).toContain("**Alice**");
+    expect(body).toContain("> Rename it");
+    expect(body).toContain("Fix: abc1234");
+    expect(body.match(/@alice/gi)).toHaveLength(1);
+    expect(body).toContain("**cursor**");
+    expect(body).toContain("**custom-app**");
+    expect(body).not.toContain("@cursor");
+    expect(body).not.toContain("@custom-app");
+    expect(body.match(/_— Tack_/g)).toHaveLength(1);
+    expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
+    expect(body.endsWith(`_— Tack_\n${PR_WATCH_MARKER}`)).toBe(true);
+  });
+});
+
+// Exercise the actual gh command arguments without GitHub access or module mocks.
+async function withGh(
+  fixture: { failPost?: boolean } = {},
+  check: (root: string, calls: () => string[][]) => Promise<void>,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "tack-gh-"));
+  const spawn = Bun.spawn;
+  writeFileSync(join(root, "gh"), `#!${process.execPath}
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(join(root, "calls"))}, JSON.stringify(args) + "\\n");
+const query = args.find(a => a.startsWith("query=")) || "";
+let result;
+if (args[0] === "repo") result = { owner: { login: "acme" }, name: "app" };
+else if (args[0] === "pr") result = { state: "OPEN", url: ${JSON.stringify(PR_URL)} };
+else if (args.includes("graphql")) {
+  const comments = query.includes("comments(first:");
+  if (!query.includes("author { login __typename }") || !query.includes("nodes { id ")) process.exit(2);
+  if (comments && !query.includes("isMinimized")) process.exit(2);
+  const next = args.includes("cursor=next");
+  const nodes = comments
+    ? (next ? [{ id: "IC_hidden", author: { login: "alice" }, body: "hidden", isMinimized: true }]
+      : [{ id: "IC_existing", author: { login: "custom-app", __typename: "Bot" }, body: "Fix it", url: "comment-url" }])
+    : [{ id: "PRR_existing", author: { login: "other-app", __typename: "Bot" }, body: "Review", url: "review-url" }];
+  result = { data: { repository: { pullRequest: { [comments ? "comments" : "reviews"]:
+    { nodes, pageInfo: { hasNextPage: comments && !next, endCursor: "next" } } } } } };
+} else if (args.includes("POST")) {
+  if (${JSON.stringify(fixture.failPost ?? false)}) { console.error("posting failed"); process.exit(1); }
+  result = { html_url: "https://github.com/reply/" + (args.find(a => a.startsWith("repos/"))?.includes("/replies") ? "thread" : "batch") };
+} else process.exit(2);
+console.log(JSON.stringify(result));
+`, { mode: 0o755 });
+  // Bun caches executable lookups, so route gh to the fixture explicitly.
+  const mock = spyOn(Bun, "spawn").mockImplementation(((cmd: string[], options: Bun.SpawnOptions) =>
+    spawn(cmd[0] === "gh" ? [join(root, "gh"), ...cmd.slice(1)] : cmd, options)
+  ) as typeof Bun.spawn);
+  try {
+    await check(root, () => readFileSync(join(root, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line)));
+  } finally {
+    mock.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe("GraphQL conversation feedback", () => {
+  test("fetches bot types, minimized state, stable ids, and all pages", async () => {
+    await withGh({}, async (root, calls) => {
+      const fetched = await fetchPrStatus(root, 7);
+      expect(fetched.comments.map(c => c.id)).toEqual(["IC_existing", "IC_hidden"]);
+      const feedback = normalizeFeedback(fetched, [], []);
+      expect(feedback.map(f => [f.sourceId, f.isBot, f.url])).toEqual([
+        ["PRR_existing", true, "review-url"], ["IC_existing", true, "comment-url"],
+      ]);
+      expect(normalizeFeedback(fetched, [], ["IC_existing", "PRR_existing"])).toEqual([]);
+      expect(calls().filter(args => args.includes("graphql"))).toHaveLength(3);
+    });
+  });
+});
+
 describe("buildReplyBody", () => {
   test("always ends with the marker and quotes conversation comments", () => {
     const b = buildReplyBody({
@@ -483,6 +589,93 @@ describe("triggerPrWatch", () => {
   });
 });
 
+
+describe("postFix replies", () => {
+  async function runReplies(root: string, reply = true, single = false) {
+    const session = createSession({ title: "post-fix replies" });
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open" });
+    const pr = listSessionPrs(session.id)[0]!;
+    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id });
+    setAgentStatus(a.id, "done");
+    const entries = [
+      { id: "IC_1", kind: "issue_comment", author: "cursor", decision: "fixed", reply: "Fixed cursor feedback." },
+      ...(!single ? [
+        { id: "PRR_1", kind: "review", author: "alice", decision: "declined", reply: "Keeping this." },
+        { id: "10", kind: "review_thread", author: "alice", decision: "fixed", reply: "Fixed inline." },
+        { id: "IC_empty", kind: "issue_comment", decision: "declined", reply: "  \n" },
+        { id: "IC_pending", kind: "issue_comment", decision: "pending", reply: "not reported" },
+        { id: "IC_unreported", kind: "issue_comment", decision: "fixed" },
+      ] : []),
+    ] as const;
+    for (const entry of entries) {
+      const f = insertPrFeedback({
+        sessionPrId: pr.id, sourceId: entry.id, sourceKind: entry.kind,
+        author: "author" in entry ? entry.author : "alice", url: `${PR_URL}#${entry.id}`,
+        inReplyTo: entry.kind === "review_thread" ? "10" : null,
+        bodyRef: writePrFeedbackArtifact(session.id, pr.id, entry.id, "body", "<!-- meta -->\n### Please fix"),
+      });
+      assignPrFeedback([f.id], a.id);
+      if (entry.decision !== "pending") recordPrFeedbackDecision(f.id, entry.decision,
+        "reply" in entry ? writePrFeedbackArtifact(session.id, pr.id, entry.id, "reply", entry.reply) : null);
+    }
+    const logs: string[] = [];
+    await postFix(getAgent(a.id)!, pr, { path: root } as Project,
+      { prWatch: { autoPush: false, reply } } as TackConfig, message => { logs.push(message); });
+    return { a, rows: listAgentPrFeedback(a.id), logs, pr };
+  }
+
+  test("batches conversation answers into one post and keeps inline replies threaded", async () => {
+    await withGh({}, async (root, calls) => {
+      const { rows, a, pr } = await runReplies(root);
+      const posts = calls().filter(args => args.includes("POST"));
+      expect(posts).toHaveLength(2);
+      expect(posts[0]).toContain("repos/acme/app/pulls/7/comments/10/replies");
+      expect(posts[0]).toContain(`body=Fixed inline.\n\n_— Tack_\n${PR_WATCH_MARKER}`);
+      expect(posts[1]).toContain("repos/acme/app/issues/7/comments");
+      const body = posts[1]!.find(a => a.startsWith("body="))!;
+      expect(body).toContain(`[Original feedback](${PR_URL}#IC_1) — **cursor**`);
+      expect(body).toContain("@alice");
+      expect(body).not.toContain("@cursor");
+      expect(body).toContain("> Please fix");
+      expect(body).toContain("Fixed cursor feedback.");
+      expect(body).toContain("Keeping this.");
+      for (const id of ["IC_1", "PRR_1"]) expect(rows.find(f => f.source_id === id)?.reply_url).toBe("https://github.com/reply/batch");
+      expect(rows.find(f => f.source_id === "10")?.reply_url).toBe("https://github.com/reply/thread");
+      for (const id of ["IC_empty", "IC_pending", "IC_unreported"]) expect(rows.find(f => f.source_id === id)?.reply_url).toBeNull();
+      expect(rows.every(f => f.handled_at)).toBe(true);
+      expect(rows.find(f => f.source_id === "IC_pending")?.decision).toBe("declined");
+      await postFix(getAgent(a.id)!, pr, { path: root } as Project,
+        { prWatch: { reply: true } } as TackConfig, () => {});
+      expect(calls().filter(args => args.includes("POST"))).toHaveLength(2);
+    });
+  });
+
+  test("uses the same linked format for a single conversation item", async () => {
+    await withGh({}, async (root, calls) => {
+      await runReplies(root, true, true);
+      const posts = calls().filter(args => args.includes("POST"));
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.find(a => a.startsWith("body="))).toContain(`[Original feedback](${PR_URL}#IC_1)`);
+    });
+  });
+
+  test("failed posts are logged and all items are handled without retry", async () => {
+    await withGh({ failPost: true }, async (root) => {
+      const { rows, logs } = await runReplies(root);
+      expect(rows.every(f => f.handled_at && f.reply_url === null)).toBe(true);
+      expect(logs.some(l => l.includes("conversation reply failed"))).toBe(true);
+      expect(logs.some(l => l.includes("reply to 10 failed"))).toBe(true);
+    });
+  });
+
+  test("reply=false handles items without calling gh", async () => {
+    await withGh({}, async (root) => {
+      const { rows } = await runReplies(root, false);
+      expect(rows.every(f => f.handled_at && f.reply_url === null)).toBe(true);
+      expect(() => readFileSync(join(root, "calls"))).toThrow();
+    });
+  });
+});
 
 describe("postFix outcomes", () => {
   function setup(status: AgentStatus = "done") {
