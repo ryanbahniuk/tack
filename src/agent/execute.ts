@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import type { Model, Project, TackConfig } from "../config/schema";
-import { modelForRole, resolveModel, roleModelKeys } from "../config/load";
+import { modelForRole, resolvePersona, resolveModel, roleModelKeys } from "../config/load";
 import {
   createAgent,
   getAgent,
@@ -25,7 +25,7 @@ import {
 import { getDb } from "../db";
 import { readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
-import { ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
+import { ensureReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
@@ -43,8 +43,10 @@ export function prepareAgent(input: {
   touches?: string[];
   /** Sibling agent ids that must finish before this agent starts. */
   dependsOn?: string[];
-  /** `pr_fix` for a PR-watch fix agent (forks off the PR head, not repo HEAD). */
+  /** Specialized agents fork from the PR head or the reviewed worker's local head. */
   kind?: AgentKind | null;
+  persona?: string | null;
+  reviewsAgentId?: string | null;
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
   /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
@@ -58,6 +60,8 @@ export function prepareAgent(input: {
     touches: input.touches ?? null,
     dependsOn: input.dependsOn ?? null,
     kind: input.kind ?? null,
+    persona: input.persona,
+    reviewsAgentId: input.reviewsAgentId,
     sessionPrId: input.sessionPrId ?? null,
     fixOrigin: input.fixOrigin ?? null,
   });
@@ -103,6 +107,10 @@ export async function* runAgent(
   const worktree = agentWorktree(agent, project.path);
   setAgentWorktree(agent.id, worktree.path, worktree.branch);
 
+  // Persist the baseline for later review spawns as well as continuations.
+  getDb().prepare("UPDATE agents SET diff_base = COALESCE(diff_base, ?) WHERE id = ?").run(worktree.base, agent.id);
+  const reviewed = agent.reviews_agent_id ? getAgent(agent.reviews_agent_id) : null;
+  const persona = agent.kind === "review" ? resolvePersona(config, agent.persona ?? "") : undefined;
   const shared = latestSharedContext(session.id);
   const contextFile = buildAgentContext({
     sessionId: session.id,
@@ -110,6 +118,8 @@ export async function* runAgent(
     projectName: project.name,
     sharedContext: shared ? readArtifact(shared.body_ref) : undefined,
     kind: agent.kind,
+    persona,
+    reviewedAgent: reviewed ? { id: reviewed.id, branch: reviewed.branch!, base: worktree.base } : undefined,
   });
 
   const runtime = selectRuntime(model.runtime);
@@ -225,6 +235,12 @@ function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
   }
   if (agent.continuation_prompt_ref && agent.worktree_path && agent.branch)
     return existingWorktree(repoPath, agent.worktree_path, agent.branch);
+  if (agent.kind === "review") {
+    const reviewed = agent.reviews_agent_id ? getAgent(agent.reviews_agent_id) : null;
+    if (!reviewed?.branch || !reviewed.diff_base)
+      throw new Error(`Review agent ${agent.id} has no reviewed branch/baseline`);
+    return ensureReviewWorktree(repoPath, agent.session_id, agent.id, reviewed.branch, reviewed.diff_base);
+  }
   if (agent.kind === "pr_fix") {
     const pr = agent.session_pr_id ? getSessionPr(agent.session_pr_id) : null;
     if (!pr?.head_branch)

@@ -70,3 +70,30 @@ describe("supervisor context: publishable pages", () => {
     expect(written).not.toContain("never touch the filesystem yourself");
   });
 });
+
+describe("persona contexts", () => {
+  test("supervisor review guidance appears only when configured", () => {
+    expect(context(true)).not.toContain("persona");
+    buildSupervisorContext("ses_test", { projects: [], autoOpenPrs: true,
+      personas: [{ name: "strict", description: "Strict review", model: [] }] } as unknown as TackConfig);
+    expect(written).toContain("list_personas");
+    expect(written).toContain("review_agent");
+    expect(written).toContain("blocker/major");
+    expect(written).toContain("Note persona verdicts briefly in the PR body");
+  });
+
+  test("review context preserves persona instructions and reports without commits", async () => {
+    const { buildAgentContext } = await import("../src/context/build");
+    const description = "Strict reviewer.\n\n  Preserve this formatting verbatim.";
+    buildAgentContext({ sessionId: "ses_test", agentId: "review", projectName: "test", kind: "review",
+      persona: { name: "strict", description }, reviewedAgent: { id: "author", branch: "tack/ses/author", base: "abc123" },
+      sharedContext: "The intended behavior.",
+    });
+    expect(written).toContain("## Your persona\n\n" + description);
+    expect(written).toContain("git diff abc123");
+    expect(written).toContain("report_review");
+    expect(written).toContain("exactly once");
+    expect(written).toContain("Do not commit");
+    expect(written).not.toContain("commit ALL");
+  });
+});

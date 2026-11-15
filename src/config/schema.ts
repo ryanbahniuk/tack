@@ -64,6 +64,14 @@ export const ModelSchema = z.object({
 });
 export type Model = z.infer<typeof ModelSchema>;
 
+/** A reviewer lens: its description guides selection and the reviewer itself. */
+export const PersonaSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  model: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
+});
+export type ResolvedPersona = Omit<z.infer<typeof PersonaSchema>, "model"> & { model: string[] };
+
 /**
  * Every functional role names one model key or a non-empty list of keys. Lists
  * are de-duplicated at load; multiple keys mean a uniform random pick per use.
@@ -182,6 +190,7 @@ export const ConfigSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
   models: z.array(ModelSchema).default([]),
   roles: RolesSchema,
+  personas: z.array(PersonaSchema).default([]),
   /** Per-runtime binary path + pinned version. */
   runtimes: RuntimesSchema,
   /** Extra read-only paths the supervisor may investigate beyond project roots. */
@@ -214,6 +223,7 @@ export interface TackConfig {
   projects: Project[];
   models: Model[];
   roles: ResolvedRoles;
+  personas: ResolvedPersona[];
   runtimes: Runtimes;
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];

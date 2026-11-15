@@ -10,9 +10,9 @@ import type { RuntimeKind } from "../config/schema";
 export type SessionStatus = "active" | "archived";
 export type AgentStatus = "pending" | "running" | "done" | "failed" | "stopped";
 export type CostSource = "runtime" | "pricing";
-/** NULL = a normal agent the supervisor spawned; `pr_fix` = spawned by the PR watcher
- * to address review feedback / a merge conflict on one session PR. */
-export type AgentKind = "pr_fix";
+/** NULL = a normal worker; PR-fix agents update an open PR, while review agents
+ * inspect another worker through a configured persona and only report findings. */
+export type AgentKind = "pr_fix" | "review";
 export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
@@ -103,8 +103,11 @@ export interface AgentRow {
   /** JSON array of sibling agent ids that must reach a terminal state before this
    * agent starts; the runner self-gates on them. Null when undeclared. */
   depends_on: string | null;
-  /** NULL for a normal agent; `pr_fix` for one the PR watcher spawned. */
+  /** NULL for a worker; PR-fix agents ship fixes, review agents only report. */
   kind: AgentKind | null;
+  persona: string | null;
+  reviews_agent_id: string | null;
+  review_ref: string | null;
   /** For a `pr_fix` agent, the `session_prs.id` it is fixing. */
   session_pr_id: string | null;
   /** When the PR watcher finished this fix agent's post-fix step (push + replies) —
@@ -360,8 +363,10 @@ export function createAgent(input: {
   touches?: string[] | null;
   /** Sibling agent ids that must finish before this agent starts. */
   dependsOn?: string[] | null;
-  /** `pr_fix` for a PR-watch fix agent; omitted/null for a normal agent. */
+  /** Reviewers report findings; PR-fix agents update an existing PR. NULL is a worker. */
   kind?: AgentKind | null;
+  persona?: string | null;
+  reviewsAgentId?: string | null;
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
   /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
@@ -371,8 +376,8 @@ export function createAgent(input: {
   const now = nowIso();
   const id = shortId("agt");
   db.prepare(
-    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, kind, session_pr_id, fix_origin, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, session_id, project_name, status, model, runtime, prompt_ref, touches, depends_on, kind, persona, reviews_agent_id, session_pr_id, fix_origin, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.sessionId,
@@ -383,6 +388,8 @@ export function createAgent(input: {
     input.touches && input.touches.length ? JSON.stringify(input.touches) : null,
     input.dependsOn && input.dependsOn.length ? JSON.stringify(input.dependsOn) : null,
     input.kind ?? null,
+    input.persona ?? null,
+    input.reviewsAgentId ?? null,
     input.sessionPrId ?? null,
     input.fixOrigin ?? null,
     now,
@@ -448,6 +455,11 @@ export function setAgentStatus(id: string, status: AgentStatus): void {
   getDb()
     .prepare(`UPDATE agents SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?`)
     .run(status, finishedAt, now, id);
+}
+
+/** The structured review lives in an artifact, separate from normal agent output. */
+export function setAgentReviewRef(id: string, ref: string): void {
+  getDb().prepare(`UPDATE agents SET review_ref = ?, updated_at = ? WHERE id = ?`).run(ref, nowIso(), id);
 }
 
 export function setAgentWorktree(id: string, worktreePath: string, branch: string): void {

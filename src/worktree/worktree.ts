@@ -521,3 +521,23 @@ export async function fastForwardPrWorktree(path: string, headBranch: string): P
   const head = await gitAsync(["rev-parse", "HEAD"], path);
   return head.code === 0 ? { base: head.out } : { reason: "worktree unavailable" };
 }
+
+/** Reviews inspect the author's LOCAL committed work, while retaining its diff baseline. */
+export function createReviewWorktree(repo: string, sessionId: string, agentId: string,
+  reviewedBranch: string, diffBase: string): Worktree {
+  assertRepoRoot(repo);
+  const root = sessionWorktreesRoot(sessionId);
+  mkdirSync(root, { recursive: true });
+  const path = join(root, agentId);
+  const branch = `tack/${sessionId}/${agentId}`;
+  const start = git(["rev-parse", "--verify", `refs/heads/${reviewedBranch}^{commit}`], repo);
+  const base = git(["rev-parse", "--verify", `${diffBase}^{commit}`], repo);
+  git(["worktree", "add", "--no-track", "-b", branch, path, start], repo);
+  git(["update-ref", baseRef(branch), base], repo);
+  return { repo, path, branch, base };
+}
+
+export function ensureReviewWorktree(repo: string, sessionId: string, agentId: string,
+  reviewedBranch: string, diffBase: string): Worktree {
+  return reuseWorktree(repo, sessionId, agentId) ?? createReviewWorktree(repo, sessionId, agentId, reviewedBranch, diffBase);
+}

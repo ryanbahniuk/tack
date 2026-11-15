@@ -7,8 +7,10 @@ export interface AgentContextParts {
   projectName: string;
   /** The current shared contract body, if the supervisor has authored one. */
   sharedContext?: string;
-  /** `pr_fix` for a PR-watch fix agent (different tools + finishing rules). */
+  /** Specialized agents have different tools and finishing rules. */
   kind?: AgentKind | null;
+  persona?: { name: string; description: string };
+  reviewedAgent?: { id: string; branch: string; base: string };
 }
 
 /**
@@ -25,6 +27,7 @@ export interface AgentContextParts {
  */
 export function buildAgentContext(parts: AgentContextParts): string {
   const sections: string[] = [];
+  const review = parts.kind === "review";
   const prFix = parts.kind === "pr_fix";
 
   sections.push(
@@ -46,6 +49,17 @@ export function buildAgentContext(parts: AgentContextParts): string {
     ].join("\n"),
   );
 
+  if (review) {
+    sections.push([
+      `You are a reviewer playing persona \`${parts.persona?.name}\`.`,
+      "You may read, run tests and experiment in your isolated worktree.",
+      `Review agent ${parts.reviewedAgent?.id}, branch \`${parts.reviewedAgent?.branch}\`, base \`${parts.reviewedAgent?.base}\`.`,
+      `See the work under review with: git diff ${parts.reviewedAgent?.base}`,
+      "The shared contract defines the intended behavior.",
+    ].join("\n"));
+    sections.push("## Your persona\n\n" + parts.persona?.description);
+  }
+
   if (parts.sharedContext && parts.sharedContext.trim()) {
     sections.push(["## Shared contract", "", parts.sharedContext.trim()].join("\n"));
   }
@@ -59,6 +73,11 @@ export function buildAgentContext(parts: AgentContextParts): string {
       "- `list_agents` — your sibling agents and their status.",
       "- `propose_amendment` — flag a wrong/incomplete contract (use sparingly; the",
       "  supervisor adjudicates). Keep working under the current contract meanwhile.",
+      ...(review ? [
+        "- `report_review` — report { verdict: 'approve' | 'changes_requested' | 'comment',",
+        "  summary: string, findings: [{ severity: 'blocker' | 'major' | 'minor' | 'nit',",
+        "  file?: string, line?: number, title: string, detail: string }] }.",
+      ] : []),
       ...(prFix
         ? [
             "- `report_pr_feedback` — record your decision (`fixed` | `declined` |",
@@ -71,7 +90,9 @@ export function buildAgentContext(parts: AgentContextParts): string {
   );
 
   sections.push(
-    prFix
+    review
+      ? "## Finishing up\n\nDo not commit, push, or open a PR. Call `report_review` exactly once before finishing."
+      : prFix
       ? [
           "## Finishing up",
           "",
