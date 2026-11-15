@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { supervisorPromptPath } from "../src/supervisor/prompt";
 import { resolve } from "node:path";
 import { approveSessionPlan, createSession, getSession, setSessionAwaitingInput } from "../src/db";
 import { APPROVE_PROMPT_MARKER, isApprovePrompt } from "../src/supervisor/approve-prompt";
@@ -59,6 +61,8 @@ describe("__approve-prompt", () => {
 test("prompt-submit marks ordinary turns busy and turn-end silently clears the marker", () => {
   const session = createSession({});
   expect(submit(session.id, JSON.stringify({ prompt: "investigate" }))).toBe("");
+  expect(getSession(session.id)?.title).toBe("investigate");
+  expect(readFileSync(supervisorPromptPath(session.id), "utf8")).toBe("investigate");
   expect(getSession(session.id)?.supervisor_turn_started_at).toBeString();
   expect(getSession(session.id)?.plan_approved_at).toBeNull();
   const result = Bun.spawnSync([
