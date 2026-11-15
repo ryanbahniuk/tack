@@ -3,11 +3,11 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codeVersionForEntry, currentCodeVersion, isCodeVersionStale } from "../src/process/version";
-import { createSession, getSession, migrate, setSupervisorCodeVersion, setPrWatchCodeVersion, setSupervisorTurnStartedAt } from "../src/db";
+import { codeVersionForEntry, currentCodeVersion, currentConfigVersion, isCodeVersionStale } from "../src/process/version";
+import { createSession, getSession, migrate, setSupervisorCodeVersion, setPrWatchCodeVersion, setSupervisorConfigVersion, setPrWatchConfigVersion, setSupervisorTurnStartedAt } from "../src/db";
 import { isSessionStale, refreshBlockedReason } from "../src/session/refresh";
 
-const probes = (tmux = false, pids: number[] = []) => ({ current: "new", tmux, alive: (pid: number | null | undefined) => pids.includes(pid ?? -1) });
+const probes = (tmux = false, pids: number[] = []) => ({ current: "new", config: "unknown", tmux, alive: (pid: number | null | undefined) => pids.includes(pid ?? -1) });
 
 describe("code identity", () => {
   test("hashes contents in the entry's tree including uncommitted edits", () => {
@@ -52,6 +52,16 @@ describe("refresh policy", () => {
     expect(isSessionStale({ ...s, supervisor_code_version: null }, probes(true)).supervisor).toBe(true);
     expect(isSessionStale(s, { ...probes(true, [22]), current: "unknown" }).stale).toBe(false);
   });
+  test("config changes stale only live components; unknown never forces refresh", () => {
+    const s = { ...session(), supervisor_code_version: "new", pr_watch_code_version: "new", supervisor_config_version: "config", pr_watch_config_version: "config" };
+    const probe = { ...probes(true, [22]), config: "config" };
+    expect(isSessionStale(s, probe).stale).toBe(false);
+    expect(isSessionStale(s, { ...probe, config: "changed" })).toMatchObject({ supervisor: true, watcher: true });
+    expect(isSessionStale(s, { ...probe, tmux: false, alive: () => false, config: "changed" }).stale).toBe(false);
+    expect(isSessionStale(s, { ...probe, config: "unknown" }).stale).toBe(false);
+    expect(isSessionStale({ ...s, supervisor_config_version: "unknown", pr_watch_config_version: "unknown" }, { ...probe, config: "changed" }).stale).toBe(false);
+    expect(isSessionStale({ ...s, supervisor_config_version: null }, probe).supervisor).toBe(true);
+  });
   test("guards pending plans, turn markers, and live headless runners", () => {
     const s = session();
     expect(refreshBlockedReason(s, probes())).toBeNull();
@@ -64,6 +74,9 @@ describe("refresh policy", () => {
   test("repository setters persist launch versions and turn transitions", () => {
     const s = session();
     setSupervisorCodeVersion(s.id, "supervisor"); setPrWatchCodeVersion(s.id, "watcher");
+    setSupervisorConfigVersion(s.id, "config-supervisor"); setPrWatchConfigVersion(s.id, "config-watcher");
+    expect(getSession(s.id)?.supervisor_config_version).toBe("config-supervisor");
+    expect(getSession(s.id)?.pr_watch_config_version).toBe("config-watcher");
     setSupervisorTurnStartedAt(s.id, "started");
     expect(getSession(s.id)?.supervisor_code_version).toBe("supervisor");
     expect(getSession(s.id)?.pr_watch_code_version).toBe("watcher");
@@ -79,10 +92,25 @@ test("migration upgrades an existing v9 session and is idempotent", () => {
     // Build v9 by removing only the new columns after a full migration, retaining
     // the real earlier schema and a persisted session to verify upgrade defaults.
     migrate(db);
-    db.exec("ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; ALTER TABLE agents DROP COLUMN fix_origin; ALTER TABLE agents DROP COLUMN continues_agent_id; ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at; ALTER TABLE agents DROP COLUMN diff_base; ALTER TABLE agents DROP COLUMN fix_outcome; ALTER TABLE agents DROP COLUMN fix_pushed_sha; DELETE FROM _migrations WHERE version >= 10;");
+    db.exec("ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE sessions DROP COLUMN supervisor_code_version; ALTER TABLE sessions DROP COLUMN pr_watch_code_version; ALTER TABLE sessions DROP COLUMN supervisor_turn_started_at; ALTER TABLE agents DROP COLUMN fix_origin; ALTER TABLE agents DROP COLUMN continues_agent_id; ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at; ALTER TABLE agents DROP COLUMN diff_base; ALTER TABLE agents DROP COLUMN fix_outcome; ALTER TABLE agents DROP COLUMN fix_pushed_sha; DELETE FROM _migrations WHERE version >= 10;");
     db.exec("INSERT INTO sessions (id,status,created_at,updated_at,tokens_input) VALUES ('old','active','then','then',42)");
     migrate(db); migrate(db);
     expect(db.query("SELECT tokens_input FROM sessions WHERE id='old'").get()).toEqual({ tokens_input: 42 });
-    expect(db.query("SELECT supervisor_code_version,pr_watch_code_version,supervisor_turn_started_at FROM sessions WHERE id='old'").get()).toEqual({ supervisor_code_version: null, pr_watch_code_version: null, supervisor_turn_started_at: null });
+    expect(db.query("SELECT supervisor_config_version,pr_watch_config_version,supervisor_code_version,pr_watch_code_version,supervisor_turn_started_at FROM sessions WHERE id='old'").get()).toEqual({ supervisor_config_version: null, pr_watch_config_version: null, supervisor_code_version: null, pr_watch_code_version: null, supervisor_turn_started_at: null });
   } finally { db.close(); }
+});
+
+test("config fingerprint reads contents fresh and handles missing/unreadable paths", () => {
+  const root = mkdtempSync(join(tmpdir(), "tack-config-version-"));
+  const path = join(root, "config.ts");
+  try {
+    expect(currentConfigVersion(path)).toBe("unknown");
+    expect(currentConfigVersion(root)).toBe("unknown");
+    writeFileSync(path, "before");
+    const before = currentConfigVersion(path);
+    expect(before).toMatch(/^[a-f0-9]{64}$/);
+    expect(currentConfigVersion(path)).toBe(before);
+    writeFileSync(path, "after");
+    expect(currentConfigVersion(path)).not.toBe(before);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

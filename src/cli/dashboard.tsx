@@ -18,9 +18,9 @@ import {
   type SessionRow,
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
-import { REFRESH_MESSAGE, isSessionStale, refreshSession } from "../session/refresh";
+import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshSession } from "../session/refresh";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
-import { collapseHome } from "../paths";
+import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
 import { resolveEditTarget } from "../session/edit";
 import { selfCommand } from "../process/self";
@@ -29,6 +29,8 @@ import { refreshSessionPrs } from "../projects/prs";
 import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
 import { isAlive } from "../process/self";
 import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
+import { ensureConfigExists } from "../config/ensure";
+import { currentConfigVersion } from "../process/version";
 import { loadConfig } from "../config/load";
 import type { TackConfig } from "../config/schema";
 import { readInsights, RANGES, type InsightRange } from "./stats";
@@ -151,6 +153,7 @@ type Launch =
   | { kind: "resume"; id: string; message?: string }
   | { kind: "edit"; path: string; agentId: string }
   | { kind: "create" }
+  | { kind: "config" }
   | { kind: "output"; ref: string; title: string };
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
@@ -159,7 +162,7 @@ type Confirm =
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -226,7 +229,7 @@ export function windowSessionLines(counts: readonly number[], cursor: number, he
   return { start, end, above: aboveRoom ? above : 0, below: belowRoom ? below : 0 };
 }
 
-export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onLaunch: (l: Launch) => void }) {
+export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: TackConfig | null; onLaunch: (l: Launch) => void; initialNotice?: string }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [size, setSize] = useState(() => ({ columns: stdout.columns || 80, rows: stdout.rows || 24 }));
@@ -284,7 +287,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   const [amendmentCursor, setAmendmentCursor] = useState(0);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState(initialNotice);
   const [ghMissing, setGhMissing] = useState(false);
   const [jiraUnavailable, setJiraUnavailable] = useState(false);
 
@@ -487,6 +490,11 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       });
     }
     if (input === "q") return exit();
+    if (input === "C") {
+      onLaunch({ kind: "config" });
+      exit();
+      return;
+    }
     if (effectiveLayout === "insights") return;
     // List mode.
     if (key.downArrow || input === "j") {
@@ -930,17 +938,19 @@ function pagerInvocation(ref: string): { command: string; args: string[] } {
  * Renders the live dashboard on a full-screen alternate buffer, resolving when the
  * user quits. Leaving the dashboard hands the terminal to a child on the normal
  * screen (so it keeps real scrollback), then re-enters the dashboard when the child
- * exits. Three hand-offs: enter/o resumes the selected session's supervisor (and
+ * exits. Hand-offs: enter/o resumes the selected session's supervisor (and
  * stamps `last_seen_at` so its "needs input" badge clears), c creates a fresh one,
- * and v pages an agent's output file through the user's pager.
+ * v pages agent output, e edits a worktree, and C edits config then refreshes
+ * sessions onto the validated config.
  */
 export async function runDashboard(): Promise<void> {
-  const config = await loadConfig().catch(() => null);
+  let config = await loadConfig().catch(() => null);
+  let pendingNotice = "";
   for (;;) {
     let launch: Launch | undefined;
     process.stdout.write(ALT_SCREEN_ENTER);
     try {
-      const app = render(<Dashboard config={config} onLaunch={(l) => (launch = l)} />);
+      const app = render(<Dashboard config={config} initialNotice={pendingNotice} onLaunch={(l) => (launch = l)} />);
       await app.waitUntilExit();
     } finally {
       // Always restore the normal screen — whether quitting, opening a session, or
@@ -969,6 +979,34 @@ export async function runDashboard(): Promise<void> {
       }
     }
     process.stdin.pause();
+
+    if (launch.kind === "config") {
+      ensureConfigExists();
+      const before = currentConfigVersion();
+      const { command, args } = editorInvocation(CONFIG_PATH);
+      await Bun.spawn([command, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited;
+      if (currentConfigVersion() === before) {
+        pendingNotice = "config unchanged";
+        continue;
+      }
+      let newConfig: TackConfig;
+      try {
+        newConfig = await loadConfig();
+      } catch (err) {
+        pendingNotice = `config has errors: ${err instanceof Error ? err.message : String(err)} — sessions not refreshed`;
+        continue;
+      }
+      config = newConfig;
+      console.log("Refreshing sessions onto new config…");
+      const results = await refreshAllStaleSessions(config);
+      const count = (status: string) => results.filter(result => result.status === status).length;
+      const blocked = count("blocked");
+      const failed = count("error");
+      pendingNotice = `config saved · refreshed ${count("refreshed")} session(s)`
+        + (blocked ? ` · ${blocked} blocked (refresh on resume or r)` : "")
+        + (failed ? ` · ${failed} failed` : "");
+      continue;
+    }
 
     // Runs on the normal screen so the child keeps real scrollback.
     const { command, args } =

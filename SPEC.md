@@ -630,7 +630,7 @@ the diff stays cumulative, and cost/usage accumulate with streaming updates
 replacing only the current invocation's contribution. The active prompt persists
 across interruption, unarchive and transient retry.
 
-### Refresh onto updated Tack code
+### Refresh onto updated Tack code or config
 
 `session refresh <id>` gracefully exits a stale supervisor TUI (bounded `/exit`,
 then tmux kill), recovers its cost, restarts a stale PR watcher if watchable PRs
@@ -645,11 +645,18 @@ reattaching. A blocked supervisor stays live with a notice to refresh once idle;
 a stale watcher can still be refreshed independently. Refreshed supervisors get
 a seed telling them tools/permissions may have changed and to re-run `sync_projects`.
 
-Versions are memoized per process: content hashes of the entry script's Tack
+Code versions are memoized per process: content hashes of the entry script's Tack
 source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
 uncommitted edits, or executable size/mtime for compiled Tack. Missing stamps on
 live legacy processes count as stale; `unknown` versions never do. Watchers stamp
-their own version at startup. Claude's prompt-submit hook stamps the best-effort
+their own code and config versions at startup. Config versions are SHA-256 hashes
+of `CONFIG_PATH` contents, read fresh on every check. A live component is stale when
+either code or config differs; missing/unreadable config returns `unknown`.
+Dashboard `C` opens config in `$VISUAL` / `$EDITOR` (fallback `vi`) in every layout,
+even with no sessions. Unchanged config shows a notice; invalid edits retain the
+previous config without refreshing sessions. Valid changes reload dashboard config
+and use the same bulk refresh as `session refresh --all`, reporting refreshed,
+blocked, and failed counts. Claude's prompt-submit hook stamps the best-effort
 turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
 notification covers Esc interruptions, which do not fire Stop. Adapters without
 these hooks leave it null. A live headless runner is always treated as busy.

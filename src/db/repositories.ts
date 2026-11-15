@@ -47,6 +47,8 @@ export interface SessionRow {
   last_seen_at: string | null;
   /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
   pr_watch_pid: number | null;
+  supervisor_config_version: string | null;
+  pr_watch_config_version: string | null;
   supervisor_code_version: string | null;
   pr_watch_code_version: string | null;
   supervisor_turn_started_at: string | null;
@@ -990,6 +992,13 @@ export function readInsightEvents(db: Database = getDb()): InsightEvent[] {
 }
 
 /** Versions are stamped by the process that loaded the code, never its launcher. */
+export function setSupervisorConfigVersion(id: string, version: string): void {
+  getDb().prepare(`UPDATE sessions SET supervisor_config_version = ? WHERE id = ?`).run(version, id);
+}
+export function setPrWatchConfigVersion(id: string, version: string): void {
+  getDb().prepare(`UPDATE sessions SET pr_watch_config_version = ? WHERE id = ?`).run(version, id);
+}
+
 export function setSupervisorCodeVersion(id: string, version: string): void {
   getDb().prepare(`UPDATE sessions SET supervisor_code_version = ? WHERE id = ?`).run(version, id);
 }
