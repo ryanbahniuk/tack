@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { writeGuardDecision } from "../src/supervisor/write-guard";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
 import { createInterface } from "node:readline/promises";
@@ -1434,6 +1435,15 @@ if (hidden === "__mcp") {
     // Approval is best-effort; never block the human's prompt.
   }
   process.exit(0);
+} else if (hidden === "__guard-write") {
+  let raw = "";
+  try { raw = await Bun.stdin.text(); } catch { /* Empty input denies. */ }
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      ...writeGuardDecision(raw, process.argv.slice(3)),
+    },
+  }));
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse hook on `request_plan_approval`
   // when a plan is presented for approval. Two jobs: (1) mark the session as awaiting

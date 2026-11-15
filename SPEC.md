@@ -356,6 +356,15 @@ Adapter specifics, hidden behind the interface:
   Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
   excluded from the allow hook and backed by `permissions.ask` rules, which
   outrank server-wide allow rules. Their ask hooks supply the prompt wording.
+  Attended runs create `<TACK_HOME>/supervisor/<sessionId>/artifacts` for
+  human-requested publishable page sources only (never plans, notes, contracts or
+  code). `writableDirs` and a caller-built `writeGuard` command let Claude replace
+  the blanket Edit/Write deny with absolute-path allows plus a PreToolUse
+  `tack __guard-write <dir>...` hook. It realpaths roots and existing ancestors,
+  denies malformed input and escapes, and permits only strict descendants. The
+  parent cwd's `.claude` settings stay unwritable; Tack still adds only MCP
+  allows to local settings. Publishing tools retain their normal permission flow. Headless
+  runs keep the original no-write posture; Codex ignores the writable-dir options.
   The supervisor server also marks its read-only tools `readOnlyHint`, including
   `sync_projects`, whose only writes are Tack-owned snapshot worktrees.
 - **codex** (`src/runtimes/codex.ts`): `codex exec --json --skip-git-repo-check -m
@@ -375,9 +384,9 @@ stdout/stderr to the log, and yields parsed JSON lines.
    runtime read-only, with only its session snapshot root (plus `readAllowlist`)
    granted as read dirs — never the user's checkouts — and the supervisor MCP
    server mounted. By default this is the runtime's own **interactive** TUI (Claude
-   Code / Codex) with inherited stdio — same capability posture (no edit
-   tools, only the `tack-supervisor` MCP tools), so you chat with the supervisor
-   directly and follow up with `--resume` in the same live session. Since the TUI
+   Code / Codex) with inherited stdio — same delegation posture (plus the Claude
+   page-source exception in §8), so you chat with the supervisor directly and
+   follow up with `--resume` in the same live session. Since the TUI
    owns the terminal there is no event stream to persist; cost is recovered from the
    runtime's transcript once it exits (claude sums per-message `usage` × pricing;
    codex reads its rollout's cumulative token count). `--background` keeps the

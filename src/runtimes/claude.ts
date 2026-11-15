@@ -119,17 +119,23 @@ export class ClaudeRuntime implements Runtime {
 
   /**
    * The interactive counterpart to `run`: the real `claude` TUI with the same
-   * read-only supervisor posture (no edit/subagent tools) and the same mounted MCP
+   * read-only supervisor posture (with optional page-source writes) and mounted MCP
    * servers, context, and add-dirs. We drop the headless `-p` streaming flags (and
    * `--permission-prompts none`) so a human is genuinely in the loop, but keep the
-   * capability boundary identical: it can read and drive the `tack-supervisor`
+   * delegation boundary: it can read and drive the `tack-supervisor`
    * tools, never edit code directly. Unlike the headless path it does NOT run in
    * `--permission-mode plan`: plan mode ends in Claude Code's native ExitPlanMode
    * menu, which no hook can relabel or replace. Instead edits are blocked by a
-   * `permissions.deny` list in `--settings`, and the plan is approved through Tack's
+   * `permissions.deny` list, or a path guard when page drafts are enabled, in
+   * `--settings`, and the plan is approved through Tack's
    * own `planApprovalTool` prompt.
    */
   interactiveCommand(opts: RunOptions): InteractiveSpec {
+    const writableDirs = opts.readOnly ? opts.writableDirs ?? [] : [];
+    // Never remove the blanket deny without the hook that replaces it: allow
+    // rules alone cannot prevent writes outside their patterns after a prompt.
+    if (writableDirs.length && !opts.writeGuard)
+      throw new Error("Read-only writableDirs require a writeGuard command.");
     const m = opts.model;
     const args = ["--model", m.id];
     // A single --settings blob carrying the session's edit block and human gates.
@@ -142,7 +148,11 @@ export class ClaudeRuntime implements Runtime {
       // reintroduce the native ExitPlanMode menu, then block the native edit tools (and
       // plan mode itself) via deny rules rather than plan mode.
       args.push("--permission-mode", "default");
-      settings.permissions = { deny: [...INTERACTIVE_READONLY_DENY] };
+      settings.permissions = {
+        deny: writableDirs.length
+          ? INTERACTIVE_READONLY_DENY.filter((tool) => !["Edit", "Write", "MultiEdit"].includes(tool))
+          : [...INTERACTIVE_READONLY_DENY],
+      };
       // With `disallowShell`, Bash is forbidden too so the supervisor can't route
       // around its no-write posture by shelling out (e.g. `echo … > plan.md`) — it
       // plans via its `tack-supervisor` tools and the chat, never by writing files.
@@ -163,6 +173,13 @@ export class ClaudeRuntime implements Runtime {
     // Human gates use PreToolUse ask hooks for their plain-language wording.
     // Settings ask rules back them up against the server-wide allow rules below.
     const preToolUse: unknown[] = [];
+    if (writableDirs.length && opts.writeGuard) {
+      const command = shellJoin([opts.writeGuard.command, ...opts.writeGuard.args]);
+      preToolUse.push({
+        matcher: "Edit|Write|MultiEdit|NotebookEdit",
+        hooks: [{ type: "command", command }],
+      });
+    }
     // (1) Plan approval: the hook fires when the plan is presented (before the human
     // decides) → mark the session as awaiting input (re-arms every iteration) and
     // emit the "Proceed with implementation?" ask. The tool's handler, which flips
@@ -225,6 +242,12 @@ export class ClaudeRuntime implements Runtime {
     // (`supervisorAllowRules` is empty outside read-only; the `ask` rule follows
     // `approvalTools` wherever it's set, like its hook.)
     const allow = supervisorAllowRules(opts);
+    // Claude's absolute path syntax is //Users/x/**, not /Users/x/** (which
+    // is project-relative). Prefix the already-absolute dir with ONE extra slash.
+    // https://code.claude.com/docs/en/permissions#read-and-edit
+    for (const dir of writableDirs) {
+      allow.push(`Write(/${dir}/**)`, `Edit(/${dir}/**)`);
+    }
     const ask = [
       ...new Set([
         ...(opts.approvalTools ?? []),
@@ -442,7 +465,8 @@ function mergeLocalAllowRules(cwd: string, rules: readonly string[]): void {
 /**
  * The interactive read-only supervisor's `permissions.deny` list. Without plan mode
  * (see `interactiveCommand`) nothing else stops the native edit tools, so they're
- * denied outright. ExitPlanMode/EnterPlanMode are denied too: plan approval goes
+ * denied outright unless a writeGuard replaces the Edit/Write denies for page
+ * drafts. ExitPlanMode/EnterPlanMode are denied too: plan approval goes
  * through Tack's own `planApprovalTool`, and letting the model enter plan mode would
  * bring back the native ExitPlanMode menu we're replacing.
  */

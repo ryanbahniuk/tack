@@ -193,3 +193,55 @@ describe("ClaudeRuntime.interactiveCommand prompt hook", () => {
     expect(settingsOf().hooks.UserPromptSubmit).toBeUndefined();
   });
 });
+
+describe("ClaudeRuntime.interactiveCommand writable page directory", () => {
+  const dir = "/Users/test/a page's/artifacts";
+  const writeGuard = { command: "/path with spaces/tack", args: ["__guard-write", dir] };
+
+  test("empty dirs preserve the exact command, including settings bytes", () => {
+    const runtime = new ClaudeRuntime();
+    const opts = { model: MODEL, bin: "claude", cwd: "/tmp/x", prompt: "", logPath: "/dev/null", readOnly: true };
+    expect(runtime.interactiveCommand({ ...opts, writableDirs: [] }))
+      .toEqual(runtime.interactiveCommand(opts));
+    expect(settingsOf({ writableDirs: [] })).toEqual(settingsOf());
+  });
+
+  test("scopes Write/Edit allows and keeps native plan and notebook tools denied", () => {
+    const settings = settingsOf({ writableDirs: [dir], writeGuard, approvalTools: [OPEN_PR] });
+    expect(settings.permissions).toEqual({
+      deny: ["NotebookEdit", "ExitPlanMode", "EnterPlanMode"],
+      allow: ["mcp__tack-supervisor", `Write(/${dir}/**)`, `Edit(/${dir}/**)`],
+      ask: [OPEN_PR],
+    });
+    const guard = (settings.hooks.PreToolUse as HookEntry[]).find((e) => e.matcher === "Edit|Write|MultiEdit|NotebookEdit");
+    expect(guard?.hooks).toEqual([{
+      type: "command",
+      command: "'/path with spaces/tack' '__guard-write' '/Users/test/a page'\\''s/artifacts'",
+    }]);
+    expect(settings.permissions.allow).not.toContain("Artifact");
+    expect(allowEntry(settings.hooks.PreToolUse).matcher).not.toContain("Artifact");
+  });
+
+  test("supports multiple writable dirs without changing the human gates", () => {
+    const gates = {
+      approvalTools: [OPEN_PR],
+      planApprovalTool: PLAN_APPROVAL,
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x"] },
+    };
+    const settings = settingsOf({ ...gates, writableDirs: ["/one", "/two"], writeGuard });
+    expect(settings.permissions.allow).toEqual([
+      "mcp__tack-supervisor", "Write(//one/**)", "Edit(//one/**)", "Write(//two/**)", "Edit(//two/**)",
+    ]);
+    expect(settings.permissions.ask).toEqual(settingsOf(gates).permissions.ask);
+    expect(settings.hooks.PreToolUse.slice(1)).toEqual(settingsOf(gates).hooks.PreToolUse);
+  });
+
+  test("does not enable scoped writes outside readOnly", () => {
+    expect(settingsOf({ readOnly: false, writableDirs: [dir], writeGuard }))
+      .toEqual(settingsOf({ readOnly: false }));
+  });
+
+  test("refuses to relax the deny list without a guard", () => {
+    expect(() => settingsOf({ writableDirs: [dir] })).toThrow("require a writeGuard");
+  });
+});

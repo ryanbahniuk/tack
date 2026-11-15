@@ -45,7 +45,12 @@ describe("ClaudeRuntime.prepareInteractive", () => {
   test("creates settings.local.json allowing the supervisor server, and records trust", () => {
     const home = tmp("tack-home-");
     const cwd = tmp("tack-cwd-");
-    prepare(home, { cwd });
+    prepare(home, {
+      cwd,
+      writableDirs: [join(cwd, "artifacts")],
+      writeGuard: { command: "tack", args: ["__guard-write", join(cwd, "artifacts")] },
+    });
+    // Scoped Write/Edit allows belong only to the launch settings, never this file.
     expect(readJson(localSettings(cwd))).toEqual({
       permissions: { allow: ["mcp__tack-supervisor"] },
     });
