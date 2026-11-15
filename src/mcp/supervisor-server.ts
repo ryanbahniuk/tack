@@ -32,7 +32,7 @@ import { prepareAgent } from "../agent/execute";
 import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
-import { commitWorktree, sessionPrBranch, syncSnapshot } from "../worktree/worktree";
+import { commitWorktreeAsync, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
 import { fetchReviewThreads, normalizeFeedback, openSessionPr } from "../projects/prs";
 import {
   isWatchablePr,
@@ -326,8 +326,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             "authorization for you to commit, push, and open this PR, so no further confirmation is needed. "
           : "Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
             "explicitly approved opening PRs. ") +
-        "Commits anything the agent left uncommitted, pushes its worktree branch under the " +
-        "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url.",
+        "Commits anything the agent left uncommitted, merges the latest remote base, then pushes its worktree branch under the " +
+        "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
+        "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),
@@ -338,7 +339,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ agentId, title, body, slug, base, draft }) => {
-      requireSession();
+      const session = requireSession();
       const a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
@@ -352,7 +353,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
       // Safety net: fold any changes the agent left uncommitted into its branch so
       // nothing is dropped from the PR (a push only carries commits).
-      commitWorktree(a.worktree_path, `Tack: finalize work for agent ${agentId}`);
+      await commitWorktreeAsync(a.worktree_path, `Tack: finalize work for agent ${agentId}`);
+      const baseSync: Awaited<ReturnType<typeof syncBranchWithBase>> & {
+        prFixAgentId?: string;
+        prFixSkipped?: string;
+      } = await syncBranchWithBase(proj.path, a.branch, a.worktree_path, base);
       const pr = await openSessionPr({
         repoPath: proj.path,
         localBranch: a.branch,
@@ -372,6 +377,30 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         state: draft ? "draft" : "open",
         headBranch: pr.headBranch,
       });
+      // A known local conflict needn't wait for GitHub's mergeability calculation
+      // or the next watcher tick. Share its guards so retries cannot double-spawn
+      // or bypass the per-PR budget; once open, repair failures are best-effort.
+      if (baseSync.status === "conflict") {
+        const prRow = listSessionPrs(sessionId).find((row) => row.url === pr.url);
+        if (!config.prWatch.enabled) baseSync.prFixSkipped = "PR watch is disabled";
+        else if (!session.plan_approved_at) baseSync.prFixSkipped = "Session plan is not approved";
+        else if (!prRow || !isWatchablePr(prRow) || prRow.number === null || !prRow.head_branch)
+          baseSync.prFixSkipped = "PR is not watchable or lacks its number/head branch";
+        else if (prFixBusy(prRow.id)) baseSync.prFixSkipped = "A PR fix is already running or awaiting post-fix";
+        else if (prFixCapReached(prRow.id, config).reached) baseSync.prFixSkipped = "PR fix daily cap reached";
+        else {
+          try {
+            const { agent } = spawnPrFixAgent(session, prRow, proj, config, {
+              conflict: true,
+              baseBranch: baseSync.base,
+              title,
+            });
+            baseSync.prFixAgentId = agent.id;
+          } catch (err) {
+            baseSync.prFixSkipped = `Could not start PR fix: ${(err as Error).message}`;
+          }
+        }
+      }
       // Start (or keep) the session's PR watcher so review feedback and merge
       // conflicts on this PR get picked up automatically. Best-effort: the PR is
       // already open, so a watcher hiccup must not turn this into a tool error.
@@ -380,7 +409,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       } catch {
         /* the dashboard's refresh will retry starting it */
       }
-      return text({ ok: true, url: pr.url, number: pr.number, branch: pr.headBranch, prWatch: config.prWatch.enabled });
+      return text({
+        ok: true, url: pr.url, number: pr.number, branch: pr.headBranch,
+        prWatch: config.prWatch.enabled, baseSync,
+      });
     },
   );
 

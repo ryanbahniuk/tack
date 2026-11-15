@@ -69,6 +69,8 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
           "  explicit request for you to commit, push, and open these PRs.",
         ]
       : ["  PRs; agents never open their own. Only after you've summarized and the human has", "  approved (see step 6)."]),
+    "  Merges the latest base before pushing; returns `baseSync` and starts a guarded fix on conflict.",
+    "  In your final summary, plainly flag PRs with baseSync.status=conflict and whether a fix agent started; don't narrate clean merges.",
     "- `list_amendments` / `resolve_amendment` — adjudicate agents' proposed changes",
     "  to the shared contract; you are authoritative.",
     "- `check_prs` — view your PRs: state, merge conflicts, review feedback and how Tack",

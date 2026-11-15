@@ -264,6 +264,95 @@ async function gitAsync(
   }
 }
 
+/** Pre-PR sync outcomes are data: even an offline remote or a rejected merge
+ * must let the caller open the PR and leave repair to the watcher. */
+export type BranchBaseSync = { base: string | null; fetched: boolean } & (
+  | { status: "skipped" | "up_to_date" }
+  | { status: "merged"; baseSha: string }
+  | { status: "conflict"; conflictedFiles: string[] }
+  | { status: "error"; error: string }
+);
+
+/**
+ * Merge the latest PR base before pushing, never rewriting the agent's history.
+ * Pin the exact merged commit as the new diff baseline so upstream files don't
+ * become apparent agent edits (and false sibling collisions). Fetch failures use
+ * the cached remote ref; failed merges are aborted before handing off to pr_fix.
+ * All git calls are async because open_pr runs inside the supervisor MCP server.
+ */
+export async function syncBranchWithBase(
+  repo: string,
+  branch: string,
+  worktreePath: string,
+  base?: string,
+): Promise<BranchBaseSync> {
+  let resolvedBase = base ?? null;
+  if (!resolvedBase) {
+    // Async equivalent of remoteDefaultBranch: avoid blocking the MCP server even
+    // during local ref discovery, while keeping the same clone/manual-origin rules.
+    const sym = await gitAsync(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], repo);
+    if (sym.code === 0 && sym.out.startsWith("origin/") && sym.out !== "origin/HEAD") {
+      resolvedBase = sym.out.slice("origin/".length);
+    } else {
+      for (const candidate of ["main", "master"]) {
+        const r = await gitAsync(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${candidate}^{commit}`], repo);
+        if (r.code === 0) {
+          resolvedBase = candidate;
+          break;
+        }
+      }
+    }
+  }
+  const result = { base: resolvedBase, fetched: false };
+  if (!resolvedBase) return { ...result, status: "skipped" };
+  const remoteRef = `refs/remotes/origin/${resolvedBase}`;
+  const fetch = await gitAsync(
+    ["fetch", "--quiet", "origin", `+refs/heads/${resolvedBase}:${remoteRef}`],
+    repo,
+    { timeoutMs: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+  );
+  result.fetched = fetch.code === 0 && !fetch.timedOut;
+  const target = await gitAsync(["rev-parse", "--verify", "--quiet", `${remoteRef}^{commit}`], repo);
+  if (target.code !== 0 || !target.out) return { ...result, status: "skipped" };
+  const baseSha = target.out;
+  const ancestor = await gitAsync(["merge-base", "--is-ancestor", baseSha, "HEAD"], worktreePath);
+  if (ancestor.code === 0) return { ...result, status: "up_to_date" };
+  if (ancestor.code !== 1) return { ...result, status: "error", error: ancestor.err || ancestor.out };
+
+  const head = await gitAsync(["rev-parse", "--verify", "HEAD"], worktreePath);
+  const clean = await gitAsync(["status", "--porcelain"], worktreePath);
+  if (head.code !== 0 || clean.code !== 0 || clean.out) {
+    return { ...result, status: "error", error: "Pre-PR sync requires a clean worktree and a valid HEAD" };
+  }
+  // Merge the resolved SHA rather than a ref another concurrent fetch might move.
+  const merge = await gitAsync([
+    "merge", "--no-edit", "-m", `Merge origin/${resolvedBase} into ${branch} (Tack: pre-PR sync)`, baseSha,
+  ], worktreePath);
+  if (merge.code === 0) {
+    const pin = await gitAsync(["update-ref", baseRef(branch), baseSha], repo);
+    if (pin.code !== 0) return { ...result, status: "error", error: `Could not update fork point: ${pin.err || pin.out}` };
+    return { ...result, status: "merged", baseSha };
+  }
+
+  const unmerged = await gitAsync(["diff", "--name-only", "--diff-filter=U"], worktreePath);
+  const conflictedFiles = unmerged.out.split("\n").filter(Boolean);
+  const merging = await gitAsync(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], worktreePath);
+  if (merging.code === 0) {
+    const abort = await gitAsync(["merge", "--abort"], worktreePath);
+    // We required a clean tree above: a failed abort can safely restore that exact
+    // HEAD without discarding pre-existing agent edits. Never leave merge state.
+    if (abort.code !== 0) await gitAsync(["reset", "--hard", head.out], worktreePath);
+  }
+  const afterHead = await gitAsync(["rev-parse", "HEAD"], worktreePath);
+  const afterStatus = await gitAsync(["status", "--porcelain"], worktreePath);
+  const afterMerge = await gitAsync(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], worktreePath);
+  if (afterHead.code !== 0 || afterHead.out !== head.out || afterStatus.code !== 0 || afterStatus.out || afterMerge.code === 0) {
+    return { ...result, status: "error", error: `Merge failed and cleanup could not restore the clean pre-merge HEAD: ${merge.err || merge.out}` };
+  }
+  if (unmerged.code === 0 && conflictedFiles.length) return { ...result, status: "conflict", conflictedFiles };
+  return { ...result, status: "error", error: merge.err || merge.out || "git merge failed" };
+}
+
 /** Result of refreshing one project's supervisor snapshot (see `syncSnapshot`). */
 export interface SnapshotSync {
   /** The snapshot worktree the supervisor should read. */
@@ -382,10 +471,11 @@ export function commitWorktree(worktreePath: string, message: string): boolean {
 }
 
 /** The full diff a worktree accumulated since it forked, as a unified patch.
- * Taken against the recorded fork point (`wt.base`) rather than HEAD so it includes
- * the agent's commits, not just uncommitted working-tree changes. */
+ * Taken against the pinned fork point (falling back to `wt.base` for legacy
+ * worktrees) so it includes agent commits while excluding newly merged base work. */
 export function worktreeDiff(wt: Worktree): string {
-  const r = spawnSync("git", ["diff", wt.base], { cwd: wt.path, encoding: "utf8" });
+  const base = readBaseRef(wt.repo, wt.branch) ?? wt.base;
+  const r = spawnSync("git", ["diff", base], { cwd: wt.path, encoding: "utf8" });
   return r.status === 0 ? (r.stdout ?? "") : "";
 }
 
