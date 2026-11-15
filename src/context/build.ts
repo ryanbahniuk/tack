@@ -19,7 +19,7 @@ export interface AgentContextParts {
  * work; the supervisor, not the agent, opens PRs).
  *
  * A `pr_fix` agent (spawned by the PR watcher) gets a variant: it is working on an
- * EXISTING pull request, so it must also report a decision + reply per review item
+ * EXISTING pull request, so it must also report a decision + reply per review or CI item
  * via `report_pr_feedback`, and — like every agent — never pushes or talks to GitHub
  * itself; the watcher pushes its commits and posts the replies.
  */
@@ -39,7 +39,7 @@ export function buildAgentContext(parts: AgentContextParts): string {
         ? [
             "",
             "You are a PR-fix agent: your worktree is checked out at the current head of an",
-            "open pull request, and your task is to address its review feedback and/or merge",
+            "open pull request, and your task is to address its review feedback, failing CI checks and/or merge",
             "conflict. Your commits are pushed onto that PR by Tack once you finish.",
           ]
         : []),
@@ -62,7 +62,7 @@ export function buildAgentContext(parts: AgentContextParts): string {
       ...(prFix
         ? [
             "- `report_pr_feedback` — record your decision (`fixed` | `declined` |",
-            "  `not_applicable`) and a short plain reply (1-3 sentences) for EVERY review item",
+            "  `not_applicable`) and a short plain reply (1-3 sentences) for EVERY review or CI check item",
             "  in your task, by its `sourceId`. Call it once, before you finish. Tack posts",
             "  each reply on GitHub for you; items you don't report are treated as declined.",
           ]

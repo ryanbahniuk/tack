@@ -41,6 +41,9 @@ import {
   buildReplyBody,
   buildConversationReplyBody,
   fetchPrStatus,
+  fetchPrChecks,
+  enrichCiLogs,
+  normalizeCiFailures,
   fetchReviewThreads,
   normalizeFeedback,
   postIssueComment,
@@ -65,8 +68,8 @@ export { buildPrFixPrompt } from "./prompt";
  * `sessions.pr_watch_pid`) polls every `prWatch.intervalSeconds`, or out of cycle
  * when SIGUSR1 requests an early pass. Passes never overlap. For each PR that
  * isn't merged/closed it persists GitHub's status, and when there's NEW feedback
- * (review threads, review bodies, conversation comments — bots included) or a merge
- * conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
+ * (review threads, review bodies, conversation comments — bots included), settled
+ * failing CI checks (when `fixCi` is on), or a merge conflict, it spawns a `pr_fix` agent forked off the PR's head. When that agent
  * finishes, the watcher (never the agent) pushes its commits non-force onto the PR
  * branch and posts the agent's verdicts (threaded inline, batched in conversation).
  *
@@ -311,6 +314,15 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
   const conflict = mergeable === "CONFLICTING";
   const threads = await fetchReviewThreads(project.path, pr.number);
   const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
+  if (config.prWatch.fixCi) {
+    try {
+      const checks = await fetchPrChecks(project.path, pr.number);
+      fresh.push(...await enrichCiLogs(project.path,
+        normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
+    } catch (err) {
+      log(`${tag}: fetching CI checks failed: ${(err as Error).message}`);
+    }
+  }
   // Items released back to pending (a rejected push / stopped run) also need a fix.
   const released = listUnassignedPrFeedback(pr.id);
   if (!conflict && fresh.length === 0 && released.length === 0) return;
@@ -330,7 +342,9 @@ async function watchPr(session: SessionRow, pr: SessionPrRow, config: TackConfig
     title: status.title,
     fresh,
   });
-  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s)${conflict ? ", merge conflict" : ""}); ${continued ? `continued ${continued}` : `fresh: ${fallbackReason}`}`);
+  const ciCount = fresh.filter((f) => f.kind === "ci_check").length +
+    released.filter((f) => f.source_kind === "ci_check").length;
+  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s), ${ciCount} CI item(s)${conflict ? ", merge conflict" : ""}); ${continued ? `continued ${continued}` : `fresh: ${fallbackReason}`}`);
 }
 
 /**
@@ -625,6 +639,7 @@ export async function postFix(
   }
   if (conversation.length) {
     const body = buildConversationReplyBody(conversation.map((f) => ({
+      kind: f.source_kind,
       url: f.url ?? pr.url,
       author: f.author,
       isBot: f.author_is_bot === 1,

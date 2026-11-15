@@ -34,7 +34,14 @@ import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
 import { commitWorktreeAsync, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
-import { fetchReviewThreads, normalizeFeedback, openSessionPr } from "../projects/prs";
+import {
+  fetchPrChecks,
+  enrichCiLogs,
+  normalizeCiFailures,
+  fetchReviewThreads,
+  normalizeFeedback,
+  openSessionPr,
+} from "../projects/prs";
 import {
   isWatchablePr,
   pollPrStatus,
@@ -449,7 +456,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "fresh: true forces a new conversation. The PR watcher pushes " +
         "its commits non-force onto the same PR branch and replies to review feedback when it finishes. " +
         "Do not use spawn_agent + open_pr to change an existing PR: that creates a second PR. The agent " +
-        "automatically gets a merge step if GitHub reports a conflict and any pending review feedback. " +
+        "automatically gets a merge step if GitHub reports a conflict and any pending review feedback or failing CI checks. " +
         "Runs one fix at a time per PR: refuses while another fix is running or awaiting its push. " +
         "Supervisor fix_pr runs are not subject to the watcher's daily cap and do not count toward it. " +
         "Returns immediately with the agent id.",
@@ -511,6 +518,16 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         /* the watcher's next tick picks them up */
       }
 
+      if (config.prWatch.fixCi) {
+        try {
+          const checks = await fetchPrChecks(project.path, pr.number);
+          fresh.push(...await enrichCiLogs(project.path,
+            normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
+        } catch {
+          /* CI is best-effort too; the next watcher tick retries. */
+        }
+      }
+
       const { agent, items, continued, fallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
         conflict,
@@ -554,8 +571,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description:
         "Snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
-        "review feedback (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
-        "spawned to address it. Tack handles PR feedback and merge conflicts automatically — use this to report " +
+        "review feedback and failing CI checks (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
+        "spawned to address it. Tack handles PR feedback, merge conflicts and failing CI automatically — use this to report " +
         "on it. Read-only by default; refresh asks the watcher to poll now asynchronously, so results land " +
         "on the next check. For any change to an open PR (human follow-ups, a persistent conflict, a failed " +
         "run), call fix_pr to update the same PR branch.",
