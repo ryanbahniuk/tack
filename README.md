@@ -203,7 +203,7 @@ work on the left, **Insights** on the right. Press `s` to cycle split → list-o
 full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
 Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
 The header shows the current layout and range. Existing session keys still work
-in the list: `j/k`, `enter/o`, `v`, `m`, `n`, `O`, `p` (poll PRs), `J`, `c`, `x`, `a`, `d`, `z`, `q`.
+in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `x`, `a`, `d`, `z`, `q`.
 Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
 immediate; unarchiving asks for confirmation and resumes only the agents archive
 interrupted. Agents with a runtime session handle continue their conversation;

@@ -149,7 +149,7 @@ type Confirm =
   | { action: "delete" | "stop"; id: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · p poll PRs · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -443,15 +443,6 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     } else if (key.upArrow || input === "k") {
       const prev = rows[Math.max(cursor - 1, 0)];
       if (prev) setCursorId(prev.session.id);
-    } else if (input === "n") {
-      // Jump to the next session needing input, wrapping around.
-      for (let step = 1; step <= rows.length; step++) {
-        const v = rows[(cursor + step) % rows.length];
-        if (v?.needsInput) {
-          setCursorId(v.session.id);
-          break;
-        }
-      }
     } else if (input === "z") {
       setShowArchived((v) => !v);
     } else if (input === "c") {
