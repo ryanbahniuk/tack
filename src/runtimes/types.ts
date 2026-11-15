@@ -94,10 +94,12 @@ export interface RunOptions {
    */
   onPlanPresented?: { command: string; args: string[] };
   /**
-   * UserPromptSubmit hook command for the human's /approve escape hatch. Only the
-   * attended plan-gated supervisor sets this; it never runs on model tool calls.
+   * Notification when the human submits a prompt (turn marker and /approve).
+   * Unsupported runtimes ignore it; it never runs on model tool calls.
    */
   onUserPrompt?: { command: string; args: string[] };
+  /** Best-effort notification when an attended turn finishes; unsupported runtimes ignore it. */
+  onTurnEnd?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */
   logPath: string;
   signal?: AbortSignal;

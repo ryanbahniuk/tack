@@ -235,3 +235,11 @@ export function tmuxCapturePane(sessionId: string, lines = 300): string {
     return "";
   }
 }
+
+/** Ask the idle TUI to flush its transcript before the refresh fallback kills it. */
+export function tmuxRequestExit(sessionId: string): void {
+  try {
+    spawnSync("tmux", tmuxArgs("send-keys", "-t", `=${tmuxSessionName(sessionId)}:`, "-l", "/exit"), { stdio: "ignore", timeout: 1000 });
+    spawnSync("tmux", tmuxArgs("send-keys", "-t", `=${tmuxSessionName(sessionId)}:`, "Enter"), { stdio: "ignore", timeout: 1000 });
+  } catch { /* kill-session remains the fallback */ }
+}

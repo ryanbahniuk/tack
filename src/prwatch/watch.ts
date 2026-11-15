@@ -22,6 +22,7 @@ import {
   setAgentStatus,
   setSessionPrStatus,
   setSessionPrWatchPid,
+  setPrWatchCodeVersion,
   type AgentRow,
   type AgentStatus,
   type PrFeedbackRow,
@@ -46,6 +47,7 @@ import {
 } from "../projects/prs";
 import { commitWorktreeAsync, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
+import { currentCodeVersion } from "../process/version";
 import { nowIso } from "../util/id";
 
 export { buildPrFixPrompt } from "./prompt";
@@ -200,6 +202,7 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
     return;
   }
   setSessionPrWatchPid(sessionId, process.pid);
+  setPrWatchCodeVersion(sessionId, currentCodeVersion());
 
   const release = () => {
     try {

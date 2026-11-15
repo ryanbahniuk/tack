@@ -9,6 +9,8 @@ import {
   createSession,
   getSession,
   setSessionCost,
+  setSupervisorCodeVersion,
+  setSupervisorTurnStartedAt,
   setSessionUsage,
   setSessionResumeRef,
   stampSessionHeartbeat,
@@ -22,6 +24,7 @@ import {
   selectRuntime,
   type AgentEvent,
 } from "../runtimes";
+import { currentCodeVersion } from "../process/version";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
 import {
@@ -128,6 +131,8 @@ async function* runSupervisor(opts: {
 }): AsyncGenerator<AgentEvent, SessionRow> {
   const { session, model, prompt, resume, config } = opts;
   stampSessionHeartbeat(session.id, process.pid);
+  setSupervisorCodeVersion(session.id, currentCodeVersion());
+  setSupervisorTurnStartedAt(session.id, null);
 
   const contextFile = buildSupervisorContext(session.id, config);
   const supervisorMcp = selfCommand(["__supervisor-mcp", session.id]);
@@ -208,6 +213,7 @@ export async function superviseInteractive(opts: {
   prompt: string;
   resume: boolean;
   config: TackConfig;
+  park?: boolean;
 }): Promise<{ code: number; detached: boolean }> {
   const { session, prompt, resume, config } = opts;
   if (!session.supervisor_model) throw new Error(`Session ${session.id} has no recorded supervisor model.`);
@@ -215,6 +221,8 @@ export async function superviseInteractive(opts: {
     throw new Error(`Session ${session.id} has no resume handle yet — it never got far enough to follow up on.`);
   const model = resolveModel(config, session.supervisor_model);
   stampSessionHeartbeat(session.id, process.pid);
+  setSupervisorCodeVersion(session.id, currentCodeVersion());
+  setSupervisorTurnStartedAt(session.id, null);
 
   const artifactsDir = supervisorArtifactsDir(session.id);
   mkdirSync(artifactsDir, { recursive: true });
@@ -236,7 +244,6 @@ export async function superviseInteractive(opts: {
   const awaitHook = usesPlanHook
     ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
     : undefined;
-  const approveHook = usesPlanHook ? selfCommand(["__approve-prompt", session.id]) : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
 
   // The human is now looking at this session (creating/resuming it), so anything
@@ -280,7 +287,8 @@ export async function superviseInteractive(opts: {
     ],
     planApprovalTool: awaitHook ? SUPERVISOR_PLAN_APPROVAL_TOOL : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
-    onUserPrompt: approveHook ? { command: approveHook.command, args: approveHook.args } : undefined,
+    onUserPrompt: selfCommand(["__approve-prompt", session.id]),
+    onTurnEnd: selfCommand(["__turn-end", session.id]),
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even
     // after plan approval. With it on (default), open_pr rides the server-wide allow.
     ...(config.autoOpenPrs
@@ -301,6 +309,8 @@ export async function superviseInteractive(opts: {
   // fully usable, just not leaveable-and-returnable).
   const tmuxName = tmuxSessionName(session.id);
   const useTmux = tmuxAvailable() && tmuxEnsureSession(session.id, cwd, spec);
+  // Bulk refresh parks only when tmux creation succeeds; never fall back to an attended spawn.
+  if (opts.park) return { code: useTmux ? 0 : 1, detached: useTmux };
   const [command, args] = useTmux
     ? (["tmux", tmuxAttachArgs(tmuxName)] as const)
     : ([spec.command, spec.args] as const);
@@ -373,7 +383,7 @@ export async function attachSupervisor(
  * persist it. For codex, whose id we couldn't pre-assign, recovery falls back to the
  * newest rollout under this cwd's sessions tree.
  */
-function recoverSupervisorCost(opts: {
+export function recoverSupervisorCost(opts: {
   session: SessionRow;
   model: ReturnType<typeof resolveModel>;
   cwd: string;

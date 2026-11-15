@@ -18,6 +18,7 @@ import {
   type SessionRow,
 } from "../db";
 import { agentLive, sessionLive, sessionNeedsInput } from "./liveness";
+import { REFRESH_MESSAGE, isSessionStale, refreshSession } from "../session/refresh";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
@@ -38,6 +39,7 @@ interface View {
   tickets: SessionJiraTicketRow[];
   cost: number;
   live: boolean;
+  stale: boolean;
   needsInput: boolean;
   /** Pending amendment proposals awaiting the human's adjudication. */
   amendments: AmendmentRow[];
@@ -65,6 +67,7 @@ function snapshot(showArchived: boolean): View[] {
         tickets: listSessionJiraTickets(session.id),
         cost: sessionTotalCost(session.id).total,
         live: sessionLive(session),
+        stale: isSessionStale(session).stale,
         // Waiting on the human: a plan to approve, or unread completed agent work
         // once nothing is still in flight.
         needsInput: sessionNeedsInput(session, agents),
@@ -94,7 +97,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -140,16 +143,16 @@ function openUrl(url: string): void {
 /** What the human asked for by leaving the dashboard: open the highlighted session,
  *  create a new one, or page through an agent's output. */
 type Launch =
-  | { kind: "resume"; id: string }
+  | { kind: "resume"; id: string; message?: string }
   | { kind: "create" }
   | { kind: "output"; ref: string; title: string };
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
 type Confirm =
-  | { action: "delete" | "stop"; id: string }
+  | { action: "delete" | "stop" | "refresh"; id: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -265,6 +268,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   const [agentCursor, setAgentCursor] = useState(0);
   const [amendmentCursor, setAmendmentCursor] = useState(0);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [notice, setNotice] = useState("");
   const [ghMissing, setGhMissing] = useState(false);
   const [jiraUnavailable, setJiraUnavailable] = useState(false);
@@ -367,12 +371,28 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     // Quit is the one gesture that works from everywhere.
     if (key.ctrl && input === "c") return exit();
 
+    if (sessionRefreshing) return;
+
     // A pending confirmation swallows the next keypress: y commits, anything
     // else cancels (stop/delete also accept enter). Keeps a stray `d` from deleting a session's
     // worktrees and artifacts irreversibly.
     if (confirm) {
-      if (input === "y" || input === "Y" || (key.return && confirm.action !== "unarchive")) {
-        if (confirm.action === "delete") {
+      if (input === "y" || input === "Y" || (key.return && confirm.action !== "unarchive" && confirm.action !== "refresh")) {
+        if (confirm.action === "refresh") {
+          const id = confirm.id;
+          setConfirm(null);
+          if (!config) { setNotice("Configuration unavailable"); return; }
+          setSessionRefreshing(true);
+          setNotice(`refreshing ${id}…`);
+          void refreshSession(id, config).then(result => {
+            if (result.blocked) setNotice(`refresh blocked: ${result.blocked}`);
+            else if (result.refreshed) {
+              onLaunch({ kind: "resume", id, message: REFRESH_MESSAGE });
+              exit();
+            } else setNotice(`${id}: ${result.refreshed ? "watcher refreshed" : "already current"}`);
+          }).catch(err => setNotice(`refresh failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
+          return;
+        } else if (confirm.action === "delete") {
           deleteSession(confirm.id);
           setNotice(`deleted ${confirm.id}`);
         } else if (confirm.action === "unarchive") {
@@ -505,6 +525,8 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       }
       for (const url of urls) openUrl(url);
       setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser`);
+    } else if (input === "r") {
+      setConfirm({ action: "refresh", id: selected.session.id });
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
     } else if (input === "a") {
@@ -540,6 +562,8 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
 
   const confirmText = confirm ? (confirm.action === "delete"
     ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
+    : confirm.action === "refresh"
+      ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
@@ -564,6 +588,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
           <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
         ) : null}
         {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+        {v.stale ? <Text color="yellow"> stale</Text> : null}
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
         <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
       </Text>
@@ -901,7 +926,7 @@ export async function runDashboard(): Promise<void> {
     const { command, args } =
       launch.kind === "output"
         ? pagerInvocation(launch.ref)
-        : selfCommand(launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id]);
+        : selfCommand(launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id, ...(launch.message ? ["--message", launch.message] : [])]);
     const proc = Bun.spawn([command, ...args], {
       stdin: "inherit",
       stdout: "inherit",
