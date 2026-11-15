@@ -303,8 +303,9 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
     return () => clearInterval(t);
   }, [showArchived]);
 
-  // Kept fresh so the refresh effect below (which only fires on mount + every 60s,
-  // not on every 1s snapshot) always sees the sessions currently on screen.
+  // Kept fresh so the refresh effect below (which fires on mount + every
+  // `prWatch.intervalSeconds`, like the PR watcher, not on every 1s snapshot)
+  // always sees the sessions currently on screen.
   const rowsRef = useRef(rows);
   useEffect(() => {
     rowsRef.current = rows;
@@ -313,9 +314,10 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
   // Refreshing PR status is automatic, so opening the dashboard is itself the "check
   // now" gesture — and the same tick (re)starts any missing PR watchers (see
   // `ensurePrWatchers`) — refresh once on mount (merge status should be right away, not
-  // after a full interval), then every 60s. `refreshing` guards against a slow `gh`
-  // call stacking with the next tick. Never touches `setRows`: it only writes to
-  // SQLite, and the 1s snapshot poll above already re-reads `listSessionPrs`.
+  // after a full interval), then every `prWatch.intervalSeconds`, like the PR watcher.
+  // `refreshing` guards against a slow `gh` call stacking with the next tick.
+  // Never touches `setRows`: it only writes to SQLite, and the 1s snapshot poll
+  // above already re-reads `listSessionPrs`.
   const refreshing = useRef(false);
   useEffect(() => {
     if (!config) return;
@@ -334,7 +336,7 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
         });
     };
     run();
-    const t = setInterval(run, 60_000);
+    const t = setInterval(run, config.prWatch.intervalSeconds * 1000);
     return () => clearInterval(t);
   }, [config]);
 

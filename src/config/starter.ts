@@ -85,7 +85,7 @@ export default ({
   // \`maxFixRunsPerDay\` caps fix runs per PR per rolling 24h. All fields optional.
   prWatch: {
     // enabled: true,          // false = never start a watcher
-    // intervalSeconds: 300,   // poll cadence (min 60)
+    // intervalSeconds: 300,   // PR poll cadence for the watcher and tack dashboard (min 60)
     // autoPush: true,         // push fix commits to the PR branch
     // reply: true,            // post a reply on each handled comment
     // maxFixRunsPerDay: 5,
