@@ -86,3 +86,9 @@ export function writePrFeedbackArtifact(
 export function writeContextFile(sessionId: string, name: string, body: string): string {
   return write(join(CONTEXT_DIR, sessionId, name), body);
 }
+
+
+/** Each follow-up is immutable; the original assignment remains available. */
+export function writeContinuationPrompt(sessionId: string, agentId: string, turnId: string, body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, agentId, "turns", `${turnId}.md`), body);
+}

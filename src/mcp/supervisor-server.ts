@@ -28,6 +28,7 @@ import {
   writeAmendmentArtifact,
   writeSharedContext,
 } from "../artifacts/store";
+import { prepareContinuation } from "../agent/continue";
 import { prepareAgent } from "../agent/execute";
 import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
@@ -229,7 +230,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     {
       description:
         "Delegate a task to a new agent in the given project. The agent runs autonomously in its own " +
-        "worktree; this returns immediately with the agent id. Use wait_for_agents to await completion.\n\n" +
+        "worktree; prefer continue_agent for follow-ups on an existing agent's unit before its PR is open. " +
+        "This returns immediately with the agent id. Use wait_for_agents to await completion.\n\n" +
         "Each agent becomes one PR, so default to ONE agent per project. Every agent branches from the " +
         "project's default branch, not a sibling's branch, so work that must happen in order within a project belongs " +
         "to a single agent.\n\n" +
@@ -312,12 +314,32 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
                 "Declared touch-set overlaps unfinished sibling agent(s) in this project — their PRs will " +
                 "likely collide. Overlapping work in one project belongs to a single agent; don't spawn more " +
                 "like this. For these, run check_conflicts once they finish and reconcile any collision with a " +
-                "follow-up agent before opening PRs. `dependsOn` won't help: every agent branches from the " +
+                "continue_agent call on the owning agent before opening PRs. `dependsOn` won't help: every agent branches from the " +
                 "project's default branch, not a sibling's branch.",
               overlaps: overlap,
             }
           : {}),
       });
+    },
+  );
+
+  server.registerTool(
+    "continue_agent",
+    {
+      description:
+        "Continue a done or failed agent's conversation in its existing worktree for follow-up work on its unit " +
+        "before a PR is open, including reconciling its own work. Plan-gated like spawn_agent. " +
+        "After a PR is open use fix_pr. Returns immediately with the same agent id.",
+      inputSchema: {
+        agentId: z.string(),
+        prompt: z.string().min(1).describe("The next instruction for this conversation"),
+        model: z.string().optional().describe("Optional model key on the same runtime"),
+      },
+    },
+    async ({ agentId, prompt, model }) => {
+      const agent = prepareContinuation(sessionId, agentId, prompt, config, model);
+      spawnAgentRunner(sessionId, agent.id);
+      return text({ agentId: agent.id, model: agent.model, runtime: agent.runtime });
     },
   );
 
@@ -397,7 +419,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         else if (prFixCapReached(prRow.id, config).reached) baseSync.prFixSkipped = "PR fix daily cap reached";
         else {
           try {
-            const { agent } = spawnPrFixAgent(session, prRow, proj, config, {
+            const { agent } = await spawnPrFixAgent(session, prRow, proj, config, {
               origin: "auto",
               conflict: true,
               baseBranch: baseSync.base,
@@ -430,7 +452,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Update an existing session PR: use this for any change to an open PR, including follow-ups the " +
         "human asked for (put them in `prompt`), a conflict that persists, or a failed fix run (pass `model` " +
-        "to choose another model). Spawns a pr_fix agent off the PR's current head; the PR watcher pushes " +
+        "to choose another model). Continues the eligible PR lineage automatically (returns continued/fallbackReason); " +
+        "fresh: true forces a new conversation. The PR watcher pushes " +
         "its commits non-force onto the same PR branch and replies to review feedback when it finishes. " +
         "Do not use spawn_agent + open_pr to change an existing PR: that creates a second PR. The agent " +
         "automatically gets a merge step if GitHub reports a conflict and any pending review feedback or failing CI checks. " +
@@ -438,6 +461,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Supervisor fix_pr runs are not subject to the watcher's daily cap and do not count toward it. " +
         "Returns immediately with the agent id.",
       inputSchema: {
+        fresh: z.boolean().optional().describe("Force a new conversation instead of continuing the eligible PR lineage"),
         pr: z
           .union([z.number().int(), z.string()])
           .describe("The session PR to fix: its number (18 or \"#18\") or its URL — see check_prs"),
@@ -448,7 +472,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         model: z.string().optional().describe("Model key; defaults to roles.agent (picked at random when several are set)"),
       },
     },
-    async ({ pr: ref, prompt, model }) => {
+    async ({ pr: ref, prompt, model, fresh: forceFresh }) => {
       const session = requireSession();
       // Same plan-gate as spawn_agent: a fix run is an agent run.
       if (!session.plan_approved_at)
@@ -504,7 +528,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         }
       }
 
-      const { agent, items } = spawnPrFixAgent(session, pr, project, config, {
+      const { agent, items, continued, fallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
         conflict,
         baseBranch: status.baseRefName,
@@ -512,6 +536,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         fresh,
         model: m,
         guidance: prompt,
+        forceFresh,
       });
       // The watcher owns the post-fix push + replies; make sure one is running.
       // Best-effort, like open_pr: the agent is already spawned.
@@ -526,6 +551,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         pr: pr.number,
         conflict,
         feedbackItems: items,
+        continued,
+        fallbackReason,
         model: m.name,
         note: !config.prWatch.enabled
           ? "PR watch is disabled (prWatch.enabled = false), so nothing will push this agent's commits onto " +
@@ -738,7 +765,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Check for collisions across the session's agents BEFORE opening PRs: files that more than one agent " +
         "changed in the same project (a merge conflict waiting to happen across the N branches). Run this once " +
-        "agents finish; if it reports collisions, resolve them (e.g. a follow-up agent to reconcile) before " +
+        "agents finish; if it reports collisions, resolve them with continue_agent on the owning agent before " +
         "opening pull requests. Empty means the branches touch disjoint files and should merge cleanly.",
       inputSchema: {},
       annotations: { readOnlyHint: true },

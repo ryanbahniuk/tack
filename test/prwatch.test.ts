@@ -335,11 +335,12 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
     try {
       await runSupervisorServer(pr.session_id);
       const call = register.mock.calls.find(([name]) => name === "fix_pr")!;
-      const fix = call[2] as unknown as (args: { pr: number; prompt?: string }) => Promise<{
+      const fix = call[2] as unknown as (args: { pr: number; prompt?: string; fresh?: boolean }) => Promise<{
         content: Array<{ text: string }>;
       }>;
       expect(prFixCapReached(prId, cfg)).toEqual({ reached: true, runs: 1 });
-      const result = await fix({ pr: 7, prompt: "Please rename the widget" });
+      const result = await fix({ pr: 7, prompt: "Please rename the widget", fresh: true });
+      expect(JSON.parse(result.content[0]!.text)).toMatchObject({ continued: null, fallbackReason: "fresh requested" });
       const agent = getAgent(JSON.parse(result.content[0]!.text).agentId)!;
       expect(agent).toMatchObject({ kind: "pr_fix", session_pr_id: prId, fix_origin: "supervisor" });
       expect(readFileSync(agent.prompt_ref!, "utf8")).toContain("Please rename the widget");
@@ -835,6 +836,9 @@ describe("postFix outcomes", () => {
       db.exec(`ALTER TABLE agents DROP COLUMN fix_outcome;
         ALTER TABLE agents DROP COLUMN fix_pushed_sha;
         ALTER TABLE agents DROP COLUMN fix_origin;
+        ALTER TABLE agents DROP COLUMN continues_agent_id;
+        ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
+        ALTER TABLE agents DROP COLUMN diff_base;
         DELETE FROM _migrations WHERE version >= 11;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, post_fixed_at, created_at, updated_at)
@@ -856,7 +860,10 @@ test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
   try {
     migrate(db);
     db.exec(`ALTER TABLE agents DROP COLUMN fix_origin;
-      DELETE FROM _migrations WHERE version = 12;
+        ALTER TABLE agents DROP COLUMN continues_agent_id;
+        ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
+        ALTER TABLE agents DROP COLUMN diff_base;
+      DELETE FROM _migrations WHERE version >= 12;
       INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
       INSERT INTO agents (id, session_id, project_name, status, kind, created_at, updated_at)
         VALUES ('a', 's', 'app', 'done', 'pr_fix', 'then', 'then');`);

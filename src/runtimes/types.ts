@@ -17,6 +17,8 @@ export interface RunOptions {
   sessionRef?: string;
   /** Whether this invocation resumes an existing session vs starts a new one. */
   resume?: boolean;
+  /** Fork the resumed conversation when supported by the runtime. */
+  fork?: boolean;
   /**
    * A single session-scoped context file, injected BY PATH (never inline). The
    * supervisor merges all guidance into one file per agent; each adapter wires it

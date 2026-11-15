@@ -190,6 +190,10 @@ export const ConfigSchema = z.object({
   supervisorMcpServers: z.array(McpServerSchema).default([]),
   /** Background PR polling + auto-fix (see `PrWatchSchema`). */
   prWatch: PrWatchSchema,
+  agentReuse: z.object({
+    enabled: z.boolean().default(true),
+    maxIdleHours: z.number().nonnegative().default(24),
+  }).default({ enabled: true, maxIdleHours: 24 }),
   /**
    * When the session's work is done, the supervisor commits and opens one PR per
    * unit of work in every affected repo on its own (default) — the N reviewable PRs
@@ -214,6 +218,7 @@ export interface TackConfig {
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
   prWatch: PrWatch;
+  agentReuse: { enabled: boolean; maxIdleHours: number };
   autoOpenPrs: boolean;
   jira?: JiraConfig;
 }
