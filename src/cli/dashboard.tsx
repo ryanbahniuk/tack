@@ -23,7 +23,7 @@ import { archiveSession, deleteSession, stopSession, unarchiveSession } from "..
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
-import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
+import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
 import { isAlive } from "../process/self";
 import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
 import { loadConfig } from "../config/load";
@@ -152,7 +152,7 @@ type Confirm =
   | { action: "delete" | "stop" | "refresh"; id: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · J tickets · c new · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · n next needing · O open PR · p poll PRs · J tickets · c new · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -510,6 +510,21 @@ export function Dashboard({ config, onLaunch }: { config: TackConfig | null; onL
       }
       for (const pr of selected.prs) openUrl(pr.url);
       setNotice(`opened ${selected.prs.length} PR${selected.prs.length === 1 ? "" : "s"} in browser`);
+    } else if (input === "p") {
+      if (!config) return setNotice("config is unavailable");
+      const id = selected.session.id;
+      try {
+        const result = triggerPrWatch(id, config);
+        switch (result.kind) {
+          case "disabled": setNotice("PR watch is disabled"); break;
+          case "inactive": setNotice(`${id} is not active`); break;
+          case "no-open-prs": setNotice(`${id} has no open PRs`); break;
+          case "signalled":
+          case "started": setNotice(`polling PRs for ${id} · ${result.kind} watcher pid ${result.pid}`); break;
+        }
+      } catch (err) {
+        setNotice(`PR poll failed: ${(err as Error).message}`);
+      }
     } else if (input === "J") {
       // Tickets linked before a `jira` block existed have no url — skip them.
       const urls = selected.tickets.map((t) => t.url).filter((u): u is string => Boolean(u));

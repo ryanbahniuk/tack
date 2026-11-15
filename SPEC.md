@@ -557,7 +557,7 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 ## 11. Dashboard, PRs, lifecycle
 
 - **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
-  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m n O J c x a d z q`.
+  liveness and a change-driven refresh loop. Session keys: `j/k enter/o v m n O p J c x a d z q`.
   At ≥140 columns it defaults to a 55% session list / 45% **Insights** split.
   `s` cycles split → list-only → full-screen Insights; narrow terminals start with
   the list and retain access to full-screen Insights. `[` / `]` select
@@ -642,6 +642,12 @@ Once a session has open PRs, a detached watcher (`tack __watch-prs <session>`,
 starts it; the dashboard's 60s refresh restarts it for any active session with an
 open PR and a dead watcher. It exits when the session is archived/gone or no PR is
 open; `stop`/`archive` SIGTERM it.
+
+Out-of-cycle polling is available through `tack session poll-prs <session>`, dashboard
+`p`, or supervisor `check_prs` with `refresh: true` (read-only by default; results
+land on the next check). These send SIGUSR1 to a live watcher or start a missing
+one. SIGUSR1 interrupts its sleep; requests during a pass coalesce into one
+immediate extra pass. Passes never overlap and all normal fix guards still apply.
 
 Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
 closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
