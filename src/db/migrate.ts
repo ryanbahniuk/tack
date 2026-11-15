@@ -290,6 +290,18 @@ const migrations: Migration[] = [
       ALTER TABLE agents ADD COLUMN fix_origin TEXT;
     `,
   },
+  {
+    version: 13,
+    name: "agent_continuation",
+    // Persist the active turn and baseline so detached retries and archive restore
+    // never silently restart a continuation from its original assignment.
+    sql: `
+      ALTER TABLE agents ADD COLUMN continues_agent_id TEXT;
+      ALTER TABLE agents ADD COLUMN continuation_prompt_ref TEXT;
+      ALTER TABLE agents ADD COLUMN continuation_started_at TEXT;
+      ALTER TABLE agents ADD COLUMN diff_base TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

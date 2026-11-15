@@ -215,6 +215,12 @@ function reuseWorktree(repo: string, sessionId: string, agentId: string): Worktr
   return { repo, path, branch, base };
 }
 
+/** Attach to a continuation's recorded cwd without creating a replacement. */
+export function existingWorktree(repo: string, path: string, branch: string): Worktree {
+  if (!existsSync(path)) throw new Error(`Worktree missing: ${path}`);
+  return { repo, path, branch, base: readBaseRef(repo, branch) ?? git(["rev-parse", "HEAD"], path) };
+}
+
 /** Reuses an existing worktree at the expected path, else creates one (resume-safe). */
 export function ensureWorktree(repo: string, sessionId: string, agentId: string): Worktree {
   return reuseWorktree(repo, sessionId, agentId) ?? createWorktree(repo, sessionId, agentId);
@@ -473,8 +479,8 @@ export function commitWorktree(worktreePath: string, message: string): boolean {
 /** The full diff a worktree accumulated since it forked, as a unified patch.
  * Taken against the pinned fork point (falling back to `wt.base` for legacy
  * worktrees) so it includes agent commits while excluding newly merged base work. */
-export function worktreeDiff(wt: Worktree): string {
-  const base = readBaseRef(wt.repo, wt.branch) ?? wt.base;
+export function worktreeDiff(wt: Worktree, runBase?: string): string {
+  const base = runBase ?? readBaseRef(wt.repo, wt.branch) ?? wt.base;
   const r = spawnSync("git", ["diff", base], { cwd: wt.path, encoding: "utf8" });
   return r.status === 0 ? (r.stdout ?? "") : "";
 }
@@ -494,4 +500,24 @@ export function changedFiles(repo: string, branch: string, worktreePath: string)
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Fail closed on stale/offline heads and divergence. Never reset or discard a
+ * lineage's edits to make reuse possible. Async because the watcher owns this. */
+export async function fastForwardPrWorktree(path: string, headBranch: string): Promise<{ base: string } | { reason: string }> {
+  const status = await gitAsync(["status", "--porcelain"], path);
+  if (status.code !== 0) return { reason: "worktree unavailable" };
+  if (status.out) return { reason: "dirty worktree" };
+  const fetch = await gitAsync(["fetch", "origin", `+refs/heads/${headBranch}:refs/remotes/origin/${headBranch}`], path,
+    { timeoutMs: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  if (fetch.code !== 0) return { reason: "remote head fetch failed" };
+  const remote = `refs/remotes/origin/${headBranch}`;
+  // merge --ff-only alone accepts a local branch ahead of the PR; such private
+  // commits must not silently become part of the next fix.
+  const ancestor = await gitAsync(["merge-base", "--is-ancestor", "HEAD", remote], path);
+  if (ancestor.code !== 0) return { reason: "non-fast-forwardable head" };
+  const merge = await gitAsync(["merge", "--ff-only", remote], path);
+  if (merge.code !== 0) return { reason: "non-fast-forwardable head" };
+  const head = await gitAsync(["rev-parse", "HEAD"], path);
+  return head.code === 0 ? { base: head.out } : { reason: "worktree unavailable" };
 }

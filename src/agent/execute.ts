@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import type { Model, Project, TackConfig } from "../config/schema";
@@ -24,7 +25,7 @@ import {
 import { getDb } from "../db";
 import { readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
-import { ensurePrWorktree, ensureWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
+import { ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
@@ -117,10 +118,12 @@ export async function* runAgent(
   const logPath = join(LOGS_DIR, session.id, `${agent.id}.log`);
   // Both runtime adapters support headless resume. Pending agents that never
   // acquired a handle still start with their original prompt in the same worktree.
-  const resume = Boolean(options.resume && agent.resume_ref);
-  const prompt = resume
-    ? "You were interrupted; continue the task where you left off."
-    : readArtifact(agent.prompt_ref) || "Continue.";
+  const continuation = Boolean(agent.continuation_prompt_ref || agent.continues_agent_id);
+  const resume = Boolean((options.resume || continuation) && agent.resume_ref);
+  const prompt = resume && options.resume && (!continuation || agent.continuation_started_at)
+    ? "You were interrupted; continue the task where you left off." +
+      (continuation ? "\n\nCurrent instruction:\n" + readArtifact(agent.continuation_prompt_ref ?? agent.prompt_ref) : "")
+    : readArtifact(agent.continuation_prompt_ref ?? agent.prompt_ref) || "Continue.";
 
   setAgentStatus(agent.id, "running");
   setAgentError(agent.id, null); // clear any error from a prior (failed) attempt
@@ -143,8 +146,9 @@ export async function* runAgent(
     model,
     bin: resolved.bin,
     // Claude adopts a pre-assigned UUID; codex ignores it and reports its own.
-    sessionRef: resume ? agent.resume_ref! : model.runtime === "claude" ? uuid() : undefined,
+    sessionRef: resume ? agent.resume_ref! : uuid(),
     resume,
+    fork: continuation && !agent.continuation_started_at,
     contextFile,
     mcpServers: [{ name: "tack", command: coordination.command, args: coordination.args }],
     logPath,
@@ -152,17 +156,22 @@ export async function* runAgent(
     switch (ev.type) {
       case "session":
         setAgentResumeRef(agent.id, ev.ref);
+        if (continuation)
+          getDb().prepare("UPDATE agents SET continuation_started_at = COALESCE(continuation_started_at, ?) WHERE id = ?")
+            .run(new Date().toISOString(), agent.id);
         break;
       case "usage":
+        // Events replace this invocation's running total. Add the immutable
+        // pre-run snapshot, never the previous event, to preserve earlier turns.
         setAgentUsage(agent.id, {
-          input: ev.input,
-          output: ev.output,
-          cacheRead: ev.cacheRead,
-          cacheWrite: ev.cacheWrite,
+          input: agent.tokens_input + ev.input,
+          output: agent.tokens_output + ev.output,
+          cacheRead: agent.cache_read + ev.cacheRead,
+          cacheWrite: agent.cache_write + ev.cacheWrite,
         });
         break;
       case "cost":
-        setAgentCost(agent.id, ev.usd, ev.source);
+        setAgentCost(agent.id, agent.cost + ev.usd, ev.source);
         break;
       case "text":
         transcript += ev.text;
@@ -185,7 +194,7 @@ export async function* runAgent(
     yield ev;
   }
 
-  const diff = worktreeDiff(worktree);
+  const diff = worktreeDiff(worktree, agent.diff_base ?? undefined);
   const diffRef = diff.trim() ? writeAgentArtifact(session.id, agent.id, "diff", diff) : null;
   setAgentRefs(agent.id, { outputRef, diffRef });
   // On failure, persist a reason so the dashboard can show it inline; a transcript
@@ -204,6 +213,18 @@ export async function* runAgent(
  * resume/retry.
  */
 function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
+  // Never replace a disappeared lineage cwd with a cold checkout: the runtime
+  // conversation is tied to the original directory.
+  if ((agent.continues_agent_id || agent.continuation_prompt_ref) &&
+      (!agent.worktree_path || !existsSync(agent.worktree_path)))
+    throw new Error(`Continuation worktree for ${agent.id} is missing`);
+  if (agent.continues_agent_id) {
+    if (!agent.worktree_path || !agent.branch || !agent.diff_base)
+      throw new Error(`Continuation ${agent.id} has no worktree/baseline`);
+    return { repo: repoPath, path: agent.worktree_path, branch: agent.branch, base: agent.diff_base };
+  }
+  if (agent.continuation_prompt_ref && agent.worktree_path && agent.branch)
+    return existingWorktree(repoPath, agent.worktree_path, agent.branch);
   if (agent.kind === "pr_fix") {
     const pr = agent.session_pr_id ? getSessionPr(agent.session_pr_id) : null;
     if (!pr?.head_branch)
