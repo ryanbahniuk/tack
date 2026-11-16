@@ -618,7 +618,25 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     jiraUnavailable ? "jira unavailable — ticket status not updating" : "",
     KEY_HINT,
   ].filter(Boolean);
-  const budget = dashboardBodyHeight(size.rows, size.columns, footer);
+  const split = effectiveLayout === "split";
+  const headerParts = [
+    `Tack · ${split ? "" : `${effectiveLayout === "list" ? "list-only" : effectiveLayout} · `}${range} ${showArchived ? "(all)" : "(active)"} · ${rows.length} session${rows.length === 1 ? "" : "s"} · `,
+    `${liveCount} live`, " · ", `${workingCount} working`, " · ",
+    `${needsCount} need input`, " · ", usd(totalCost), " ", "in flight",
+  ];
+  // Hard wrapping makes the measured width exact, even when counts/cost grow.
+  const headerRows = split ? Math.ceil(Bun.stringWidth(headerParts.join("")) / listWidth) : 1;
+  const bodyBudget = dashboardBodyHeight(size.rows, size.columns, footer);
+  const budget = Math.max(0, bodyBudget - (headerRows - 1));
+  const paneHeight = split ? Math.min(bodyBudget + 1, budget + headerRows) : budget;
+  const header = (
+    <Text bold wrap={split ? "hard" : "truncate"}>
+      {headerParts[0]}<Text color="green">{headerParts[1]}</Text>{headerParts[2]}
+      <Text color={workingCount > 0 ? "cyan" : undefined} dimColor={workingCount === 0}>{headerParts[3]}</Text>{headerParts[4]}
+      <Text color={needsCount > 0 ? "yellow" : undefined} dimColor={needsCount === 0}>{headerParts[5]}</Text>{headerParts[6]}
+      <Text color="green">{headerParts[7]}</Text>{headerParts[8]}<Text dimColor>{headerParts[9]}</Text>
+    </Text>
+  );
   const sessionLines = rows.map((v, i) => flattenSessionLines(
     <Box key={v.session.id} flexDirection="column">
       <Text>
@@ -722,16 +740,11 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
   return (
     <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
-      <Text bold wrap="truncate">
-        Tack · {effectiveLayout === "list" ? "list-only" : effectiveLayout} · {range} {showArchived ? "(all)" : "(active)"} · {rows.length} session{rows.length === 1 ? "" : "s"} ·{" "}
-        <Text color="green">{liveCount} live</Text> ·{" "}
-        <Text color={workingCount > 0 ? "cyan" : undefined} dimColor={workingCount === 0}>{workingCount} working</Text> ·{" "}
-        {needsCount > 0 ? <Text color="yellow">{needsCount} need input</Text> : <Text dimColor>0 need input</Text>} ·{" "}
-        <Text color="green">{usd(totalCost)}</Text> <Text dimColor>in flight</Text>
-      </Text>
-      <Box flexDirection="row" height={budget} flexShrink={0} overflowY="hidden">
+      {!split && header}
+      <Box flexDirection="row" height={paneHeight} flexShrink={0} overflowY="hidden">
         {effectiveLayout !== "insights" && (
           <Box width={listWidth} flexShrink={0} flexDirection="column" overflowX="hidden">
+            {split && header}
             {rows.length === 0 && <Text dimColor wrap="truncate">No sessions. Press c to create one.</Text>}
             {window.above > 0 && <Text dimColor wrap="truncate">↑ {window.above} more</Text>}
             {visibleLines.map((line, i) => React.cloneElement(line, { key: i, wrap: "truncate" }))}
@@ -739,10 +752,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           </Box>
         )}
         {effectiveLayout === "split" && (
-          <Box width={1} height={budget} marginX={1} flexShrink={0} borderStyle="single" borderLeft borderRight={false} borderTop={false} borderBottom={false} borderDimColor />
+          <Box width={1} height={paneHeight} marginX={1} flexShrink={0} borderStyle="single" borderLeft borderRight={false} borderTop={false} borderBottom={false} borderDimColor />
         )}
         {effectiveLayout !== "list" && (
-          <Insights stats={stats} width={insightWidth} rows={size.rows} height={budget} full={effectiveLayout === "insights"} />
+          <Insights stats={stats} width={insightWidth} rows={size.rows} height={paneHeight} full={effectiveLayout === "insights"} />
         )}
       </Box>
       <Box marginTop={1} flexDirection="column" flexShrink={0}>
