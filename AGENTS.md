@@ -154,5 +154,8 @@ a network drop. It always restarts the supervisor, even mid-turn or with a plan
 pending (reported as `planPending`, re-presented on resume). It revives non-manual,
 non-`pr_fix` agents that are orphaned or failed with an `isTransientError` error,
 and restarts a dead PR watcher. `pr_fix` stays with the watcher, which fails and
-post-fixes orphaned fixes itself. `--all` parks restarted supervisors in tmux.
+post-fixes orphaned fixes itself. It never opens a foreground TUI: the single form
+always relaunches the supervisor parked in tmux (`parkReconnectedSupervisor`) and
+the dashboard stays open; `--all` parks only supervisors that were running. Without
+tmux the supervisor stays stopped until `tack session resume`.
 Logic lives in `src/session/reconnect.ts`; supervisor stop is shared with refresh.

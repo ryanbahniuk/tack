@@ -22,7 +22,7 @@ import {
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshSession } from "../session/refresh";
-import { RECONNECT_MESSAGE, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
+import { describeReconnect, parkReconnectedSupervisor, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
@@ -437,17 +437,24 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           }).catch(err => setNotice(`refresh failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
           return;
         } else if (confirm.action === "reconnect") {
-          // Same busy-flag hand-off as refresh: stopping the old TUI can take a
-          // couple of seconds, and the replacement launches after Ink unmounts.
+          // Runs in the background and keeps the dashboard open: the replacement
+          // supervisor is parked in tmux rather than launched in the foreground,
+          // so enter attaches when the user wants the conversation. The busy flag
+          // covers stopping the old TUI, which can take a couple of seconds.
           const id = confirm.id;
           setConfirm(null);
           if (!config) { setNotice("Configuration unavailable"); return; }
           setSessionRefreshing(true);
           setNotice(`reconnecting ${id}…`);
-          void reconnectSession(id, config).then(() => {
-            onLaunch({ kind: "resume", id, message: RECONNECT_MESSAGE });
-            exit();
-          }).catch(err => setNotice(`reconnect failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
+          void (async () => {
+            const result = await reconnectSession(id, config);
+            const park = await parkReconnectedSupervisor(id, config);
+            const summary = `${id}: ${describeReconnect(result)}`;
+            if (park.parked) setNotice(`${summary} · parked in tmux · enter to attach`);
+            else if (park.reason === "no-resume-ref") setNotice(`${summary} · no resume handle yet — it never got far enough to follow up on`);
+            else if (park.reason === "no-tmux") setNotice(`${summary} · tmux unavailable, supervisor stopped · enter to resume`);
+            else setNotice(`${summary} · could not park in tmux · enter to resume`);
+          })().catch(err => setNotice(`reconnect failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
           return;
         } else if (confirm.action === "delete") {
           deleteSession(confirm.id);
@@ -682,7 +689,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     : confirm.action === "refresh"
       ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
     : confirm.action === "reconnect"
-      ? `Reconnect ${confirm.id}? Restarts the supervisor and revives ${confirm.count} dropped agent(s).${confirm.planPending ? " Pending plan will be re-presented." : ""} (y/N)`
+      ? `Reconnect ${confirm.id}? Restarts the supervisor detached in tmux and revives ${confirm.count} dropped agent(s).${confirm.planPending ? " Pending plan will be re-presented." : ""} (y/N)`
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
