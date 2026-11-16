@@ -104,6 +104,19 @@ export function tmuxHasSession(name: string): boolean {
   }
 }
 
+/** Names of every session on Tack's tmux server, from one `list-sessions` call. The
+ * dashboard probes many sessions per tick; one subprocess beats N `has-session`s.
+ * Empty when tmux is absent or no server is running; never throws. */
+export function tmuxListSessions(spawn: typeof spawnSync = spawnSync): Set<string> {
+  try {
+    const out = spawn("tmux", tmuxArgs("list-sessions", "-F", "#{session_name}"), { encoding: "utf8", timeout: 3000 });
+    if (out.status !== 0 || typeof out.stdout !== "string") return new Set();
+    return new Set(out.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
 /**
  * Ensure a detached tmux session exists for `sessionId` running `spec`, and paint
  * its status bar with detach, new-session, bug-report and resume hints. Returns false if tmux

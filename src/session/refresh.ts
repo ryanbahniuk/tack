@@ -6,7 +6,7 @@ import { isAlive } from "../process/self";
 import { currentCodeVersion, currentConfigVersion, isCodeVersionStale } from "../process/version";
 import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
 import { recoverSupervisorCost, superviseInteractive } from "../supervisor/supervise";
-import { tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxRequestExit, tmuxSessionName } from "./tmux";
+import { tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxListSessions, tmuxRequestExit, tmuxSessionName } from "./tmux";
 
 import { REFRESH_MESSAGE } from "./refresh-message";
 
@@ -24,6 +24,29 @@ export function isSessionStale(session: SessionRow, probes = {
   const supervisor = supervisorLive && (isCodeVersionStale(session.supervisor_code_version, probes.current) || isCodeVersionStale(session.supervisor_config_version, probes.config));
   const watcher = watcherLive && (isCodeVersionStale(session.pr_watch_code_version, probes.current) || isCodeVersionStale(session.pr_watch_config_version, probes.config));
   return { stale: supervisor || watcher, supervisor, watcher, supervisorLive, watcherLive };
+}
+
+/** Stale flags for many sessions from ONE probe set: the config is hashed once and
+ * tmux is listed once, instead of a sha256 + `has-session` spawn per session — the
+ * dashboard calls this every second. Archived sessions have no supervisor or watcher
+ * to refresh, so they are never stale and never trigger the tmux probe. */
+export function staleSessionIds(sessions: readonly SessionRow[], deps = {
+  current: currentCodeVersion,
+  config: () => currentConfigVersion(),
+  tmuxSessions: tmuxListSessions,
+  alive: isAlive,
+}): Set<string> {
+  const stale = new Set<string>();
+  const candidates = sessions.filter((s) => s.status !== "archived");
+  if (!candidates.length) return stale;
+  const current = deps.current();
+  const config = deps.config();
+  const live = deps.tmuxSessions();
+  for (const session of candidates) {
+    const probes = { current, config, tmux: live.has(tmuxSessionName(session.id)), alive: deps.alive };
+    if (isSessionStale(session, probes).stale) stale.add(session.id);
+  }
+  return stale;
 }
 
 export function refreshBlockedReason(session: SessionRow, probes = {

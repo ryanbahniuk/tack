@@ -1063,3 +1063,74 @@ export function setPrWatchCodeVersion(id: string, version: string): void {
 export function setSupervisorTurnStartedAt(id: string, at: string | null): void {
   getDb().prepare(`UPDATE sessions SET supervisor_turn_started_at = ? WHERE id = ?`).run(at, id);
 }
+
+// ---------------------------------------------------------------------------
+// Batched reads (dashboard)
+// ---------------------------------------------------------------------------
+//
+// The dashboard snapshots every listed session each second; one query per table
+// keeps that O(tables) rather than O(sessions × tables). Ids travel as ONE JSON
+// parameter through `json_each`, so no list is too long for SQLite's bound-param
+// limit. Ordering matches the per-session reads (rowid breaks created_at ties), and
+// sessions with no rows are simply absent from the map.
+
+const IN_IDS = `IN (SELECT value FROM json_each(?))`;
+
+function groupBySession<T extends { session_id: string }>(rows: T[]): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const row of rows) {
+    const list = out.get(row.session_id);
+    if (list) list.push(row);
+    else out.set(row.session_id, [row]);
+  }
+  return out;
+}
+
+/** `listAgents` for many sessions at once. */
+export function listAgentsBySession(sessionIds: readonly string[]): Map<string, AgentRow[]> {
+  return groupBySession(getDb()
+    .prepare(`SELECT * FROM agents WHERE session_id ${IN_IDS} ORDER BY created_at ASC, rowid ASC`)
+    .all(JSON.stringify(sessionIds)) as AgentRow[]);
+}
+
+/** `listSessionPrs` for many sessions at once. */
+export function listSessionPrsBySession(sessionIds: readonly string[]): Map<string, SessionPrRow[]> {
+  return groupBySession(getDb()
+    .prepare(`SELECT * FROM session_prs WHERE session_id ${IN_IDS} ORDER BY created_at ASC, rowid ASC`)
+    .all(JSON.stringify(sessionIds)) as SessionPrRow[]);
+}
+
+/** `listSessionJiraTickets` for many sessions at once. */
+export function listSessionJiraTicketsBySession(sessionIds: readonly string[]): Map<string, SessionJiraTicketRow[]> {
+  return groupBySession(getDb()
+    .prepare(`SELECT * FROM session_jira_tickets WHERE session_id ${IN_IDS} ORDER BY created_at ASC, key ASC, rowid ASC`)
+    .all(JSON.stringify(sessionIds)) as SessionJiraTicketRow[]);
+}
+
+/** `listPendingAmendments` for many sessions at once. */
+export function listPendingAmendmentsBySession(sessionIds: readonly string[]): Map<string, AmendmentRow[]> {
+  return groupBySession(getDb()
+    .prepare(`SELECT * FROM amendments WHERE session_id ${IN_IDS} AND status = 'pending' ORDER BY created_at ASC, rowid ASC`)
+    .all(JSON.stringify(sessionIds)) as AmendmentRow[]);
+}
+
+/** The agents half of `sessionTotalCost`, per session; absent means 0. */
+export function agentCostBySession(sessionIds: readonly string[]): Map<string, number> {
+  const rows = getDb()
+    .prepare(`SELECT session_id, COALESCE(SUM(cost), 0) AS c FROM agents WHERE session_id ${IN_IDS} GROUP BY session_id`)
+    .all(JSON.stringify(sessionIds)) as { session_id: string; c: number }[];
+  return new Map(rows.map((r) => [r.session_id, r.c ?? 0]));
+}
+
+/** `countOpenPrFeedback` for every PR of these sessions, keyed by session PR id;
+ * absent means 0. */
+export function countOpenPrFeedbackByPr(sessionIds: readonly string[]): Map<string, number> {
+  const rows = getDb()
+    .prepare(`
+      SELECT f.session_pr_id AS id, COUNT(*) AS n FROM pr_feedback f
+      JOIN session_prs p ON p.id = f.session_pr_id
+      WHERE p.session_id ${IN_IDS} AND f.handled_at IS NULL
+      GROUP BY f.session_pr_id`)
+    .all(JSON.stringify(sessionIds)) as { id: string; n: number }[];
+  return new Map(rows.map((r) => [r.id, r.n]));
+}
