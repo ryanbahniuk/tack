@@ -609,7 +609,11 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
   `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
-  Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
+  Atlassian MCP client (`src/projects/jira.ts`); `P` polls now, sharing the
+  background tick's in-flight guard so the two never overlap. `J` opens the session's
+  tickets; `t` lists every linked ticket across the sessions shown (open work first,
+  one row per session, with the session's state; `g` jumps to it). Done is green, so
+  it reads apart from merged-PR magenta.
   Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents + PR watcher), `archive`/`unarchive`, `delete` (kill pids, purge worktrees

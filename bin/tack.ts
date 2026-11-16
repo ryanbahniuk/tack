@@ -1252,7 +1252,7 @@ function ticketStatusLabel(status: string | null, category: string | null): stri
   const label = status ?? "?";
   switch (category) {
     case "done":
-      return pc.magenta(`✔ ${label}`);
+      return pc.green(`✔ ${label}`);
     case "indeterminate":
       return pc.yellow(`● ${label}`);
     case "new":
