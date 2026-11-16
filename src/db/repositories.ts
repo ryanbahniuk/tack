@@ -566,6 +566,12 @@ export function bumpAgentAttempt(id: string): number {
   return getAgent(id)?.attempt ?? 0;
 }
 
+/** Zeroes the transient-retry counter and clears the stale error, for a manual
+ * revive (`reconnect`) that starts the agent's retry budget over. */
+export function resetAgentAttempt(id: string): void {
+  getDb().prepare(`UPDATE agents SET attempt = 0, error = NULL, updated_at = ? WHERE id = ?`).run(nowIso(), id);
+}
+
 // ---------------------------------------------------------------------------
 // Shared context (versioned contract, body on disk)
 // ---------------------------------------------------------------------------

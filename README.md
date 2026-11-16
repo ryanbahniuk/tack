@@ -195,6 +195,7 @@ tack session stop <session>        # stop a session and its agents
 tack session archive <session>     # stop + hide, remembering interrupted agents
 tack session unarchive <session>   # restore + resume interrupted agents
 tack session resume <session>      # rejoin the supervisor
+tack session reconnect <session>   # after sleep/network loss: restart supervisor, revive dropped agents (--all parks in tmux)
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
@@ -257,7 +258,11 @@ Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d)
 The header shows the current layout, range, and live/working session counts.
 Working supervisors show a cyan spinner and elapsed turn time in their session row;
 a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
-in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `C`, `r`, `x`, `a`, `d`, `z`, `q`.
+in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `C`, `r`, `w`, `x`, `a`, `d`, `z`, `q`.
+Press `w` (wake) on a session that stopped working after the laptop slept or lost
+its connection: after `y`, Tack restarts its supervisor (even mid-turn or with a plan
+pending, which is re-presented), relaunches agents whose runner died or that failed
+with a connection error, restarts a dead PR watcher, and rejoins the supervisor.
 Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`).
 After a valid change, Tack reloads config and refreshes stale active sessions, parking
 supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume

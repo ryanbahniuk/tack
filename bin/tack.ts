@@ -53,6 +53,7 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { RECONNECT_MESSAGE, describeReconnect, reconnectAllSessions, reconnectSession } from "../src/session/reconnect";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
@@ -1041,6 +1042,44 @@ const sessionRefresh = defineCommand({
   },
 });
 
+/** Recovery after sleep or a network drop: restart the supervisor even on current
+ * code, revive agents the outage killed, restart a dead PR watcher, then rejoin. */
+const sessionReconnect = defineCommand({
+  meta: { name: "reconnect", description: "Recover a session after sleep or a lost connection; --all parks supervisors detached in tmux" },
+  args: {
+    session: { type: "positional", required: false, description: "Session id (or use --all)" },
+    all: { type: "boolean", description: "Reconnect every active session" },
+  },
+  async run({ args }) {
+    if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
+    const config = await loadConfig();
+    if (args.all) {
+      for (const result of await reconnectAllSessions(config)) {
+        const id = result.session.id;
+        if (result.status === "error") {
+          console.error(`${id}: ${result.error}`);
+          process.exitCode = 1;
+        } else {
+          console.log(`${id}: ${describeReconnect(result)}${result.parked ? " · parked in tmux" : ""}`);
+          if (result.failedAgents.length) process.exitCode = 1;
+        }
+      }
+      return;
+    }
+    const id = String(args.session);
+    requireSession(id);
+    const result = await reconnectSession(id, config);
+    console.log(pc.dim(`${id}: ${describeReconnect(result)}`));
+    const existing = getSession(id)!;
+    if (!existing.resume_ref) {
+      console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
+      return process.exit(1);
+    }
+    const { detached } = await superviseInteractive({ session: existing, prompt: RECONNECT_MESSAGE, resume: true, config });
+    reportInteractiveOutcome(id, detached);
+  },
+});
+
 const sessionResume = defineCommand({
   meta: {
     name: "resume",
@@ -1466,9 +1505,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
