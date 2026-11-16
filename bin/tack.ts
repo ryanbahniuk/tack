@@ -1559,13 +1559,8 @@ if (hidden === "__mcp") {
   }));
 } else if (hidden === "__await-plan") {
   // Fired by the interactive supervisor's PreToolUse hook on `request_plan_approval`
-  // when a plan is presented for approval. Two jobs: (1) mark the session as awaiting
-  // the human's decision (the tool's handler clears it via approveSessionPlan on
-  // acceptance); (2) emit an `ask` permission decision so claude shows OUR single
-  // "Proceed with implementation?" prompt — the tool's MCP server is otherwise
-  // auto-allowed, so without this the call would sail through unapproved. When the
-  // reason arg is present its JSON is the only thing on stdout (claude reads it as
-  // the hook decision); otherwise this stays silent.
+  // when a plan is presented. Mark the session as awaiting the elicitation
+  // decision. A reason argument can still emit an ask decision for other callers.
   const [, , , sessionId, reason] = process.argv;
   setSessionAwaitingInput(sessionId!, "plan");
   if (reason) {

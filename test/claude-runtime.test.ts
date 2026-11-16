@@ -68,14 +68,14 @@ describe("ClaudeRuntime.interactiveCommand auto-allow hook", () => {
     expect(ask!.hooks[0]!.command).toContain('"permissionDecision":"ask"');
   });
 
-  test("excludes the plan-approval tool, which keeps its own ask hook", () => {
+  test("allows the plan-approval tool and retains its marker hook", () => {
     const entries = preToolUse({
       planApprovalTool: PLAN_APPROVAL,
-      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x"] },
     });
     const re = new RegExp(allowEntry(entries).matcher);
     expect(re.test("mcp__tack-supervisor__check_agents")).toBe(true);
-    expect(re.test(PLAN_APPROVAL)).toBe(false);
+    expect(re.test(PLAN_APPROVAL)).toBe(true);
     expect(entries.find((e) => e.matcher === PLAN_APPROVAL)).toBeDefined();
   });
 
@@ -106,16 +106,16 @@ describe("ClaudeRuntime.interactiveCommand settings permissions", () => {
     const settings = settingsOf({
       approvalTools: [OPEN_PR],
       planApprovalTool: PLAN_APPROVAL,
-      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x"] },
     });
     expect(settings.permissions).toEqual({
       deny: ["Edit", "Write", "NotebookEdit", "ExitPlanMode", "EnterPlanMode"],
       allow: ["mcp__tack-supervisor"],
-      ask: [OPEN_PR, PLAN_APPROVAL],
+      ask: [OPEN_PR],
     });
     const entries = settings.hooks.PreToolUse as HookEntry[];
     const allow = new RegExp(allowEntry(entries).matcher);
-    expect(allow.test(PLAN_APPROVAL)).toBe(false);
+    expect(allow.test(PLAN_APPROVAL)).toBe(true);
     expect(allow.test(OPEN_PR)).toBe(false);
     expect(allow.test("mcp__tack-supervisor__sync_projects")).toBe(true);
     expect(entries.find((e) => e.matcher === PLAN_APPROVAL)?.hooks[0]?.command)
@@ -174,7 +174,7 @@ describe("ClaudeRuntime.interactiveCommand prompt hook", () => {
     const gates = {
       approvalTools: [OPEN_PR],
       planApprovalTool: PLAN_APPROVAL,
-      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x", "Proceed?"] },
+      onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x"] },
     };
     const settings = settingsOf({
       ...gates,

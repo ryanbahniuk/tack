@@ -7,6 +7,7 @@ import {
   addSharedContext,
   agentTouches,
   approveSessionPlan,
+  clearSessionAwaitingInput,
   getAgent,
   latestSharedContext,
   listAgents,
@@ -76,24 +77,53 @@ export const SUPERVISOR_APPROVAL_TOOLS = [`mcp__${SUPERVISOR_MCP_NAME}__open_pr`
 export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
 
 /**
- * Plain-language wording for the plan-approval prompt. The attended claude
- * supervisor presents its plan by calling `request_plan_approval`, which a
- * PreToolUse hook gates behind an `ask` decision carrying this text — so the human
- * sees one plain approve/decline question instead of Claude Code's native
- * ExitPlanMode menu (auto-mode vs manually-approve-edits vs keep planning). That
- * menu can't be relabelled or overridden by a hook, and its edit-mode fork is
- * meaningless here: the supervisor never edits, and the agents it spawns always run
- * headless in auto mode (see PERMISSION_ARGS in the claude adapter).
- */
-export const SUPERVISOR_PLAN_APPROVAL_PROMPT = "Proceed with implementation?";
-
-/**
  * Fully-qualified name of the plan-approval tool, handed to the runtime as
- * `planApprovalTool` so its PreToolUse hook (the human prompt) matches exactly this
+ * `planApprovalTool` so its awaiting-input hook matches exactly this
  * tool. Deliberately NOT in SUPERVISOR_APPROVAL_TOOLS: it gets its own hook, which
  * also marks the session as awaiting input.
  */
 export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__request_plan_approval`;
+
+/** Only a human's accepted elicitation can approve an unapproved plan. */
+export async function requestPlanApproval(
+  client: Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">,
+  sessionId: string,
+  summary: string,
+) {
+  const approved = { approved: true, note: "Plan approved — proceed to spawn agents." };
+  if (getSession(sessionId)?.plan_approved_at) {
+    clearSessionAwaitingInput(sessionId);
+    return approved;
+  }
+  const unavailable = { approved: false, note: "Approval prompt unavailable — ask the human to type /approve (or run `tack session approve <id>`) to approve, or to describe changes in chat." };
+  try {
+    if (!client.getClientCapabilities()?.elicitation) return unavailable;
+    const result = await client.elicitInput({
+      message: `Plan for approval:\n\n${summary}`,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          decision: { type: "string", enum: ["approve", "keep_planning"], enumNames: ["Approve — proceed with implementation", "Keep planning — revise the plan"] },
+          feedback: { type: "string", title: "What should change?" },
+        },
+        required: ["decision"],
+      },
+    });
+    if (result.action === "accept" && result.content?.decision === "approve") {
+      approveSessionPlan(sessionId);
+      return approved;
+    }
+    if (result.action === "accept" && result.content?.decision === "keep_planning") {
+      return { approved: false, keepPlanning: true, feedback: typeof result.content.feedback === "string" ? result.content.feedback : "", note: "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, ask clarifying questions in chat if the feedback is empty, then call request_plan_approval again." };
+    }
+    return { approved: false, note: "Approval cancelled — ask the human in chat what to change, then call request_plan_approval again." };
+  } catch {
+    return unavailable;
+  } finally {
+    // Approval clears the marker itself; clearing again is harmless on every path.
+    clearSessionAwaitingInput(sessionId);
+  }
+}
 
 /**
  * The supervisor's tool server. The supervisor is itself a runtime session
@@ -234,9 +264,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "request_plan_approval",
     {
       description:
-        "Present your plan to the human for approval. Calling this shows them an approve/decline prompt " +
-        "with your summary; it returns once they approve. If they decline, revise the plan per their " +
-        "feedback and call this again. `spawn_agent` is blocked until the plan is approved.",
+        "Present your plan in a form where the human can approve or keep planning with feedback. " +
+        "On keep planning, revise the plan and call this again; on cancellation, ask what to change. " +
+        "`spawn_agent` is blocked until the plan is approved.",
       inputSchema: {
         summary: z
           .string()
@@ -246,14 +276,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           ),
       },
     },
-    // The `summary` arg is for the human (it's shown with the tool call they're asked
-    // to approve); the handler doesn't need it. It only executes after the human
-    // accepts the PreToolUse `ask` prompt (a decline never reaches it), so reaching it
-    // is an un-forgeable approval signal the model can't self-trigger. Sessions with no such hook (background,
-    // codex) are already approved up front, so this is then a harmless no-op.
-    async () => {
-      approveSessionPlan(sessionId);
-      return text({ approved: true, note: "Plan approved — proceed to spawn agents." });
+    async ({ summary }) => {
+      return text(await requestPlanApproval(server.server, sessionId, summary));
     },
   );
 
