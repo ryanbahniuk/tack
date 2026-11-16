@@ -867,7 +867,7 @@ an explicit tool model overrides that choice.
 After workers finish and conflicts are reconciled, the supervisor selects relevant
 personas per unit with `list_personas` and `review_agent`, waits for reports, and
 routes blocker/major findings to the author with `continue_agent`. It may re-review
-and briefly records verdicts in the PR body. `open_pr` requires a finished review with a report,
+and briefly records verdicts in the PR body. `open_pr` requires normal workers to have a finished review with a report,
 or `skipReview` with a reason when no persona applies; the reason is added to the PR body.
 No personas means no added review step.
 

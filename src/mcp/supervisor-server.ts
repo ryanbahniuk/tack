@@ -449,7 +449,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
         "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. " +
-        "When personas are configured, a finished persona review is required unless no persona applies and skipReview gives a reason.",
+        "For normal workers with personas configured, a finished persona review is required unless no persona applies and skipReview gives a reason.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),
@@ -471,10 +471,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const proj = config.projects.find((p) => p.name === a!.project_name);
       if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
       if (a.kind !== "manual" && !a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
-      const reviewed = config.personas?.length && listAgents(sessionId).some((review) =>
+      const gated = config.personas.length > 0 && !a.kind;
+      const reviewed = gated && listAgents(sessionId).some((review) =>
         review.kind === "review" && review.reviews_agent_id === agentId && review.status === "done" && review.review_ref);
       const skipReason = skipReview?.trim();
-      if (config.personas?.length && !reviewed && !skipReason) {
+      if (gated && !reviewed && !skipReason) {
         throw new Error(`Agent ${agentId} has no finished persona review. Run review_agent with a persona whose whenToUse matches this change, then wait_for_agents — or pass skipReview with a reason if no persona applies.`);
       }
       if (a.kind === "manual") {
@@ -504,7 +505,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         localBranch: branch,
         prBranch: sessionPrBranch(sessionId, slug ?? title),
         title,
-        body: config.personas?.length && !reviewed && skipReason ? `${body}\n\n_Persona review skipped: ${skipReason}_` : body,
+        body: gated && !reviewed && skipReason ? `${body}\n\n_Persona review skipped: ${skipReason}_` : body,
         base,
         draft: asDraft,
       });

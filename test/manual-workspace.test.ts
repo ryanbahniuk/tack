@@ -128,7 +128,7 @@ describe("supervisor tools on manual workspaces", () => {
     const { session, config } = sessionFixture();
     const m = createManualWorkspace(config, session.id, "app");
     const { call, open } = await supervisorTools(session.id, config);
-    await expect(call("open_pr", { agentId: m.id, title: "Nothing", body: "x", skipReview: "manual workspace" })).rejects.toThrow("made no changes");
+    await expect(call("open_pr", { agentId: m.id, title: "Nothing", body: "x" })).rejects.toThrow("made no changes");
     expect(open).not.toHaveBeenCalled();
     expect(getAgent(m.id)!.diff_ref).toBeNull();
   });
@@ -139,9 +139,11 @@ describe("supervisor tools on manual workspaces", () => {
     writeFileSync(join(m.worktree_path!, "shared.txt"), "human edit\n");
     writeFileSync(join(m.worktree_path!, "new.txt"), "brand new\n");
     const { call, open } = await supervisorTools(session.id, config);
-    expect(await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x", skipReview: "manual workspace" }))
+    expect(await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x" }))
       .toMatchObject({ ok: true, number: 9 });
-    expect(open.mock.calls[0]![0]).toMatchObject({ localBranch: m.branch, repoPath: repo });
+    expect(open.mock.calls[0]![0]).toMatchObject({ localBranch: m.branch, repoPath: repo, body: "x" });
+    await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x", skipReview: "ignored" });
+    expect(open.mock.calls[1]![0].body).toBe("x");
     expect(git(["status", "--porcelain"], m.worktree_path!)).toBe("");
     expect(git(["show", "--name-only", "--format=%s", "HEAD"], m.worktree_path!).split("\n"))
       .toEqual([`Tack: commit manual edits in ${m.id}`, "", "new.txt", "shared.txt"]);

@@ -183,7 +183,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
       "   by matching each persona's `whenToUse` against the change; do not run every persona every time.",
       "   Call `review_agent`, then `wait_for_agents` and `read_agent_output`. Route blocker/major",
       "   findings back via `continue_agent` on the author; optionally re-review after fixes.",
-      "   Every unit needs at least one persona review, or `open_pr` with `skipReview` and a reason",
+      "   Every normal worker unit needs a persona review, or `open_pr` with `skipReview` and a reason",
       "   if no persona applies; `open_pr` enforces this gate. Note verdicts in the PR body.",
     ] : []),
     ...(config.autoOpenPrs
