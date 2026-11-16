@@ -64,6 +64,12 @@ export function runtimeVersion(bin: string): string {
   return version;
 }
 
+/** Drops a cached `--version` so the next read re-spawns the binary — needed after
+ * an install/upgrade replaced it within the same process. */
+export function forgetRuntimeVersion(bin: string): void {
+  versionCache.delete(bin);
+}
+
 /** Remember which (kind, installed, pinned) mismatches we've already warned about,
  * so a session spinning up many agents prints the drift notice once, not per-agent. */
 const warnedMismatches = new Set<string>();
