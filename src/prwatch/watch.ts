@@ -701,7 +701,10 @@ export async function postFix(
       markPrFeedbackHandled(f.id, { decision: f.decision === "pending" ? "declined" : undefined });
       continue;
     }
-    if (!config.prWatch.reply) {
+    // Bots don't read replies; a "nothing to do here" answer is pure noise. This
+    // backstops summary-like bot posts that `isBotPrSummary` didn't filter at ingest.
+    // reply_ref stays set, so readiness still counts the row as an explicit verdict.
+    if (!config.prWatch.reply || (f.decision === "not_applicable" && f.author_is_bot === 1)) {
       markPrFeedbackHandled(f.id);
       continue;
     }
