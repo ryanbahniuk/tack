@@ -61,6 +61,8 @@ export interface RunOptions {
   disallowShell?: boolean;
   /** Extra directories the run may read beyond its cwd (project roots, allowlist). */
   addDirs?: string[];
+  /** Tack-owned directories the runtime may pre-record workspace trust for; never user-configured directories. */
+  trustedDirs?: string[];
   /**
    * Fully-qualified tool names (e.g. `mcp__tack-supervisor__open_pr`) that must
    * prompt the human on every call even when their MCP server is otherwise

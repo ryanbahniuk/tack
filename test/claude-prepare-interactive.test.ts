@@ -57,6 +57,23 @@ describe("ClaudeRuntime.prepareInteractive", () => {
     expect(readJson(join(home, ".claude.json")).projects[cwd].hasTrustDialogAccepted).toBe(true);
   });
 
+  test("trusts only explicitly trusted directories and preserves existing config", () => {
+    const home = tmp("tack-home-");
+    const cwd = tmp("tack-cwd-");
+    const trusted = tmp("tack-trusted-");
+    const untrusted = tmp("tack-untrusted-");
+    const file = join(home, ".claude.json");
+    writeFileSync(file, JSON.stringify({ other: "keep", projects: {
+      [cwd]: { existing: 1 }, [trusted]: { existing: 2 }, [untrusted]: { existing: 3 },
+    } }));
+    prepare(home, { cwd, addDirs: [trusted, untrusted], trustedDirs: [trusted] });
+    expect(readJson(file)).toEqual({ other: "keep", projects: {
+      [cwd]: { existing: 1, hasTrustDialogAccepted: true },
+      [trusted]: { existing: 2, hasTrustDialogAccepted: true },
+      [untrusted]: { existing: 3 },
+    } });
+  });
+
   test("allows every mounted server, deduped", () => {
     const cwd = tmp("tack-cwd-");
     prepare(tmp("tack-home-"), {
@@ -121,7 +138,7 @@ describe("ClaudeRuntime.prepareInteractive", () => {
     const home = tmp("tack-home-");
     const cwd = tmp("tack-cwd-");
     writeFileSync(join(home, ".claude.json"), "{ corrupt");
-    prepare(home, { cwd });
+    prepare(home, { cwd, trustedDirs: [tmp("tack-trusted-")] });
     expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe("{ corrupt");
     expect(readJson(localSettings(cwd)).permissions.allow).toEqual(["mcp__tack-supervisor"]);
   });
