@@ -17,32 +17,20 @@ and [AGENTS.md](./AGENTS.md) for the contributor guide.
 
 ## Quickstart
 
+Copy and paste from top to bottom. It ends with your first session.
+
 ### 1. Prerequisites
 
 ```bash
-brew install oven-sh/bun/bun gh tmux uv
+brew install oven-sh/bun/bun gh tmux
 ```
 
 | Tool | Required? | What it enables |
 | --- | --- | --- |
-| [Bun](https://bun.sh) | **Required** | Runs Tack (no build step) and installs pinned runtimes. |
-| `claude` (Claude Code) | **Required** for the default supervisor and summary roles | The supervisor and Claude-backed agents. |
-| `codex` (Codex CLI) | Required for the starter's default `agent` role | Codex-backed agents. If you skip it, point `agent` at a Claude model (see below). |
+| [Bun](https://bun.sh) | **Required** | Runs Tack (no build step) and installs the runtimes. |
+| `claude` / `codex` | Installed by Tack (step 3) | The supervisor (Claude) and agents (Codex by default). |
 | [`gh`](https://cli.github.com) | Strongly recommended | Opening PRs, discovering them and PR watch. Without it, PR status never updates. |
-| `tmux` | Recommended | Detaching from a live supervisor and reattaching later, plus `prefix N` / `prefix B`. |
-| `uv` (`uvx`) | Optional | Mounting the Atlassian MCP server for the supervisor ([Chime setup](#recommended-chime-setup)). |
-
-Install and log in to the runtimes and GitHub. Tack uses your existing logins and
-never manages credentials itself.
-
-```bash
-# Skip any runtime you already have on PATH
-bun add -g @anthropic-ai/claude-code @openai/codex
-
-claude          # log in once, then exit
-codex login     # ChatGPT login or API key
-gh auth login
-```
+| `tmux` | Recommended | Detaching from a live supervisor and reattaching later. |
 
 ### 2. Install Tack
 
@@ -50,45 +38,58 @@ gh auth login
 git clone git@github.com:ryanbahniuk/tack.git
 cd tack
 bun install
-bun link        # puts `tack` on your PATH (the rest of this README assumes it)
+bun link        # puts `tack` on your PATH
 ```
 
-### 3. Initialise
+### 3. Install the runtimes
 
 ```bash
-tack init
+tack runtimes install
 ```
 
-`tack init` writes a starter config to `~/.tack/config.ts` (set `TACK_HOME` to use
-another state root) and installs any pinned runtime versions. If you run it inside
-a git repo, it also registers that repo as a project and describes it with the
-summary model.
+This installs the latest Claude Code and Codex CLIs with bun and syncs Tack's
+models with them. It also writes a starter config to `~/.tack/config.ts` (set
+`TACK_HOME` to use another state root).
 
-### 4. Add projects, sync models and check your setup
+> **No Codex?** Run `tack runtimes install claude`, then `tack roles set agent opus-5`
+> so agents run on Claude.
+
+### 4. Log in
 
 ```bash
-tack projects add ~/Code/my-app   # one repo; auto-writes description + metadata
-tack projects add --all           # or: every git repo in the current directory
+claude             # type /login, then exit
+codex login        # ChatGPT login or API key
+gh auth login
 
-tack models sync                  # add models your logins offer, prune the rest, fill codex pricing
-tack runtimes doctor              # binaries, version pins, auth and role models in one check
+tack models sync   # match the models to what your logins offer
 ```
 
-> **No Codex?** Run `tack roles set agent opus-5` so agents run on Claude.
+Tack uses your existing logins and never manages credentials itself.
 
-### 5. First run: one cheap agent
+### 5. Add projects
 
 ```bash
-tack agent my-app "Add a short CONTRIBUTING note about running tests"
+cd ~/Code/my-app && tack init     # registers the repo you're in
+tack projects add ~/Code/other    # add more by path
+tack projects add --all           # or every git repo in the current directory
 ```
 
-This runs one agent directly (no supervisor) in its own worktree and streams its
-output. It's the cheapest way to confirm the runtime pipeline works.
+The summary model writes each project's description for you.
 
-### 6. A real session
+### 6. Check your setup
 
 ```bash
-tack                 # same as `tack session create`
+tack runtimes doctor   # binaries, version pins, auth and role models in one check
+```
+
+### 7. Your first session
+
+Skim [Before your first session](#before-your-first-session) first: sessions spend
+real money and open PRs.
+
+```bash
+tack                                   # same as `tack session create`
+tack -m "Add a CONTRIBUTING note"      # or pass the first message up front
 ```
 
 In another terminal:
@@ -100,7 +101,7 @@ tack dashboard
 **What to expect:**
 
 1. You land in the supervisor's own interactive chat (Claude Code or Codex). Describe
-   the problem, or pass it up front with `tack -m "…"`.
+   the problem, unless you passed it with `-m`.
 2. The supervisor reads Tack-owned snapshots of the relevant repos and proposes a
    plan. An **approval prompt** appears. If it doesn't, type `/approve` in the chat
    or run `tack session approve <session>`.
@@ -164,7 +165,8 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
   read-only posture, including any write tools the server exposes. Only mount
   servers you're comfortable with it calling.
 - **Tickets:** with `jira` set, the supervisor links the tickets a session works
-  on. `tack dashboard` refreshes their status (press `J` to open them) and
+  on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now,
+  `J` opens a session's tickets, `t` lists every session's tickets, archived included) and
   `tack session show` lists them. `cloudId` is optional and falls back to the
   server's `CONFLUENCE_CLOUD_ID`.
 
@@ -238,7 +240,9 @@ with work on the left and **Insights** on the right.
 | `m` | View pending amendments (read-only) |
 | `O` | Open the session's PRs in the browser |
 | `J` | Open the session's Jira tickets in the browser |
+| `t` | Tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `esc`/`q` goes back |
 | `p` | Poll PRs now |
+| `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
 | `r` | Refresh the session onto current Tack code (asks first) |
@@ -427,14 +431,14 @@ tack projects remove <name|path>
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `name` | yes | Used by `tack agent <project>` and in the dashboard. |
+| `name` | yes | Shown in the dashboard and used by the supervisor. |
 | `path` | yes | `~` is expanded. |
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
 
 `projects add` and `projects refresh` have the summary model write `description`
-and `metadata` for you. `tack agent` and `tack session create` also auto-register
-the current git repo if it isn't configured yet.
+and `metadata` for you. `tack session create` also auto-registers the current git
+repo if it isn't configured yet.
 
 ### Models and roles
 
@@ -482,8 +486,8 @@ tack roles set agent opus-5               # back to a single model
 ```bash
 tack runtimes                    # list status (same as `tack runtimes list`; alias `runtime`)
 tack runtimes doctor             # resolve binaries, check pins + drift, check auth, check role models
+tack runtimes install [runtime]  # install claude + codex (or one), then sync models (--no-models skips)
 tack runtimes pin claude 2.1.261 # write a version pin
-tack runtimes install claude     # install a pinned version (or --all)
 tack runtimes sync [runtime]     # re-pin pinned runtimes to what's installed now (adopt drift)
 ```
 
@@ -496,8 +500,8 @@ runtimes: {
 
 | Field | Notes |
 | --- | --- |
-| `bin` | A specific executable. Defaults to the runtime name on `PATH`. Tack never installs over a `bin` you set. |
-| `version` | Checked against `<bin> --version` before runs. A pinned-but-missing version is installed into `~/.tack/runtimes/` by `tack init` or `tack runtimes install`. |
+| `bin` | A specific executable. Defaults to the runtime name on `PATH`. Tack never installs over a `bin` you set; `runtimes install` only verifies it. |
+| `version` | Checked against `<bin> --version` before runs. Without a pin, `tack runtimes install` installs or upgrades the latest release globally (`bun add -g`). With one, it installs that version into `~/.tack/runtimes/` instead, as `tack init` does. |
 | `versionPolicy` | What a mismatch does: `"warn"` (default) logs once and continues, so a self-updating claude never blocks; `"strict"` fails the run; `"off"` skips the check. |
 
 ### Personas
@@ -509,125 +513,62 @@ personas: [
 ],
 ```
 
-PRs open as drafts by default (`draftPrs: true`), even when `open_pr` requests a
-ready PR. Set `draftPrs: false` to honor the tool's `draft` argument. With
-`prWatch.enabled` and `prWatch.autoReady` (both default true), the watcher promotes
-a draft once it is mergeable, no fix is busy, all feedback is handled with explicit
-replies, and CI on the current head is settled with no failures. Clean PRs qualify
-without a fix run; zero checks counts as green. Failed check fetches defer promotion.
-Tack promotes each PR only once, respecting a human's later move back to draft.
-Set `prWatch.autoReady: false` to keep readiness manual.
+`name` must be unique, and `description` holds the reviewer's instructions. `model`
+is optional (a key or a list) and defaults to `roles.agent`. Reviews prefer a model
+different from the author's when one is available.
 
-PR-watch handles review feedback, merge conflicts and failing CI checks on the PR
-head. CI fixes wait for the suite to settle and include bounded failed-job logs for
-GitHub Actions. Agents reproduce failures locally and fix PR code/tests; unrelated
-flaky or infrastructure failures are reported without changes. Set `prWatch.fixCi: false`
-to disable CI fixes (enabled by default); draft readiness still checks CI.
+### PR watch and PR settings
 
-PR-watch answers inline review feedback inside its review thread. Replies to
-conversation comments and review summaries are combined into one top-level comment
-per fix run, linking and quoting each original and citing pushed fixes.
-CI replies join that batch as links to failing checks without quoting logs. Human authors
-are mentioned at most once; bots are never mentioned. Set `prWatch.reply: false` to
-disable replies.
+| Key | Default | Notes |
+| --- | --- | --- |
+| `prWatch.enabled` | `true` | `false` means a watcher never starts. |
+| `prWatch.intervalSeconds` | `300` | Poll cadence for the watcher and the dashboard's PR refresh (min 60). |
+| `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
+| `prWatch.autoPush` | `true` | Push fix commits (never force). |
+| `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
+| `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
+| `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
+| `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |
+| `autoOpenPrs` | `true` | See [Before your first session](#before-your-first-session). |
+| `draftPrs` | `true` | Force drafts. |
 
-### Edit an agent's worktree
+### `readAllowlist`, `supervisorMcpServers`, `jira`
 
-Run `tack session edit <session> [agent]` to open a worktree in `$VISUAL`,
-then `$EDITOR`, falling back to `vim` (or `vi` when vim isn't installed). Omit the
-agent id when only one worktree exists. Pending or running agents require `--force`;
-`--print-path` prints just the path for use with other tools. After editing, Tack
-reports the branch and Git status with a push hint when needed. It never commits or
-pushes automatically.
+- `readAllowlist: ["~/Code/shared-docs"]` gives the supervisor extra read-only
+  directories.
+- `supervisorMcpServers` entries take `{ name, command, args?, env? }`. These
+  servers are mounted for the supervisor only; agents don't get them.
+- `jira` takes `{ mcpServer, siteUrl, cloudId? }`. `mcpServer` names one of
+  `supervisorMcpServers`, and `siteUrl` builds `<siteUrl>/browse/<KEY>` links.
 
-### Manual workspaces
+See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 
-Run `tack session edit <session> --new [project]` to get a clean worktree of your
-own for the session — a fresh `tack/<session>/<id>` branch forked from the
-up-to-date remote default branch, separate from every agent — and land in your
-editor rooted at it. Omit the project when it's unambiguous (the only configured
-project, or the only one the session's agents use); otherwise Tack lists the
-candidates. `--new --print-path` creates the workspace and prints its path without
-opening an editor. Reopen it later like any worktree: `tack session edit <session> <id>`.
+---
 
-A manual workspace is a row with kind `manual`: it never runs, resumes or continues
-as an agent conversation, and costs nothing. The supervisor sees it in
-`check_agents`, includes it in `check_conflicts`, and opens it as a PR with `open_pr`
-(committing your leftover edits) when you ask, or at wrap-up when it holds changes.
+## Troubleshooting
 
-In `tack dashboard`, press `v` to open the agents picker, then `e` to edit the
-highlighted agent's worktree, or `n` to create a manual workspace (choosing a
-project first when several qualify; the session's projects are listed first).
-Editing a pending or running agent requires `y` confirmation; manual workspaces
-open directly. The picker shows worktree paths so you can see which tree will open.
+| Symptom | Fix |
+| --- | --- |
+| No plan approval prompt appears | Type `/approve` in the supervisor chat, or run `tack session approve <session>`. |
+| Agent fails with `model_not_found`, or doctor warns that a model isn't offered | `tack models sync` (re-pins roles to models your login offers). |
+| Agents fail because `codex` isn't installed | `tack runtimes install codex` and `codex login`, or `tack roles set agent opus-5`. |
+| A runtime is outdated or `not found` | `tack runtimes install [runtime]` installs or upgrades it to the latest. A pinned runtime gets its pin. |
+| `runtimes install` warns that PATH resolves elsewhere | Another copy (e.g. a native installer's `~/.local/bin/claude`) shadows bun's. Put bun's global bin (`bun pm bin -g`) earlier on PATH, or remove the other copy. |
+| Version drift warning | `tack runtimes doctor` to see it; `tack runtimes sync` to adopt the installed version, or `tack runtimes install <runtime>` to restore the pin. |
+| `mismatch` / run stops on version | That runtime has `versionPolicy: "strict"`. Sync, install the pin or relax the policy. |
+| Auth failures mid-run | `tack runtimes doctor` shows auth state; run `claude` (then `/login`) or `codex login`, then `tack models sync`. |
+| PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
+| PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
+| Session seems stuck or its supervisor exited | `tack session resume <session>`. |
+| Session or agents died after the laptop slept or the network dropped | `tack session reconnect <session>` (or `--all`), or dashboard `w`. |
+| `stale` badge after updating Tack | `tack session refresh <session>` (or `--all`), or dashboard `r`. Add `--force` if it's mid-turn or a plan is pending. |
+| `jira unavailable` in the dashboard | Check that the `supervisorMcpServers` entry runs (`uvx` on PATH) and its OAuth cache is seeded. |
+| `J` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
+| `Config has errors` | `tack config edit`; the message names the failing key. |
+| Detached and lost the supervisor | `tack session list`, then `tack session resume <session>`. |
+| Editor won't open | Set `$VISUAL` or `$EDITOR`. |
 
-`tack dashboard` defaults to a split view on terminals at least 140 columns wide:
-work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
-full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
-Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
-The header shows the current layout, range, and live/working session counts.
-Working supervisors show a cyan spinner and elapsed turn time in their session row;
-a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
-in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J` (open the session's tickets), `t`, `P`, `c`, `C`, `r`, `w`, `x`, `a`, `d`, `z`, `q`.
-Press `t` for every Jira ticket linked to any session, archived ones included
-whatever `z` says (open work first, newest link first, then done), with each
-ticket's session and its state. `f` cycles the status filter (all, open, in progress,
-to do, done), `a` hides or shows archived sessions, and `/` filters by ticket key or
-title and session id or title (`enter` keeps it, `esc` clears it). `enter/o` opens the
-ticket, `g` jumps to its session (showing archived sessions if needed), `esc/q` goes
-back. `P` polls Jira now instead of waiting for the 2-minute refresh: from the list it
-polls the sessions shown, from the tickets view the sessions of the filtered tickets.
-Press `w` (wake) on a session that stopped working after the laptop slept or lost
-its connection: after `y`, Tack restarts its supervisor (even mid-turn or with a plan
-pending, which is re-presented), relaunches agents whose runner died or that failed
-with a connection error, restarts a dead PR watcher, and parks the supervisor in
-tmux while the dashboard stays open; `enter` attaches. Without tmux the supervisor
-stays stopped until you resume it.
-Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`).
-After a valid change, Tack reloads config and refreshes stale active sessions, parking
-supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume
-or `r`; invalid config keeps the previous dashboard config and leaves sessions running.
-Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
-immediate; unarchiving asks for confirmation and resumes only the agents archive
-interrupted. Agents with a runtime session handle continue their conversation;
-others start with their original prompt in the same worktree. A plain `x`/`stop`
-does not mark agents for restoration. Unarchive leaves the supervisor for you to
-rejoin with `enter/o` or `tack session resume <session>`.
-
-Insights includes archived sessions regardless of the list's `z` filter. It shows
-sessions, agents, PRs opened/merged, tickets linked/done, tokens, cost, changes against the
-previous equal-length period, top repos, and a contribution heatmap. Full-screen
-Insights adds a per-repo table, sorted by agent count. Daily/weekly/monthly buckets
-adapt to range and width; dates use local time. PR creation means first linked to
-a session, and ticket completion is approximated by its last status refresh.
-Costs include supervisor and agent spend; repo costs include agents only.
-A Models table shows sessions, agents (including PR-fix agents), tokens and cost
-per stored model handle; missing models appear as "unknown". Tokens include input,
-output, cache reads and cache writes for supervisors and agents. Usage and cost
-follow each row's creation date. Historical supervisor tokens remain zero; new
-headless usage overwrites with the runtime's latest run figure, like cost, while
-interactive transcript recovery replaces both with cumulative figures. Tokens
-and cost do not count toward the contributions heatmap. The table appears in
-split and full-screen views when space permits.
-Time charts use block heights (▁▂▃▄▅▆▇█, · for zero), shared scales for paired
-series, full-word labels, totals and peaks when space allows, and dated axes.
-Short series stretch across the chart. Heatmap shades (░▒▓█) have weekday/date
-labels and a separate intensity legend; blank cells are outside the range.
-Aligned KPIs show signed changes vs the previous period without relying on color.
-Charts refresh every five seconds when their data changes; an idle dashboard does
-not repaint.
-
-Run `tack --help` (or `tack <command> --help`) for the full command list.
-
-With tmux installed, interactive supervisors stay live when you detach with
-`prefix d`; use `tack session resume <session>` to reattach. Press `prefix N`
-(capital N) to park the current supervisor and open a new Tack session with the
-normal create lifecycle. Press `prefix B` (capital B) to park it and report a bug
-in Tack itself in a new session, with a bounded digest of the source session.
-Enter an optional description inline, or use
-`tack session create --tack-bug-from <sessionId> -m "what went wrong"` from any terminal.
-Bug reports always open interactively, including with `-b`. When nested inside your
-own tmux, press the prefix twice before `d`, `N`, or `B`. The status bar shows the keys for your current attach context.
+---
 
 ## Development
 
@@ -638,10 +579,12 @@ bun test                          # unit tests under test/
 bun run ./bin/tack.ts --help      # run from source without bun link
 
 # Always use a throwaway state root so you never touch a real ~/.tack:
-TACK_HOME=$(mktemp -d)/tack bun run ./bin/tack.ts init
+export TACK_HOME=$(mktemp -d)/tack
+bun run ./bin/tack.ts init
 ```
 
-Live runs cost money and change repos, so validate with `tack agent <project>
-"<small task>"` before `tack session create`. See [SPEC.md](./SPEC.md) for the
+Live runs cost money and change repos. Validate a change with a small session
+first, such as `bun run ./bin/tack.ts -m "<small task>"` against that throwaway
+`TACK_HOME`. See [SPEC.md](./SPEC.md) for the
 design and [AGENTS.md](./AGENTS.md) for conventions and extension points (adding a
 model, runtime, persona or supervisor tool).
