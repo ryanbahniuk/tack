@@ -393,6 +393,75 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
     }
   });
 
+  test("cap counts runs, not agent rows: reusing one fix agent still spends the budget", async () => {
+    const detached = await import("../src/agent/detached");
+    const worktrees = await import("../src/worktree/worktree");
+    const { ConfigSchema } = await import("../src/config/schema");
+    const { setAgentResumeRef, getSession, listPrFixAgents, listPrFixRuns } = await import("../src/db");
+    const { spawnPrFixAgent } = await import("../src/prwatch/watch");
+    const prId = freshPr();
+    const sessionId = (getDb().prepare(`SELECT session_id FROM session_prs WHERE id = ?`).get(prId) as { session_id: string }).session_id;
+    const model = { key: "test", id: "test", name: "Test", runtime: "codex", provider: "test", version: "1" } as const;
+    const project = { name: "app", path: "/tmp", description: "Test" };
+    const cfg = ConfigSchema.parse({ models: [model], projects: [project], roles: { agent: "test", supervisor: "test", summary: "test" } }) as unknown as TackConfig;
+    cfg.roles = { agent: ["test"], supervisor: ["test"], summary: ["test"] };
+    cfg.prWatch.maxFixRunsPerDay = 3;
+    const spies = [
+      spyOn(detached, "spawnAgentRunner").mockReturnValue(123),
+      spyOn(worktrees, "fastForwardPrWorktree").mockResolvedValue({ base: "head" }),
+    ];
+    try {
+      const opts = { origin: "auto", conflict: true, baseBranch: "main", title: "PR" } as const;
+      const runs: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        expect(prFixCapReached(prId, cfg)).toEqual({ reached: false, runs: i });
+        const pr = listSessionPrs(sessionId)[0]!;
+        const { agent, lineage } = await spawnPrFixAgent(getSession(sessionId)!, pr, project, cfg, opts);
+        runs.push(lineage);
+        setAgentWorktree(agent.id, "/tmp", "tack/fix");
+        setAgentResumeRef(agent.id, `conversation-${i}`);
+        setAgentStatus(agent.id, "done");
+        markAgentPostFixed(agent.id, "pushed", `sha-${i}`);
+      }
+      expect(runs).toEqual(["fresh", "reused", "reused"]);
+      const fixes = listPrFixAgents(prId);
+      expect(fixes).toHaveLength(1);
+      expect(listPrFixRuns(fixes[0]!.id).map((r) => r.pushed_sha)).toEqual(["sha-0", "sha-1", "sha-2"]);
+      expect(prFixCapReached(prId, cfg)).toEqual({ reached: true, runs: 3 });
+      // Supervisor runs on the reused row stay exempt.
+      await spawnPrFixAgent(getSession(sessionId)!, listSessionPrs(sessionId)[0]!, project, cfg, { ...opts, origin: "supervisor" });
+      expect(listPrFixAgents(prId)).toHaveLength(1);
+      expect(countPrFixRunsSince(prId, "2000-01-01T00:00:00.000Z")).toBe(3);
+      expect(listPrFixRuns(fixes[0]!.id)).toHaveLength(4);
+    } finally {
+      for (const spy of spies.reverse()) spy.mockRestore();
+    }
+  });
+
+  test("v19 backfills one run per existing fix agent and is idempotent", () => {
+    const db = new Database(":memory:");
+    try {
+      migrate(db);
+      db.exec(`DROP TABLE pr_fix_runs; DELETE FROM _migrations WHERE version >= 19;
+        INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
+        INSERT INTO agents (id, session_id, project_name, status, kind, session_pr_id, fix_origin, post_fixed_at, fix_outcome, fix_pushed_sha, created_at, updated_at)
+          VALUES ('f', 's', 'app', 'done', 'pr_fix', 'p', 'auto', 'later', 'pushed', 'sha', 'then', 'then'),
+                 ('g', 's', 'app', 'running', 'pr_fix', 'p', NULL, NULL, NULL, NULL, 'now', 'now'),
+                 ('w', 's', 'app', 'done', NULL, NULL, NULL, NULL, NULL, NULL, 'then', 'then');`);
+      migrate(db);
+      const rows = () => db.query("SELECT agent_id, session_pr_id, origin, created_at, finished_at, outcome, pushed_sha FROM pr_fix_runs ORDER BY agent_id").all();
+      expect(rows()).toEqual([
+        { agent_id: "f", session_pr_id: "p", origin: "auto", created_at: "then", finished_at: "later", outcome: "pushed", pushed_sha: "sha" },
+        { agent_id: "g", session_pr_id: "p", origin: null, created_at: "now", finished_at: null, outcome: null, pushed_sha: null },
+      ]);
+      db.exec("DELETE FROM _migrations WHERE version >= 19");
+      migrate(db);
+      expect(rows()).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
   test("cap counts fix runs in the last 24h, failures included", () => {
     const pr = freshPr();
     expect(prFixCapReached(pr, config(2))).toEqual({ reached: false, runs: 0 });
@@ -403,7 +472,7 @@ describe("fix-run guards (prFixBusy / prFixCapReached)", () => {
 
     // A run older than the rolling window no longer counts.
     getDb()
-      .prepare(`UPDATE agents SET created_at = ? WHERE id = ?`)
+      .prepare(`UPDATE pr_fix_runs SET created_at = ? WHERE agent_id = ?`)
       .run(new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), old.id);
     expect(prFixCapReached(pr, config(2))).toEqual({ reached: false, runs: 1 });
     expect(prFixCapReached(pr, config(1))).toEqual({ reached: true, runs: 1 });

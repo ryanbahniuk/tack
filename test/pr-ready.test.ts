@@ -94,7 +94,7 @@ describe("PR readiness config and persistence", () => {
       migrate(db);
       db.exec(`ALTER TABLE session_prs DROP COLUMN ready_promoted_at;
         DELETE FROM _migrations WHERE version = 16; DELETE FROM _migrations WHERE version = 17;
-        ALTER TABLE sessions DROP COLUMN summary_ref; ALTER TABLE sessions DROP COLUMN summary_at; ALTER TABLE session_prs DROP COLUMN body_ref; DELETE FROM _migrations WHERE version = 18;
+        ALTER TABLE sessions DROP COLUMN summary_ref; ALTER TABLE sessions DROP COLUMN summary_at; ALTER TABLE session_prs DROP COLUMN body_ref; DELETE FROM _migrations WHERE version >= 18;
         ALTER TABLE sessions DROP COLUMN pr_fix_enabled;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, persona, created_at, updated_at)

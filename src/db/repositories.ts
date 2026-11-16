@@ -458,6 +458,8 @@ export function createAgent(input: {
     now,
     now,
   );
+  // A new fix row is its first run; reused rows record later runs via `insertPrFixRun`.
+  if (input.kind === "pr_fix") insertPrFixRun(id, input.sessionPrId ?? null, input.fixOrigin ?? null, now);
   return getAgent(id)!;
 }
 
@@ -851,7 +853,8 @@ export function setAgentFixOutcome(id: string, outcome: AgentFixOutcome, sha?: s
 }
 
 /** Latches post-fix completion, atomically recording its outcome when supplied.
- * Optional for legacy callers; the first stamp/result wins. */
+ * Optional for legacy callers; the first stamp/result wins. The agent's open
+ * `pr_fix_runs` row (the run being post-fixed) is finished with the same result. */
 export function markAgentPostFixed(id: string, outcome?: AgentFixOutcome, sha?: string): void {
   const db = getDb();
   db.transaction(() => {
@@ -859,23 +862,124 @@ export function markAgentPostFixed(id: string, outcome?: AgentFixOutcome, sha?: 
     if (outcome) setAgentFixOutcome(id, outcome, sha);
     const now = nowIso();
     db.prepare(`UPDATE agents SET post_fixed_at = ?, updated_at = ? WHERE id = ?`).run(now, now, id);
+    db.prepare(
+      `UPDATE pr_fix_runs SET finished_at = ?, outcome = ?, pushed_sha = ?
+        WHERE id = (SELECT id FROM pr_fix_runs WHERE agent_id = ? AND finished_at IS NULL
+                     ORDER BY created_at DESC, rowid DESC LIMIT 1)`,
+    ).run(now, outcome ?? null, outcome === "pushed" ? sha ?? null : null, id);
   })();
 }
 
 /**
  * How many automatic fix runs were spawned for a PR since `sinceIso` — the input
- * to the `prWatch.maxFixRunsPerDay` cap. Legacy NULL origins count as automatic;
- * supervisor runs are exempt. Failed automatic runs spend budget too, preventing loops.
+ * to the `prWatch.maxFixRunsPerDay` cap. Counts `pr_fix_runs`, not agent rows, so a
+ * reused fix agent spends budget on every run. Legacy NULL origins count as
+ * automatic; supervisor runs are exempt. Failed automatic runs spend budget too,
+ * preventing loops.
  */
 export function countPrFixRunsSince(sessionPrId: string, sinceIso: string): number {
   return (
     getDb()
       .prepare(
-        `SELECT COUNT(*) AS n FROM agents WHERE kind = 'pr_fix' AND session_pr_id = ? AND created_at >= ?
-          AND (fix_origin IS NULL OR fix_origin = 'auto')`,
+        `SELECT COUNT(*) AS n FROM pr_fix_runs WHERE session_pr_id = ? AND created_at >= ?
+          AND (origin IS NULL OR origin = 'auto')`,
       )
       .get(sessionPrId, sinceIso) as { n: number }
   ).n;
+}
+
+// ---------------------------------------------------------------------------
+// PR fix runs (one per fix spawn; a reused pr_fix agent has several)
+// ---------------------------------------------------------------------------
+
+export interface PrFixRunRow {
+  id: string;
+  agent_id: string;
+  session_pr_id: string | null;
+  origin: "auto" | "supervisor" | null;
+  created_at: string;
+  /** When post-fix latched this run; NULL while it is in flight. */
+  finished_at: string | null;
+  outcome: AgentFixOutcome | null;
+  pushed_sha: string | null;
+}
+
+/** Records the start of one fix run on `agentId` (a new or a requeued row). */
+export function insertPrFixRun(
+  agentId: string,
+  sessionPrId: string | null,
+  origin: "auto" | "supervisor" | null,
+  createdAt = nowIso(),
+): PrFixRunRow {
+  const id = shortId("fr");
+  getDb()
+    .prepare(`INSERT INTO pr_fix_runs (id, agent_id, session_pr_id, origin, created_at) VALUES (?, ?, ?, ?, ?)`)
+    .run(id, agentId, sessionPrId, origin, createdAt);
+  return getDb().prepare(`SELECT * FROM pr_fix_runs WHERE id = ?`).get(id) as PrFixRunRow;
+}
+
+/** Drops a run that never launched (a reuse claim rolled back before its runner). */
+export function deletePrFixRun(id: string): void {
+  getDb().prepare(`DELETE FROM pr_fix_runs WHERE id = ?`).run(id);
+}
+
+/** One fix agent's runs, oldest first. */
+export function listPrFixRuns(agentId: string): PrFixRunRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM pr_fix_runs WHERE agent_id = ? ORDER BY created_at ASC, rowid ASC`)
+    .all(agentId) as PrFixRunRow[];
+}
+
+/** The agent columns a reuse claim overwrites — snapshotted so a failed claim can
+ * put the row back exactly as it was. */
+export type PrFixReuseSnapshot = Pick<AgentRow,
+  "id" | "status" | "model" | "error" | "pid" | "finished_at" | "updated_at" | "diff_base" |
+  "continuation_prompt_ref" | "continuation_started_at" | "post_fixed_at" | "fix_outcome" |
+  "fix_pushed_sha" | "fix_origin">;
+
+/**
+ * Requeues a finished, post-fixed `pr_fix` row for another run, the way
+ * `prepareContinuation` queues a worker: a new continuation prompt, pending, and
+ * the per-run fields (post-fix latch, outcome, pushed sha) cleared so the row reads
+ * as busy and in flight. Guarded on the row still being done + post-fixed so two
+ * claimers can't both take it. Returns the prior values for `restorePrFixAgent`, or
+ * null when the row was no longer claimable. Call inside the caller's transaction.
+ */
+export function claimPrFixAgentForReuse(
+  id: string,
+  next: { continuationPromptRef: string; model: string; origin: "auto" | "supervisor" },
+): PrFixReuseSnapshot | null {
+  const db = getDb();
+  const before = db
+    .prepare(
+      `SELECT id, status, model, error, pid, finished_at, updated_at, diff_base, continuation_prompt_ref,
+              continuation_started_at, post_fixed_at, fix_outcome, fix_pushed_sha, fix_origin
+         FROM agents WHERE id = ?`,
+    )
+    .get(id) as PrFixReuseSnapshot | null;
+  if (!before) return null;
+  const claimed = db
+    .prepare(
+      `UPDATE agents SET continuation_prompt_ref = ?, continuation_started_at = NULL, model = ?, error = NULL,
+              status = 'pending', finished_at = NULL, post_fixed_at = NULL, fix_outcome = NULL,
+              fix_pushed_sha = NULL, fix_origin = ?, updated_at = ?
+        WHERE id = ? AND kind = 'pr_fix' AND status = 'done' AND post_fixed_at IS NOT NULL`,
+    )
+    .run(next.continuationPromptRef, next.model, next.origin, nowIso(), id);
+  return claimed.changes ? before : null;
+}
+
+/** Puts a reuse-claimed row back to its exact pre-claim terminal state. */
+export function restorePrFixAgent(s: PrFixReuseSnapshot): void {
+  getDb()
+    .prepare(
+      `UPDATE agents SET status = ?, model = ?, error = ?, pid = ?, finished_at = ?, updated_at = ?, diff_base = ?,
+              continuation_prompt_ref = ?, continuation_started_at = ?, post_fixed_at = ?, fix_outcome = ?,
+              fix_pushed_sha = ?, fix_origin = ?
+        WHERE id = ?`,
+    )
+    .run(s.status, s.model, s.error, s.pid, s.finished_at, s.updated_at, s.diff_base, s.continuation_prompt_ref,
+      s.continuation_started_at, s.post_fixed_at, s.fix_outcome, s.fix_pushed_sha, s.fix_origin, s.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1103,17 @@ export function markPrFeedbackHandled(
       `UPDATE pr_feedback SET reply_url = ?, decision = COALESCE(?, decision), handled_at = ? WHERE id = ?`,
     )
     .run(opts.replyUrl ?? null, opts.decision ?? null, nowIso(), id);
+}
+
+/** Undoes `assignPrFeedback` for these still-unhandled rows (a rolled-back reuse
+ * claim), leaving the agent's earlier, handled items untouched. */
+export function unassignPrFeedback(ids: string[], agentId: string): void {
+  const stmt = getDb().prepare(
+    `UPDATE pr_feedback SET fix_agent_id = NULL WHERE id = ? AND fix_agent_id = ? AND handled_at IS NULL`,
+  );
+  getDb().transaction(() => {
+    for (const id of ids) stmt.run(id, agentId);
+  })();
 }
 
 /** Releases every unhandled item a fix agent held back to pending + unassigned, so
@@ -1125,7 +1240,8 @@ export function readInsightEvents(db: Database = getDb()): InsightEvent[] {
       UNION ALL SELECT created_at, NULL, supervisor_model, 'tokens', tokens_input + tokens_output + cache_read + cache_write
         FROM sessions WHERE tokens_input + tokens_output + cache_read + cache_write != 0
       UNION ALL SELECT created_at, project_name, model, 'agents', 1 FROM agents
-      UNION ALL SELECT created_at, project_name, model, 'prFix', 1 FROM agents WHERE kind = 'pr_fix'
+      UNION ALL SELECT r.created_at, a.project_name, a.model, 'prFix', 1
+        FROM pr_fix_runs r JOIN agents a ON a.id = r.agent_id
       UNION ALL SELECT created_at, project_name, model, 'cost', cost FROM agents WHERE cost != 0
       UNION ALL SELECT created_at, project_name, model, 'tokens', tokens_input + tokens_output + cache_read + cache_write
         FROM agents WHERE tokens_input + tokens_output + cache_read + cache_write != 0
