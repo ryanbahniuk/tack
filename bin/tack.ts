@@ -38,9 +38,12 @@ import {
   listSessions,
   listSharedContext,
   sessionTotalCost,
+  clearSessionAwaitingInputFor,
   setSessionAwaitingInput,
+  setSessionAwaitingInputIfFree,
   setSupervisorTurnStartedAt,
 } from "../src/db";
+import { endsWithQuestion, finalAssistantText } from "../src/cli/question";
 import { readArtifact } from "../src/artifacts/store";
 import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
@@ -1647,7 +1650,12 @@ if (hidden === "__mcp") {
   try {
     const sessionId = process.argv[3];
     const input = JSON.parse(await Bun.stdin.text());
-    if (sessionId && typeof input?.prompt === "string") setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
+    if (sessionId && typeof input?.prompt === "string") {
+      setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
+      // The human replied, so an open question is answered. A pending plan keeps
+      // its own lifecycle (elicitation / /approve), so only "question" clears here.
+      clearSessionAwaitingInputFor(sessionId, "question");
+    }
     if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
       approveSessionPlan(sessionId);
       process.stdout.write(JSON.stringify({
@@ -1680,7 +1688,34 @@ if (hidden === "__mcp") {
   }
   process.exit(0);
 } else if (hidden === "__turn-end") {
-  try { if (process.argv[3]) setSupervisorTurnStartedAt(process.argv[3]!, null); } catch { /* best-effort hook */ }
+  // Stop / idle_prompt hook. Always clears the turn flag; on Stop, a final message
+  // that ends in a question also marks the session awaiting the human's answer.
+  // Best-effort and silent: empty or malformed stdin just skips the question check.
+  const sessionId = process.argv[3];
+  try { if (sessionId) setSupervisorTurnStartedAt(sessionId, null); } catch { /* best-effort hook */ }
+  try {
+    const raw = await Bun.stdin.text();
+    const input = raw.trim() ? JSON.parse(raw) : null;
+    // idle_prompt (Notification) never touches the awaiting flag: it fires while
+    // the human is still reading, and must not clear a question or plan.
+    if (sessionId && input?.hook_event_name === "Stop") {
+      const text = finalAssistantText(input);
+      if (text && endsWithQuestion(text)) setSessionAwaitingInputIfFree(sessionId, "question");
+    }
+  } catch { /* best-effort hook */ }
+  process.exit(0);
+} else if (hidden === "__await-input") {
+  // Silent PreToolUse / PostToolUse hook around the native question tool:
+  // `__await-input <id> <reason>` marks the session awaiting (never overwriting a
+  // different reason, e.g. a pending plan); `--clear` clears only that reason.
+  // Prints nothing so it can't affect the tool's permission decision.
+  try {
+    const [, , , sessionId, reason, flag] = process.argv;
+    if (sessionId && reason) {
+      if (flag === "--clear") clearSessionAwaitingInputFor(sessionId, reason);
+      else setSessionAwaitingInputIfFree(sessionId, reason);
+    }
+  } catch { /* best-effort hook; never block the question */ }
   process.exit(0);
 } else if (hidden === "__guard-write") {
   let raw = "";

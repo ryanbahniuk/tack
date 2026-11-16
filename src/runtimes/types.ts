@@ -97,6 +97,16 @@ export interface RunOptions {
    * Unsupported runtimes ignore it; it never runs on model tool calls.
    */
   onUserPrompt?: { command: string; args: string[] };
+  /**
+   * A silent command to run when the attended supervisor asks the human a question
+   * through the runtime's native question tool (claude: `AskUserQuestion`). The
+   * claude adapter wires it as a PreToolUse hook; it must print nothing so it never
+   * affects the permission decision. Tack uses it to mark the session awaiting
+   * input ("question"). Unsupported runtimes ignore it.
+   */
+  onQuestionAsked?: { command: string; args: string[] };
+  /** Counterpart of `onQuestionAsked`, run (PostToolUse) once the human answers. */
+  onQuestionAnswered?: { command: string; args: string[] };
   /** Best-effort notification when an attended turn finishes; unsupported runtimes ignore it. */
   onTurnEnd?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */

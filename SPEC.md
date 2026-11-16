@@ -364,6 +364,13 @@ Adapter specifics, hidden behind the interface:
   Both escape hatches preserve the first approval timestamp and clear the
   awaiting-input flag; neither adds a supervisor-callable approval path. A plain
   chat "yes" is never approval.
+  Follow-up questions also show "◆ needs input" (`awaiting_reason` `"question"`).
+  A PreToolUse hook on Claude's native `AskUserQuestion` runs the silent
+  `tack __await-input <id> question`, and a PostToolUse hook clears it with `--clear`
+  once answered. Plain-text questions are caught at turn end (below). The next
+  submitted prompt clears a question too. None of these paths overwrites or clears
+  a pending `"plan"` flag, which keeps the lifecycle above, so only `"plan"` blocks
+  `session refresh`.
   With `autoOpenPrs: false`, `open_pr` is excluded from the allow hook and backed
   by a `permissions.ask` rule; its ask hook supplies the prompt wording.
   Attended runs create `<TACK_HOME>/supervisor/<sessionId>/artifacts` for
@@ -676,7 +683,14 @@ previous config without refreshing sessions. Valid changes reload dashboard conf
 and use the same bulk refresh as `session refresh --all`, reporting refreshed,
 blocked, and failed counts. Claude's prompt-submit hook stamps the best-effort
 turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
-notification covers Esc interruptions, which do not fire Stop. Adapters without
+notification covers Esc interruptions, which do not fire Stop. On Stop, `__turn-end` also
+reads the hook's stdin on a best-effort basis. It takes the final assistant message
+from `last_assistant_message`, falling back to the last assistant text in the JSONL
+`transcript_path`. If that message ends in a question (`endsWithQuestion`, in
+`src/cli/question.ts`), it marks the session awaiting input with reason `"question"`.
+The detector ignores trailing fenced code, emphasis, closing quotes and brackets.
+`idle_prompt` never touches the awaiting flag. Empty or invalid input only clears
+the turn marker. Adapters without
 these hooks leave it null. A live headless runner is always treated as busy.
 
 ### Worktree editing and manual workspaces

@@ -2,7 +2,7 @@ import { afterEach, expect, test, mock } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { approveSessionPlan, createSession, deleteSession, getSession, setSessionAwaitingInput } from "../src/db";
 import { planApprovalMessage, requestPlanApproval } from "../src/mcp/supervisor-server";
-import { awaitPlanHookArgs } from "../src/supervisor/supervise";
+import { answeredQuestionHookArgs, awaitPlanHookArgs, awaitQuestionHookArgs } from "../src/supervisor/supervise";
 
 const sessions: string[] = [];
 afterEach(() => {
@@ -120,4 +120,9 @@ for (const outcome of ["keep planning", "cancel", "error"]) {
 
 test("supervisor plan hook has no reason argument", () => {
   expect(awaitPlanHookArgs("ses_x")).toEqual(["__await-plan", "ses_x"]);
+});
+
+test("supervisor question hooks set and clear only the question reason", () => {
+  expect(awaitQuestionHookArgs("ses_x")).toEqual(["__await-input", "ses_x", "question"]);
+  expect(answeredQuestionHookArgs("ses_x")).toEqual(["__await-input", "ses_x", "question", "--clear"]);
 });
