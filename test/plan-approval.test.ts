@@ -27,7 +27,7 @@ test("accepted approval presents the form and approves", async () => {
   const c = client({ action: "accept", content: {} });
   expect(await requestPlanApproval(c, id, "Build it")).toMatchObject({ approved: true });
   expect(c.elicitInput).toHaveBeenCalledWith({
-    message: "Plan for approval:\n\nBuild it",
+    message: "Review the plan above — submit blank to approve, or say what to change.\n\nBuild it",
     requestedSchema: {
       type: "object",
       properties: {
