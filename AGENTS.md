@@ -48,6 +48,7 @@ src/session/manual.ts    manual workspaces (kind "manual"): project resolution, 
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    per-session auto-fix toggle
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
+src/session/reconnect.ts post-sleep/network-loss recovery: supervisor restart + agent revive
 src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
@@ -147,3 +148,11 @@ pending-plan/mid-turn guard. `--all` refreshes stale active sessions and parks
 replacement supervisors detached in tmux; without tmux they stay stopped until
 resume. Interactive `session resume` refreshes automatically when idle; dashboard
 `r` confirms refresh and `stale` marks sessions running older code.
+
+`tack session reconnect <id>` (dashboard `w`) recovers a session broken by sleep or
+a network drop. It always restarts the supervisor, even mid-turn or with a plan
+pending (reported as `planPending`, re-presented on resume). It revives non-manual,
+non-`pr_fix` agents that are orphaned or failed with an `isTransientError` error,
+and restarts a dead PR watcher. `pr_fix` stays with the watcher, which fails and
+post-fixes orphaned fixes itself. `--all` parks restarted supervisors in tmux.
+Logic lives in `src/session/reconnect.ts`; supervisor stop is shared with refresh.
