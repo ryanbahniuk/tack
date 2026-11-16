@@ -16,7 +16,7 @@ test("dashboard shows the worktree and requires y/Y to edit a running agent", as
   const path = mkdtempSync(join(tmpdir(), "tack-dashboard-edit-"));
   const agent = { ...createAgent({ sessionId: session.id, projectName: "test" }), status: "running" as const, worktree_path: path };
   const list = spyOn(repositories, "listSessions").mockReturnValue([session]);
-  const agents = spyOn(repositories, "listAgents").mockReturnValue([agent]);
+  const agents = spyOn(repositories, "listAgentsBySession").mockReturnValue(new Map([[session.id, [agent]]]));
   const output = new PassThrough();
   Object.assign(output, { columns: 240, rows: 60, isTTY: false });
   const input = new PassThrough();
@@ -91,7 +91,7 @@ test("dashboard n creates a manual workspace, choosing a project when several qu
   const manual = { ...worker, id: "agt_manualx", kind: "manual" as const, runtime: null, model: null, worktree_path: "/nowhere" };
   const spies = [
     spyOn(repositories, "listSessions").mockReturnValue([session]),
-    spyOn(repositories, "listAgents").mockReturnValue([worker, manual]),
+    spyOn(repositories, "listAgentsBySession").mockReturnValue(new Map([[session.id, [worker, manual]]])),
     spyOn(prs, "refreshSessionPrs").mockResolvedValue({ ghMissing: true } as never),
     spyOn(jira, "refreshSessionJiraTickets").mockResolvedValue({ unavailable: false } as never),
   ];
@@ -142,7 +142,7 @@ test("a project chooser never survives its picker closing", async () => {
   const list = spyOn(repositories, "listSessions").mockReturnValue([gone, other]);
   const spies = [
     list,
-    spyOn(repositories, "listAgents").mockImplementation(id => agentsBySession.get(id) ?? []),
+    spyOn(repositories, "listAgentsBySession").mockImplementation(() => agentsBySession),
     spyOn(prs, "refreshSessionPrs").mockResolvedValue({ ghMissing: true } as never),
     spyOn(jira, "refreshSessionJiraTickets").mockResolvedValue({ unavailable: false } as never),
   ];

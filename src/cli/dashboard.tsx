@@ -6,17 +6,19 @@ import React, { useEffect, useRef, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import {
-  countOpenPrFeedback,
+  agentCostBySession,
+  countOpenPrFeedbackByPr,
   getSession,
   listAgents,
+  listAgentsBySession,
   listInterruptedAgents,
   listAllSessionJiraTickets,
-  listPendingAmendments,
-  listSessionJiraTickets,
+  listPendingAmendmentsBySession,
+  listSessionJiraTicketsBySession,
   listSessionPrs,
   getAgent,
+  listSessionPrsBySession,
   listSessions,
-  sessionTotalCost,
   type AgentRow,
   type AmendmentRow,
   type JiraTicketWithSessionRow,
@@ -25,7 +27,7 @@ import {
   type SessionRow,
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
-import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshSession } from "../session/refresh";
+import { REFRESH_MESSAGE, refreshAllStaleSessions, refreshSession, staleSessionIds } from "../session/refresh";
 import { describeReconnect, parkReconnectedSupervisor, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
@@ -73,29 +75,43 @@ function rank(v: View): number {
   return (v.needsInput ? 2 : 0) + (v.live ? 1 : 0);
 }
 
+/** One read per table for every listed session (not N+1 per session), and one
+ * stale-probe set per tick — this runs every second, so per-session subprocesses
+ * or queries add up fast once archived sessions are shown. */
 function snapshot(showArchived: boolean): View[] {
-  return listSessions(showArchived)
+  const sessions = listSessions(showArchived);
+  if (!sessions.length) return [];
+  const ids = sessions.map((s) => s.id);
+  const agentsBy = listAgentsBySession(ids);
+  const prsBy = listSessionPrsBySession(ids);
+  const ticketsBy = listSessionJiraTicketsBySession(ids);
+  const amendmentsBy = listPendingAmendmentsBySession(ids);
+  const agentCost = agentCostBySession(ids);
+  const openFeedback = countOpenPrFeedbackByPr(ids);
+  const stale = staleSessionIds(sessions);
+  return sessions
     .map((session) => {
-      const agents = listAgents(session.id);
-      const prs = listSessionPrs(session.id);
+      const agents = agentsBy.get(session.id) ?? [];
+      const prs = prsBy.get(session.id) ?? [];
       return {
         session,
         agents,
         prs,
-        tickets: listSessionJiraTickets(session.id),
-        cost: sessionTotalCost(session.id).total,
+        tickets: ticketsBy.get(session.id) ?? [],
+        // Same sum as `sessionTotalCost`: the supervisor's own cost plus its agents'.
+        cost: (session.cost ?? 0) + (agentCost.get(session.id) ?? 0),
         live: sessionLive(session),
         working: sessionWorking(session),
-        stale: isSessionStale(session).stale,
+        stale: stale.has(session.id),
         // Waiting on the human: a plan to approve, or unread completed agent work
         // once nothing is still in flight.
         needsInput: sessionNeedsInput(session, agents),
-        amendments: listPendingAmendments(session.id),
+        amendments: amendmentsBy.get(session.id) ?? [],
         prWatch: Object.fromEntries(
           prs.map((pr) => [
             pr.id,
             {
-              openFeedback: countOpenPrFeedback(pr.id),
+              openFeedback: openFeedback.get(pr.id) ?? 0,
               fixing: agents.some(
                 (a) =>
                   a.kind === "pr_fix" &&
@@ -108,6 +124,12 @@ function snapshot(showArchived: boolean): View[] {
       };
     })
     .sort((a, b) => rank(b) - rank(a));
+}
+
+/** Background polls (gh, Jira) cover only active sessions, even while archived
+ * ones are shown: archived work has no watcher to feed and rarely changes. */
+function activeSessionIds(views: readonly View[]): string[] {
+  return views.filter((v) => v.session.status !== "archived").map((v) => v.session.id);
 }
 
 /** A cheap content fingerprint of the whole view, so the 1s poll only re-renders
@@ -245,6 +267,114 @@ export function windowSessionLines(counts: readonly number[], cursor: number, he
     offset += count;
   });
   return { start, end, above: aboveRoom ? above : 0, below: belowRoom ? below : 0 };
+}
+
+/** One session's line units: its summary row, plus agent/PR/ticket detail when
+ * selected. Rendering is windowed, so only visible sessions (and the cursor's
+ * expanded block) ever pay for building these. */
+function sessionRowLines(v: View, selected: boolean, frame: number, config: TackConfig | null) {
+  return flattenSessionLines(
+    <Box key={v.session.id} flexDirection="column">
+      <Text>
+        <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
+        <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
+        <Text bold>{v.session.id}</Text>
+        <Text dimColor> {v.session.status} </Text>
+        <Text color="green">{usd(v.cost)}</Text>
+        {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
+        {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
+        {v.amendments.length > 0 ? (
+          <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
+        ) : null}
+        {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+        {!v.session.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}
+        {v.stale ? <Text color="yellow"> stale</Text> : null}
+        {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
+        {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
+        <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
+      </Text>
+      {selected &&
+        v.agents.map((a) => {
+          const display = agentDisplayStatus(a);
+          const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
+          return (
+            <Box key={a.id} flexDirection="column">
+              <Text>
+                {`    ├─ ${agentLabel(a, v.prs)} `}
+                <Text color={display.color}>{display.label.padEnd(8)}</Text>
+                {a.runtime ? (
+                  <Text dimColor>
+                    {" "}
+                    {a.runtime}:{a.model}
+                  </Text>
+                ) : null}
+                <Text color="green"> {usd(a.cost)}</Text>
+                {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
+              </Text>
+              {/* Live "what it's doing now" for a non-terminal agent (#4). */}
+              {!terminal && a.activity ? (
+                <Text dimColor>
+                  {"    │    ↳ "}
+                  {oneLine(a.activity, Number.MAX_SAFE_INTEGER)}
+                  {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
+                </Text>
+              ) : null}
+              {/* Why it failed, inline, without opening the output file (#8). */}
+              {a.status === "failed" && a.error ? (
+                <Text color="red">
+                  {"    │    ✖ "}
+                  {oneLine(a.error, 100)}
+                </Text>
+              ) : null}
+            </Box>
+          );
+        })}
+      {selected &&
+        v.prs.map((pr) => {
+          const { glyph, color, label } = prStateDisplay(pr.state);
+          const w = v.prWatch[pr.id];
+          return (
+            <Text key={pr.id}>
+              {"    └─ PR "}
+              {pr.number ?? "?"}{" "}
+              <Text color={color}>
+                {glyph} {label}
+              </Text>
+              {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
+              {w && w.openFeedback > 0 ? (
+                <Text color="yellow">
+                  {" "}
+                  {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
+                </Text>
+              ) : null}
+              {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
+              <Text underline>{pr.url}</Text>
+            </Text>
+          );
+        })}
+      {selected &&
+        v.tickets.map((t) => {
+          const { glyph, color } = ticketStatusDisplay(t.status_category);
+          const url = resolveTicketUrl(config, t);
+          return (
+            <Text key={t.id}>
+              {"    └─ JIRA "}
+              {t.key}{" "}
+              <Text color={color}>
+                {glyph} {t.status ?? "?"}
+              </Text>
+              {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
+              {url ? (
+                <>
+                  {"  "}
+                  <Text underline>{url}</Text>
+                </>
+              ) : null}
+            </Text>
+          );
+        })}
+    </Box>
+  );
 }
 
 export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: TackConfig | null; onLaunch: (l: Launch) => void; initialNotice?: string }) {
@@ -403,7 +533,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     const run = () => {
       if (refreshing.current) return;
       refreshing.current = true;
-      const ids = rowsRef.current.map((v) => v.session.id);
+      const ids = activeSessionIds(rowsRef.current);
       refreshSessionPrs(config, ids)
         .then((res) => {
           setGhMissing(res.ghMissing);
@@ -457,7 +587,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   };
   useEffect(() => {
     if (!config) return;
-    const run = () => pollJira(config, rowsRef.current.map((v) => v.session.id), false);
+    // The background tick skips archived sessions (see `activeSessionIds`); the
+    // on-demand `P` still polls whatever the human is looking at.
+    const run = () => pollJira(config, activeSessionIds(rowsRef.current), false);
     run();
     const t = setInterval(run, 120_000);
     return () => {
@@ -879,110 +1011,17 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       <Text color="green">{headerParts[7]}</Text>{headerParts[8]}<Text dimColor>{headerParts[9]}</Text>
     </Text>
   );
-  const sessionLines = rows.map((v, i) => flattenSessionLines(
-    <Box key={v.session.id} flexDirection="column">
-      <Text>
-        <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
-        <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
-        <Text bold>{v.session.id}</Text>
-        <Text dimColor> {v.session.status} </Text>
-        <Text color="green">{usd(v.cost)}</Text>
-        {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
-        {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
-        {v.amendments.length > 0 ? (
-          <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
-        ) : null}
-        {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
-        {!v.session.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}
-        {v.stale ? <Text color="yellow"> stale</Text> : null}
-        {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
-        {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
-        <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
-      </Text>
-      {i === cursor &&
-        v.agents.map((a) => {
-          const display = agentDisplayStatus(a);
-          const terminal = a.status === "done" || a.status === "failed" || a.status === "stopped";
-          return (
-            <Box key={a.id} flexDirection="column">
-              <Text>
-                {`    ├─ ${agentLabel(a, v.prs)} `}
-                <Text color={display.color}>{display.label.padEnd(8)}</Text>
-                {a.runtime ? (
-                  <Text dimColor>
-                    {" "}
-                    {a.runtime}:{a.model}
-                  </Text>
-                ) : null}
-                <Text color="green"> {usd(a.cost)}</Text>
-                {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
-              </Text>
-              {/* Live "what it's doing now" for a non-terminal agent (#4). */}
-              {!terminal && a.activity ? (
-                <Text dimColor>
-                  {"    │    ↳ "}
-                  {oneLine(a.activity, Number.MAX_SAFE_INTEGER)}
-                  {a.activity_at ? ` · ${relativeTime(a.activity_at)}` : ""}
-                </Text>
-              ) : null}
-              {/* Why it failed, inline, without opening the output file (#8). */}
-              {a.status === "failed" && a.error ? (
-                <Text color="red">
-                  {"    │    ✖ "}
-                  {oneLine(a.error, 100)}
-                </Text>
-              ) : null}
-            </Box>
-          );
-        })}
-      {i === cursor &&
-        v.prs.map((pr) => {
-          const { glyph, color, label } = prStateDisplay(pr.state);
-          const w = v.prWatch[pr.id];
-          return (
-            <Text key={pr.id}>
-              {"    └─ PR "}
-              {pr.number ?? "?"}{" "}
-              <Text color={color}>
-                {glyph} {label}
-              </Text>
-              {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
-              {w && w.openFeedback > 0 ? (
-                <Text color="yellow">
-                  {" "}
-                  {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
-                </Text>
-              ) : null}
-              {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
-              <Text underline>{pr.url}</Text>
-            </Text>
-          );
-        })}
-      {i === cursor &&
-        v.tickets.map((t) => {
-          const { glyph, color } = ticketStatusDisplay(t.status_category);
-          const url = resolveTicketUrl(config, t);
-          return (
-            <Text key={t.id}>
-              {"    └─ JIRA "}
-              {t.key}{" "}
-              <Text color={color}>
-                {glyph} {t.status ?? "?"}
-              </Text>
-              {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
-              {url ? (
-                <>
-                  {"  "}
-                  <Text underline>{url}</Text>
-                </>
-              ) : null}
-            </Text>
-          );
-        })}
-    </Box>
-  ));
-  const window = windowSessionLines(sessionLines.map(lines => lines.length), cursor, budget);
-  const visibleLines = sessionLines.flat().slice(window.start, window.end);
+  // Unselected sessions are always exactly one line, so only the cursor's expanded
+  // block is built to size the window; every other row is built only if visible.
+  const cursorLines = selected ? sessionRowLines(selected, true, frame, config) : [];
+  const counts = rows.map((_, i) => (i === cursor ? cursorLines.length : 1));
+  const window = windowSessionLines(counts, cursor, budget);
+  const visibleLines: React.ReactElement<React.ComponentProps<typeof Text>>[] = [];
+  for (let i = 0, offset = 0; i < rows.length && offset < window.end; offset += counts[i]!, i++) {
+    if (offset + counts[i]! <= window.start) continue;
+    const lines = i === cursor ? cursorLines : sessionRowLines(rows[i]!, false, frame, config);
+    visibleLines.push(...lines.slice(Math.max(0, window.start - offset), window.end - offset));
+  }
 
   return (
     <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
