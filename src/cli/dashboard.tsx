@@ -31,7 +31,7 @@ import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
 import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
 import { isAlive } from "../process/self";
-import { closeJiraClient, refreshSessionJiraTickets } from "../projects/jira";
+import { closeJiraClient, refreshSessionJiraTickets, resolveTicketUrl } from "../projects/jira";
 import { ensureConfigExists } from "../config/ensure";
 import { currentConfigVersion } from "../process/version";
 import { loadConfig } from "../config/load";
@@ -612,14 +612,17 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         setNotice(`PR poll failed: ${(err as Error).message}`);
       }).finally(refresh);
     } else if (input === "J") {
-      // Tickets linked before a `jira` block existed have no url — skip them.
-      const urls = selected.tickets.map((t) => t.url).filter((u): u is string => Boolean(u));
+      const id = selected.session.id;
+      const total = selected.tickets.length;
+      if (total === 0) return setNotice(`${id} has no tickets yet`);
+      // Without a stored url or a `jira` siteUrl a ticket has nowhere to link.
+      const urls = selected.tickets.map((t) => resolveTicketUrl(config, t)).filter((u): u is string => Boolean(u));
       if (urls.length === 0) {
-        setNotice(`${selected.session.id} has no tickets yet`);
-        return;
+        return setNotice(`${id} has ${total} ticket${total === 1 ? "" : "s"} but no Jira site is configured — add a \`jira\` block (siteUrl) to your Tack config`);
       }
       for (const url of urls) openUrl(url);
-      setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser`);
+      const skipped = total - urls.length;
+      setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
     } else if (input === "r") {
       setConfirm({ action: "refresh", id: selected.session.id });
     } else if (input === "x") {
@@ -778,6 +781,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       {i === cursor &&
         v.tickets.map((t) => {
           const { glyph, color } = ticketStatusDisplay(t.status_category);
+          const url = resolveTicketUrl(config, t);
           return (
             <Text key={t.id}>
               {"    └─ JIRA "}
@@ -786,10 +790,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
                 {glyph} {t.status ?? "?"}
               </Text>
               {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
-              {t.url ? (
+              {url ? (
                 <>
                   {"  "}
-                  <Text underline>{t.url}</Text>
+                  <Text underline>{url}</Text>
                 </>
               ) : null}
             </Text>

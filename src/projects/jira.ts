@@ -39,6 +39,13 @@ export function jiraTicketUrl(config: TackConfig, key: string): string | null {
   return `${config.jira.siteUrl.replace(/\/$/, "")}/browse/${key}`;
 }
 
+/** A linked ticket's link: the stored url, else one derived from the current
+ * config — tickets linked before a `jira` block existed stored null and would
+ * otherwise never become openable. */
+export function resolveTicketUrl(config: TackConfig | null | undefined, row: { key: string; url: string | null }): string | null {
+  return row.url ?? (config ? jiraTicketUrl(config, row.key) : null);
+}
+
 // The Atlassian server launches via `uvx --refresh …`, which re-resolves and may
 // rebuild the package on every start — tens of seconds, not milliseconds. The
 // dashboard refreshes every couple of minutes, so paying that per tick is absurd:
