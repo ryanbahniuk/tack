@@ -15,6 +15,9 @@ export function prepareContinuation(sessionId: string, agentId: string, prompt: 
   const agent = getAgent(agentId);
   if (!agent || agent.session_id !== sessionId)
     throw new Error("Agent is not in this session; use spawn_agent for a new unit.");
+  if (agent.kind === "manual")
+    throw new Error("Manual workspaces are the human's own edits with no agent conversation, so they can't be continued. " +
+      "Open its PR with open_pr when the human asks, or spawn_agent for new agent work.");
   // Review agents may answer follow-up questions in the same conversation.
   if (agent.kind === "pr_fix") throw new Error("PR-fix agents cannot be continued directly; use fix_pr.");
   if (agent.status !== "done" && agent.status !== "failed")

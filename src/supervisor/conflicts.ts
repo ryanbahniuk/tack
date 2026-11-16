@@ -87,8 +87,12 @@ function cacheKey(agents: AgentRow[]): string {
  * signal to surface before opening N PRs. Cached on the agent set (see above).
  */
 export function sessionFileCollisions(agents: AgentRow[], config: TackConfig): FileCollision[] {
+  // Manual workspaces count as workers here (the human's edits collide like anyone's),
+  // but a human editing files never bumps the row's `updated_at`, so the cache key
+  // can't see their changes — always recompute while one exists.
+  const uncacheable = agents.some((a) => a.kind === "manual" && a.worktree_path);
   const key = cacheKey(agents);
-  const cached = collisionCache.get(key);
+  const cached = uncacheable ? undefined : collisionCache.get(key);
   if (cached) return cached;
 
   const projectPath = new Map(config.projects.map((p) => [p.name, p.path]));
@@ -122,6 +126,6 @@ export function sessionFileCollisions(agents: AgentRow[], config: TackConfig): F
 
   // Bound the cache so a long-lived dashboard can't grow it without limit.
   if (collisionCache.size > 64) collisionCache.clear();
-  collisionCache.set(key, out);
+  if (!uncacheable) collisionCache.set(key, out);
   return out;
 }

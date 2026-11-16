@@ -50,6 +50,9 @@ export function sessionNeedsInput(s: SessionRow, agents: AgentRow[]): boolean {
 
 /** Display publication progress without changing the runtime lifecycle or liveness. */
 export function agentDisplayStatus(a: AgentRow): { label: string; color?: string } {
+  // A manual workspace's `done` only means "nothing to run"; the human may still be
+  // editing it, so don't present it as finished agent work.
+  if (a.kind === "manual") return { label: "human", color: "blue" };
   if (a.kind === "review" && a.review_ref) {
     try {
       const { verdict } = JSON.parse(readArtifact(a.review_ref));

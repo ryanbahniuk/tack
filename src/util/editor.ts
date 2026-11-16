@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +6,18 @@ import { join } from "node:path";
 /** The editor command to launch, honoring $VISUAL then $EDITOR, falling back to
  * a sensible default per platform. Split on whitespace so values like
  * `code --wait` carry their flags through. */
-function editorCommand(): string[] {
-  const raw = process.env.VISUAL || process.env.EDITOR;
+export function editorCommand(env: NodeJS.ProcessEnv = process.env, hasVim: () => boolean = vimOnPath): string[] {
+  const raw = env.VISUAL || env.EDITOR;
   if (raw && raw.trim()) return raw.trim().split(/\s+/);
-  return process.platform === "win32" ? ["notepad"] : ["vi"];
+  if (process.platform === "win32") return ["notepad"];
+  // Prefer vim: on many systems `vi` is a minimal build (no directory browsing),
+  // which matters now that worktree editing opens the editor on `.`.
+  return hasVim() ? ["vim"] : ["vi"];
+}
+
+/** Whether `vim` resolves on PATH, checked through the shell's own lookup. */
+function vimOnPath(): boolean {
+  return spawnSync("sh", ["-c", "command -v vim"], { stdio: "ignore" }).status === 0;
 }
 
 /**

@@ -9,6 +9,7 @@ import { Dashboard } from "../src/cli/dashboard";
 import { collapseHome } from "../src/paths";
 import { createAgent, createSession, deleteSession } from "../src/db";
 import * as repositories from "../src/db/repositories";
+import type { TackConfig } from "../src/config/schema";
 
 test("dashboard shows the worktree and requires y/Y to edit a running agent", async () => {
   const session = createSession({});
@@ -81,3 +82,52 @@ for (const insights of [false, true]) {
     } finally { app.unmount(); list.mockRestore(); }
   });
 }
+
+test("dashboard n creates a manual workspace, choosing a project when several qualify", async () => {
+  const prs = await import("../src/projects/prs");
+  const jira = await import("../src/projects/jira");
+  const session = createSession({});
+  const worker = { ...createAgent({ sessionId: session.id, projectName: "beta" }), status: "done" as const };
+  const manual = { ...worker, id: "agt_manualx", kind: "manual" as const, runtime: null, model: null, worktree_path: "/nowhere" };
+  const spies = [
+    spyOn(repositories, "listSessions").mockReturnValue([session]),
+    spyOn(repositories, "listAgents").mockReturnValue([worker, manual]),
+    spyOn(prs, "refreshSessionPrs").mockResolvedValue({ ghMissing: true } as never),
+    spyOn(jira, "refreshSessionJiraTickets").mockResolvedValue({ unavailable: false } as never),
+  ];
+  const config = { projects: [{ name: "alpha" }, { name: "beta" }], prWatch: { intervalSeconds: 3600, enabled: false } } as unknown as TackConfig;
+  const output = new PassThrough();
+  Object.assign(output, { columns: 240, rows: 60, isTTY: false });
+  const input = new PassThrough();
+  Object.assign(input, { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+  let frame = "";
+  output.on("data", chunk => { frame += chunk.toString(); });
+  const launches: Parameters<Parameters<typeof Dashboard>[0]["onLaunch"]>[0][] = [];
+  const app = render(<Dashboard config={config} onLaunch={launch => launches.push(launch)} />, {
+    stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream,
+    debug: true, patchConsole: false, exitOnCtrlC: false,
+  });
+  const press = async (key: string) => {
+    frame = "";
+    input.write(key);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    await app.waitUntilRenderFlush();
+  };
+  try {
+    await app.waitUntilRenderFlush();
+    await press("v");
+    expect(frame).toContain("n new manual workspace");
+    expect(frame).toContain(" manual ");
+    expect(frame).not.toContain("null:null");
+    await press("n");
+    // The session's own project is offered first.
+    expect(frame).toMatch(/❯ beta \(in this session\)[\s\S]*alpha/);
+    await press("j");
+    await press("\r");
+    expect(launches).toEqual([{ kind: "manual", sessionId: session.id, project: "alpha" }]);
+  } finally {
+    app.unmount();
+    for (const s of spies) s.mockRestore();
+    deleteSession(session.id);
+  }
+});

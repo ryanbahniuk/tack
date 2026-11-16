@@ -11,8 +11,10 @@ export type SessionStatus = "active" | "archived";
 export type AgentStatus = "pending" | "running" | "done" | "failed" | "stopped";
 export type CostSource = "runtime" | "pricing";
 /** NULL = a normal worker; PR-fix agents update an open PR, while review agents
- * inspect another worker through a configured persona and only report findings. */
-export type AgentKind = "pr_fix" | "review";
+ * inspect another worker through a configured persona and only report findings.
+ * `manual` is a human's hand-edited workspace: a worker-shaped row (own worktree,
+ * PR-able) that has no runtime conversation and must never be executed. */
+export type AgentKind = "pr_fix" | "review" | "manual";
 export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
@@ -103,7 +105,8 @@ export interface AgentRow {
   /** JSON array of sibling agent ids that must reach a terminal state before this
    * agent starts; the runner self-gates on them. Null when undeclared. */
   depends_on: string | null;
-  /** NULL for a worker; PR-fix agents ship fixes, review agents only report. */
+  /** NULL for a worker; PR-fix agents ship fixes, review agents only report,
+   * manual rows are human workspaces. */
   kind: AgentKind | null;
   persona: string | null;
   reviews_agent_id: string | null;
@@ -400,6 +403,31 @@ export function createAgent(input: {
   return getAgent(id)!;
 }
 
+/**
+ * Records a human's manual workspace whose worktree already exists. Inserted in one
+ * statement as already-`done` (there is nothing to run) with no runtime/model/cost,
+ * so every runner/resume path sees a finished row with no conversation. `finished_at`
+ * stays NULL on purpose: the human made it, so it must never read as unread agent
+ * work (`sessionNeedsInput`). `diff_base` pins the fork point like a worker's.
+ */
+export function createManualAgent(input: {
+  id: string;
+  sessionId: string;
+  projectName: string;
+  worktreePath: string;
+  branch: string;
+  diffBase: string;
+}): AgentRow {
+  const now = nowIso();
+  getDb()
+    .prepare(
+      `INSERT INTO agents (id, session_id, project_name, status, kind, worktree_path, branch, diff_base, created_at, updated_at)
+       VALUES (?, ?, ?, 'done', 'manual', ?, ?, ?, ?, ?)`,
+    )
+    .run(input.id, input.sessionId, input.projectName, input.worktreePath, input.branch, input.diffBase, now, now);
+  return getAgent(input.id)!;
+}
+
 /** Parses an agent's declared touch-set (JSON array), empty when undeclared. */
 export function agentTouches(a: AgentRow): string[] {
   return parseJsonArray(a.touches);
@@ -430,10 +458,11 @@ export function listAgents(sessionId: string): AgentRow[] {
     .all(sessionId) as AgentRow[];
 }
 
-/** Only archive marks interrupted work; ordinary stops must stay stopped. */
+/** Only archive marks interrupted work; ordinary stops must stay stopped. Manual
+ * workspaces are never runnable, so unarchive must never try to resume one. */
 export function markAgentInterrupted(id: string): void {
   const now = nowIso();
-  getDb().prepare(`UPDATE agents SET interrupted_at = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'pending')`).run(now, now, id);
+  getDb().prepare(`UPDATE agents SET interrupted_at = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'pending') AND kind IS NOT 'manual'`).run(now, now, id);
 }
 
 export function clearAgentInterrupted(id: string): void {
@@ -442,7 +471,7 @@ export function clearAgentInterrupted(id: string): void {
 
 export function listInterruptedAgents(sessionId: string): AgentRow[] {
   return getDb()
-    .prepare(`SELECT * FROM agents WHERE session_id = ? AND interrupted_at IS NOT NULL ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM agents WHERE session_id = ? AND interrupted_at IS NOT NULL AND kind IS NOT 'manual' ORDER BY created_at ASC`)
     .all(sessionId) as AgentRow[];
 }
 

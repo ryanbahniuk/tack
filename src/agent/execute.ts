@@ -30,6 +30,7 @@ import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
 import { uuid } from "../util/id";
+import { MANUAL_NOT_RUNNABLE, isManual } from "../session/manual";
 
 /** Creates the agent record and persists its prompt — fast, in-process. The heavy
  * execution is `runAgent`, so a supervisor tool can prepare an agent then hand it
@@ -83,6 +84,9 @@ export async function* runAgent(
 ): AsyncGenerator<AgentEvent, { ok: boolean; agent: AgentRow }> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
+  // Backstop: a manual workspace is the human's worktree, not a conversation. Running
+  // it would hand their edits to a runtime with no prompt, so refuse before any write.
+  if (isManual(agent)) throw new Error(`Agent ${agentId} ${MANUAL_NOT_RUNNABLE}.`);
   const session = getSession(agent.session_id);
   if (!session) throw new Error(`Agent ${agentId} has no session`);
   const project = config.projects.find((p) => p.name === agent.project_name);

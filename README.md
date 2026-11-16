@@ -223,14 +223,32 @@ disable replies.
 ### Edit an agent's worktree
 
 Run `tack session edit <session> [agent]` to open a worktree in `$VISUAL`,
-then `$EDITOR`, falling back to `vi`. Omit the agent id when only one worktree
-exists. Pending or running agents require `--force`; `--print-path` prints just
-the path for use with other tools. After editing, Tack reports the branch and Git
-status with a push hint when needed. It never commits or pushes automatically.
+then `$EDITOR`, falling back to `vim` (or `vi` when vim isn't installed). Omit the
+agent id when only one worktree exists. Pending or running agents require `--force`;
+`--print-path` prints just the path for use with other tools. After editing, Tack
+reports the branch and Git status with a push hint when needed. It never commits or
+pushes automatically.
+
+### Manual workspaces
+
+Run `tack session edit <session> --new [project]` to get a clean worktree of your
+own for the session — a fresh `tack/<session>/<id>` branch forked from the
+up-to-date remote default branch, separate from every agent — and land in your
+editor rooted at it. Omit the project when it's unambiguous (the only configured
+project, or the only one the session's agents use); otherwise Tack lists the
+candidates. `--new --print-path` creates the workspace and prints its path without
+opening an editor. Reopen it later like any worktree: `tack session edit <session> <id>`.
+
+A manual workspace is a row with kind `manual`: it never runs, resumes or continues
+as an agent conversation, and costs nothing. The supervisor sees it in
+`check_agents`, includes it in `check_conflicts`, and opens it as a PR with `open_pr`
+(committing your leftover edits) when you ask, or at wrap-up when it holds changes.
 
 In `tack dashboard`, press `v` to open the agents picker, then `e` to edit the
-highlighted agent's worktree. Editing a pending or running agent requires `y`
-confirmation. The picker shows worktree paths so you can see which tree will open.
+highlighted agent's worktree, or `n` to create a manual workspace (choosing a
+project first when several qualify; the session's projects are listed first).
+Editing a pending or running agent requires `y` confirmation; manual workspaces
+open directly. The picker shows worktree paths so you can see which tree will open.
 
 `tack dashboard` defaults to a split view on terminals at least 140 columns wide:
 work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
@@ -240,7 +258,7 @@ The header shows the current layout, range, and live/working session counts.
 Working supervisors show a cyan spinner and elapsed turn time in their session row;
 a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
 in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `C`, `r`, `x`, `a`, `d`, `z`, `q`.
-Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vi`).
+Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`).
 After a valid change, Tack reloads config and refreshes stale active sessions, parking
 supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume
 or `r`; invalid config keeps the previous dashboard config and leaves sessions running.

@@ -46,6 +46,7 @@ export async function runCoordinationServer(sessionId: string, agentId: string):
     async () => {
       const rows = listAgents(sessionId).map((a) => ({
         id: a.id,
+        ...(a.kind ? { kind: a.kind } : {}),
         project: a.project_name,
         status: a.status,
         model: a.model,

@@ -496,10 +496,14 @@ export function changedFiles(repo: string, branch: string, worktreePath: string)
   if (!base || !existsSync(worktreePath)) return [];
   const r = spawnSync("git", ["diff", "--name-only", base], { cwd: worktreePath, encoding: "utf8" });
   if (r.status !== 0) return [];
-  return (r.stdout ?? "")
+  // New, not-yet-added files are invisible to `git diff` but open_pr commits them, so
+  // they collide just the same (most visible for a human's manual workspace).
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: worktreePath, encoding: "utf8" });
+  const lines = `${r.stdout ?? ""}\n${untracked.status === 0 ? (untracked.stdout ?? "") : ""}`;
+  return [...new Set(lines
     .split("\n")
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter(Boolean))];
 }
 
 /** Fail closed on stale/offline heads and divergence. Never reset or discard a

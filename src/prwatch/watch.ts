@@ -481,6 +481,8 @@ export async function prContinuationDecision(pr: SessionPrRow, model: Model, con
   if (fresh) return fallback("fresh requested");
   const head = prLineageHead(pr);
   if (!head) return fallback("no lineage head");
+  // A PR opened from a human's manual workspace has no conversation to resume.
+  if (head.kind === "manual") return fallback("manual workspace has no conversation");
   if (head.status !== "done") return fallback("head is not done");
   if (!head.resume_ref) return fallback("missing resume_ref");
   if (head.runtime !== model.runtime) return fallback("runtime mismatch");
