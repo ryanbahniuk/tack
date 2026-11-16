@@ -202,11 +202,12 @@ const init = defineCommand({
       await addProjects(config, [root]);
     }
 
+    // Always end on the explicit next step: setup is `tack init` → `tack runtimes
+    // install` → log in. Target only the missing runtimes when that's a subset.
     const missing = results.filter((r) => r.action === "unpinned-missing").map((r) => r.kind);
-    if (missing.length > 0) {
-      const target = missing.length === RUNTIME_KINDS.length ? "" : ` ${missing.join(" ")}`;
-      console.log(pc.dim(`\nRun \`tack runtimes install${target}\` to install the latest ${missing.join(" + ")} and sync models.`));
-    }
+    const target = missing.length > 0 && missing.length < RUNTIME_KINDS.length ? ` ${missing.join(" ")}` : "";
+    const what = missing.length > 0 ? missing.join(" + ") : RUNTIME_KINDS.join(" + ");
+    console.log(pc.dim(`\nNext: run \`tack runtimes install${target}\` to install the latest ${what} and sync models.`));
   },
 });
 
@@ -222,7 +223,8 @@ const runtimeInstall = defineCommand({
     models: { type: "boolean", default: true, description: "Sync models afterwards (--no-models to skip)" },
   },
   async run({ args }) {
-    // Works before `tack init`: the first-run path is `runtimes install` → log in → init.
+    // Requires a config and never scaffolds one: the first-run path is
+    // `tack init` → `tack runtimes install` → log in.
     const config = await requireConfig();
     const kinds = args.runtime && !args.all ? [asRuntimeKind(String(args.runtime))] : RUNTIME_KINDS;
 
