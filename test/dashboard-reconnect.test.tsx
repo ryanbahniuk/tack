@@ -38,8 +38,8 @@ async function mount(config: TackConfig) {
 
 const config = { projects: [], prWatch: { intervalSeconds: 3600, enabled: false } } as unknown as TackConfig;
 
-for (const plan of [false, true]) {
-  test(`dashboard w confirms reconnect${plan ? " with a pending plan" : ""}, then hands off with the reconnect message`, async () => {
+for (const [plan, park] of [[false, { parked: true }], [true, { parked: true }], [false, { parked: false, reason: "no-tmux" }]] as const) {
+  test(`dashboard w confirms reconnect${plan ? " with a pending plan" : ""}, then parks ${park.parked ? "in tmux" : "nothing without tmux"} and stays open`, async () => {
     const session = createSession({});
     if (plan) getDb().prepare(`UPDATE sessions SET awaiting_input_at = ?, awaiting_reason = 'plan' WHERE id = ?`).run("2026-01-01T00:00:00Z", session.id);
     const orphan = createAgent({ sessionId: session.id, projectName: "p" });
@@ -47,23 +47,30 @@ for (const plan of [false, true]) {
     const done = createAgent({ sessionId: session.id, projectName: "p" });
     setAgentStatus(done.id, "done");
     const list = spyOn(repositories, "listSessions").mockImplementation(() => [getSession(session.id)!]);
-    const run = spyOn(reconnect, "reconnectSession").mockResolvedValue({ supervisorRestarted: true, planPending: plan, revivedAgents: [orphan.id], failedAgents: [], watcherRestarted: false });
+    const result = { supervisorRestarted: true, planPending: plan, revivedAgents: [orphan.id], failedAgents: [], watcherRestarted: false };
+    const run = spyOn(reconnect, "reconnectSession").mockResolvedValue(result);
+    const parkSpy = spyOn(reconnect, "parkReconnectedSupervisor").mockResolvedValue(park);
     const ui = await mount(config);
     try {
       await ui.press("w");
-      expect(ui.frame()).toContain(`Reconnect ${session.id}? Restarts the supervisor and revives 1 dropped agent(s).${plan ? " Pending plan will be re-presented." : ""} (y/N)`);
+      expect(ui.frame()).toContain(`Reconnect ${session.id}? Restarts the supervisor detached in tmux and revives 1 dropped agent(s).${plan ? " Pending plan will be re-presented." : ""} (y/N)`);
       await ui.press("n");
       expect(run).not.toHaveBeenCalled();
       await ui.press("w");
       await ui.press("y");
       await new Promise(resolve => setTimeout(resolve, 25));
+      await ui.app.waitUntilRenderFlush();
       expect(run).toHaveBeenCalledWith(session.id, config);
-      expect(ui.launches).toEqual([{ kind: "resume", id: session.id, message: reconnect.RECONNECT_MESSAGE }]);
+      expect(parkSpy).toHaveBeenCalledWith(session.id, config);
+      expect(ui.launches).toEqual([]);
+      const summary = `${session.id}: ${reconnect.describeReconnect(result)}`;
+      expect(ui.frame()).toContain(park.parked ? `${summary} · parked in tmux · enter to attach` : `${summary} · tmux unavailable, supervisor stopped · enter to resume`);
     } finally {
       ui.app.unmount();
       ui.restore();
       list.mockRestore();
       run.mockRestore();
+      parkSpy.mockRestore();
       deleteSession(session.id);
     }
   });

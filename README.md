@@ -194,7 +194,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
 | `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
-| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then rejoin. `--all` parks restarted supervisors in tmux. |
+| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
 | `tack session stop <session>` | Stop the session and its agents. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
 | `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
@@ -242,7 +242,7 @@ with work on the left and **Insights** on the right.
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
 | `r` | Refresh the session onto current Tack code (asks first) |
-| `w` | Wake: reconnect a session broken by sleep or network loss (asks first) |
+| `w` | Wake: reconnect a session broken by sleep or network loss (asks first). The supervisor is parked in tmux and the dashboard stays open; `enter` attaches |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
 | `d` | Delete (asks first) |

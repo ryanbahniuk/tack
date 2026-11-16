@@ -655,6 +655,14 @@ reattaching. A blocked supervisor stays live with a notice to refresh once idle;
 a stale watcher can still be refreshed independently. Refreshed supervisors get
 a seed telling them tools/permissions may have changed and to re-run `sync_projects`.
 
+`session reconnect <id>` (dashboard `w`) recovers from sleep or a network drop: it
+always stops the supervisor (no mid-turn or pending-plan guard), revives agents
+the outage killed, restarts a dead PR watcher, and relaunches the supervisor parked
+in tmux with a reconnect seed. It never opens a foreground TUI, so the CLI returns
+and the dashboard stays open; `session resume` attaches. Without tmux the
+supervisor stays stopped until resume. `--all` parks only supervisors that were
+running.
+
 Code versions are memoized per process: content hashes of the entry script's Tack
 source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
 uncommitted edits, or executable size/mtime for compiled Tack. Missing stamps on

@@ -57,8 +57,8 @@ export type ReconnectResult = {
  * neither the mid-turn guard nor a pending plan blocks it. Agents killed by the
  * outage are relaunched and a dead PR watcher is restarted.
  *
- * Launching the replacement supervisor belongs to the caller (the dashboard must
- * unmount Ink first; `--all` parks it in tmux), so this never opens a TUI.
+ * Relaunching the supervisor is a separate step (`parkReconnectedSupervisor`) so
+ * `--all` can skip sessions whose supervisor was not running; this never opens a TUI.
  */
 export async function reconnectSession(id: string, config: TackConfig): Promise<ReconnectResult> {
   const session = getSession(id);
@@ -100,6 +100,31 @@ export async function reconnectSession(id: string, config: TackConfig): Promise<
   return { supervisorRestarted, planPending, revivedAgents, failedAgents, watcherRestarted };
 }
 
+export type ParkResult =
+  | { parked: true }
+  /** `no-resume-ref`: the supervisor never got far enough to resume. `no-tmux`:
+   * nothing to park it in. `park-failed`: tmux could not create the session. */
+  | { parked: false; reason: "no-resume-ref" | "no-tmux" | "park-failed" };
+
+/**
+ * Relaunch a reconnected session's supervisor detached in tmux, resuming its
+ * conversation with the reconnect message, and hand control straight back. Every
+ * reconnect path parks rather than opening a foreground TUI: reconnect is a
+ * recovery chore, often run across sessions or from the dashboard, and the user
+ * rejoins with `tack session resume` (which attaches) when they want the
+ * conversation. Without tmux there is no foreground fallback; the supervisor
+ * stays stopped until resume. Re-reads the session because reconnecting may have
+ * changed it.
+ */
+export async function parkReconnectedSupervisor(id: string, config: TackConfig): Promise<ParkResult> {
+  const session = getSession(id);
+  if (!session) throw new Error(`Unknown session ${id}`);
+  if (!session.resume_ref) return { parked: false, reason: "no-resume-ref" };
+  if (!tmuxAvailable()) return { parked: false, reason: "no-tmux" };
+  const { detached } = await superviseInteractive({ session, prompt: RECONNECT_MESSAGE, resume: true, config, park: true });
+  return detached ? { parked: true } : { parked: false, reason: "park-failed" };
+}
+
 export type BulkReconnectResult = { session: SessionRow } & (
   | ({ status: "reconnected"; parked: boolean } & ReconnectResult)
   | { status: "error"; error: string });
@@ -113,12 +138,7 @@ export async function reconnectAllSessions(config: TackConfig): Promise<BulkReco
   for (const session of listSessions().filter(s => s.status === "active")) {
     try {
       const result = await reconnectSession(session.id, config);
-      let parked = false;
-      const current = getSession(session.id)!;
-      if (result.supervisorRestarted && current.resume_ref && tmuxAvailable()) {
-        await superviseInteractive({ session: current, prompt: RECONNECT_MESSAGE, resume: true, config, park: true });
-        parked = true;
-      }
+      const parked = result.supervisorRestarted && (await parkReconnectedSupervisor(session.id, config)).parked;
       results.push({ session, status: "reconnected", parked, ...result });
     } catch (err) {
       results.push({ session, status: "error", error: err instanceof Error ? err.message : String(err) });

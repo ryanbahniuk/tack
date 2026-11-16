@@ -1,9 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import type { TackConfig } from "../src/config/schema";
-import { createAgent, createSession, deleteSession, getAgent, getDb, setAgentError, setAgentPid, setAgentStatus, setSessionStatus, type AgentRow } from "../src/db";
+import { createAgent, createSession, deleteSession, getAgent, getDb, setAgentError, setAgentPid, setAgentStatus, setSessionResumeRef, setSessionStatus, type AgentRow } from "../src/db";
 import * as detached from "../src/agent/detached";
 import { isTransientError } from "../src/agent/detached";
-import { reconnectSession, selectAgentsToRevive } from "../src/session/reconnect";
+import * as repositories from "../src/db/repositories";
+import * as refresh from "../src/session/refresh";
+import * as tmux from "../src/session/tmux";
+import * as supervisor from "../src/supervisor/supervise";
+import { RECONNECT_MESSAGE, parkReconnectedSupervisor, reconnectAllSessions, reconnectSession, selectAgentsToRevive } from "../src/session/reconnect";
 
 const LIVE = 4242;
 const probes = { alive: (pid: number | null | undefined) => pid === LIVE };
@@ -85,5 +89,61 @@ describe("reconnectSession", () => {
       setSessionStatus(session.id, "archived");
       await expect(reconnectSession(session.id, config)).rejects.toThrow("archived");
     } finally { deleteSession(session.id); }
+  });
+});
+
+describe("parkReconnectedSupervisor", () => {
+  const config = {} as TackConfig;
+  test("needs a resume handle and tmux, and never falls back to a foreground TUI", async () => {
+    const session = createSession({});
+    const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(false);
+    const launch = spyOn(supervisor, "superviseInteractive").mockResolvedValue({ code: 0, detached: true });
+    try {
+      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-resume-ref" });
+      setSessionResumeRef(session.id, "ref-1");
+      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-tmux" });
+      expect(launch).not.toHaveBeenCalled();
+      await expect(parkReconnectedSupervisor("ses_missing", config)).rejects.toThrow("Unknown session");
+    } finally {
+      avail.mockRestore(); launch.mockRestore();
+      deleteSession(session.id);
+    }
+  });
+  test("parks the resumed supervisor in tmux with the reconnect seed", async () => {
+    const session = createSession({});
+    setSessionResumeRef(session.id, "ref-1");
+    const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(true);
+    let detached = true;
+    const launch = spyOn(supervisor, "superviseInteractive").mockImplementation(async () => ({ code: detached ? 0 : 1, detached }));
+    try {
+      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: true });
+      expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: session.id, resume_ref: "ref-1" }, prompt: RECONNECT_MESSAGE, resume: true, config, park: true });
+      detached = false;
+      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "park-failed" });
+    } finally {
+      avail.mockRestore(); launch.mockRestore();
+      deleteSession(session.id);
+    }
+  });
+});
+
+describe("reconnectAllSessions", () => {
+  test("parks only supervisors that were running", async () => {
+    const running = createSession({});
+    const idle = createSession({});
+    for (const s of [running, idle]) setSessionResumeRef(s.id, `ref-${s.id}`);
+    const list = spyOn(repositories, "listSessions").mockImplementation(() => [running, idle].map(s => repositories.getSession(s.id)!));
+    const stop = spyOn(refresh, "stopSupervisorProcess").mockImplementation(async s => s.id === running.id);
+    const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(true);
+    const launch = spyOn(supervisor, "superviseInteractive").mockResolvedValue({ code: 0, detached: true });
+    try {
+      const results = await reconnectAllSessions({} as TackConfig);
+      expect(results.map(r => [r.session.id, r.status === "reconnected" && r.parked])).toEqual([[running.id, true], [idle.id, false]]);
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: running.id }, park: true });
+    } finally {
+      list.mockRestore(); stop.mockRestore(); avail.mockRestore(); launch.mockRestore();
+      for (const s of [running, idle]) deleteSession(s.id);
+    }
   });
 });
