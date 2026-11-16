@@ -23,7 +23,7 @@ import {
   type SessionRow,
 } from "../db";
 import { getDb } from "../db";
-import { readArtifact, writeAgentArtifact } from "../artifacts/store";
+import { appendAgentArtifact, readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
 import { ensureReviewWorktree, ensureRemoteReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
@@ -143,6 +143,9 @@ export async function* runAgent(
       (continuation ? "\n\nCurrent instruction:\n" + readArtifact(agent.continuation_prompt_ref ?? agent.prompt_ref) : "")
     : readArtifact(agent.continuation_prompt_ref ?? agent.prompt_ref) || "Continue.";
 
+  if (options.resume || continuation)
+    appendAgentArtifact(session.id, agent.id, "transcript", `\n── resumed ${new Date().toISOString()} ──\n`);
+
   setAgentStatus(agent.id, "running");
   setAgentError(agent.id, null); // clear any error from a prior (failed) attempt
   let ok = false;
@@ -193,10 +196,12 @@ export async function* runAgent(
         break;
       case "text":
         transcript += ev.text;
+        appendAgentArtifact(session.id, agent.id, "transcript", ev.text);
         break;
       case "tool_call":
         // Live "what is this agent doing right now" for the dashboard.
         setAgentActivity(agent.id, activityLabel(ev.tool, ev.input));
+        appendAgentArtifact(session.id, agent.id, "transcript", `\n→ ${activityLabel(ev.tool, ev.input)}\n`);
         break;
       case "error":
         // Keep the latest error; the final one is the most relevant on failure.

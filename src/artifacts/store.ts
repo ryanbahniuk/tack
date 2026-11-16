@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ARTIFACTS_DIR, CONTEXT_DIR } from "../paths";
 
@@ -30,7 +30,7 @@ export function readArtifact(ref: string | null | undefined): string {
 export function agentArtifactPath(
   sessionId: string,
   agentId: string,
-  kind: "prompt" | "output" | "diff" | "review",
+  kind: "prompt" | "output" | "diff" | "review" | "transcript",
 ): string {
   const ext = kind === "diff" ? "patch" : kind === "review" ? "json" : "md";
   return join(ARTIFACTS_DIR, sessionId, agentId, `${kind}.${ext}`);
@@ -40,10 +40,20 @@ export function agentArtifactPath(
 export function writeAgentArtifact(
   sessionId: string,
   agentId: string,
-  kind: "prompt" | "output" | "diff" | "review",
+  kind: "prompt" | "output" | "diff" | "review" | "transcript",
   body: string,
 ): string {
   return write(agentArtifactPath(sessionId, agentId, kind), body);
+}
+
+/** Appends streamed content without replacing earlier turns. */
+export function appendAgentArtifact(
+  sessionId: string, agentId: string, kind: "prompt" | "output" | "diff" | "review" | "transcript", text: string,
+): string {
+  const path = agentArtifactPath(sessionId, agentId, kind);
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, text, "utf8");
+  return path;
 }
 
 /** Writes a versioned shared-context body and returns its ref path. */

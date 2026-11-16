@@ -27,6 +27,7 @@ import { editorInvocation } from "../util/editor";
 import { resolveEditTarget } from "../session/edit";
 import { createManualWorkspace, manualProjectCandidates } from "../session/manual";
 import { selfCommand } from "../process/self";
+import { isTerminalAgentStatus } from "./follow";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
 import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
@@ -126,13 +127,14 @@ function signature(views: View[]): string {
     .join("|");
 }
 
-/** The on-disk output file for an agent, falling back to its deterministic path when
- * the DB ref is empty (agents written before `output_ref` was persisted). Null when
- * no output has been produced yet. */
-function agentOutputRef(a: AgentRow): string | null {
-  if (a.output_ref && existsSync(a.output_ref)) return a.output_ref;
-  const path = agentArtifactPath(a.session_id, a.id, "output");
-  return existsSync(path) ? path : null;
+/** Resolve the same view for the picker action and its output hint. */
+export function agentViewTarget(a: AgentRow, exists: (path: string) => boolean):
+  { kind: "follow" } | { kind: "page"; ref: string } | { kind: "none" } {
+  if (a.kind === "manual") return { kind: "none" };
+  if (!isTerminalAgentStatus(a.status)) return { kind: "follow" };
+  const refs = [a.output_ref, agentArtifactPath(a.session_id, a.id, "output"), agentArtifactPath(a.session_id, a.id, "transcript")];
+  const ref = refs.find((path): path is string => !!path && exists(path));
+  return ref ? { kind: "page", ref } : { kind: "none" };
 }
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
@@ -162,7 +164,8 @@ type Launch =
   | { kind: "manual"; sessionId: string; project: string }
   | { kind: "create" }
   | { kind: "config" }
-  | { kind: "output"; ref: string; title: string };
+  | { kind: "output"; ref: string; title: string }
+  | { kind: "follow"; agentId: string };
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
 type Confirm =
@@ -520,12 +523,16 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (key.return || input === "o" || input === "v") {
         const a = agents[Math.min(agentCursor, agents.length - 1)];
         if (!a) return;
-        const ref = agentOutputRef(a);
-        if (!ref) {
+        const target = agentViewTarget(a, existsSync);
+        if (target.kind === "none") {
           setNotice(a.kind === "manual" ? `${a.id} is a manual workspace with no agent output · e to edit` : `agent ${a.id} has no output yet`);
           return;
         }
-        onLaunch({ kind: "output", ref, title: `${a.id} (${a.runtime}:${a.model})` });
+        if (target.kind === "follow") {
+          onLaunch({ kind: "follow", agentId: a.id });
+          return exit();
+        }
+        onLaunch({ kind: "output", ref: target.ref, title: `${a.id} (${a.runtime}:${a.model})` });
         return exit();
       }
       return;
@@ -865,7 +872,7 @@ function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
       {view.agents.length === 0 && <Text dimColor>No agents. Press n for a manual workspace.</Text>}
       {view.agents.map((a, i) => {
         const display = agentDisplayStatus(a);
-        const ref = agentOutputRef(a);
+        const target = agentViewTarget(a, existsSync);
         return (
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
@@ -880,7 +887,7 @@ function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
             ) : null}
             <Text color="green"> {usd(a.cost)}</Text>
             <Text dimColor> {a.project_name}</Text>
-            {ref ? null : <Text dimColor> (no output)</Text>}
+            {target.kind !== "none" ? null : <Text dimColor> (no output)</Text>}
             {a.worktree_path ? <Text dimColor> {collapseHome(a.worktree_path)}</Text> : null}
           </Text>
         );
@@ -1052,7 +1059,7 @@ function pagerInvocation(ref: string): { command: string; args: string[] } {
  * screen (so it keeps real scrollback), then re-enters the dashboard when the child
  * exits. Hand-offs: enter/o resumes the selected session's supervisor (and
  * stamps `last_seen_at` so its "needs input" badge clears), c creates a fresh one,
- * v pages agent output, e edits a worktree, n creates a manual workspace and edits
+ * v follows live agents or pages their output, e edits a worktree, n creates a manual workspace and edits
  * it, and C edits config then refreshes
  * sessions onto the validated config.
  */
@@ -1142,6 +1149,8 @@ export async function runDashboard(): Promise<void> {
         ? pagerInvocation(launch.ref)
         : launch.kind === "edit"
           ? editorInvocation(".")
+        : launch.kind === "follow"
+          ? selfCommand(["session", "follow", launch.agentId])
         : selfCommand(launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id, ...(launch.message ? ["--message", launch.message] : [])]);
     const proc = Bun.spawn([command, ...args], {
       cwd: launch.kind === "edit" ? launch.path : undefined,
