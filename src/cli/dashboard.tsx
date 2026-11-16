@@ -23,6 +23,7 @@ import { archiveSession, deleteSession, stopSession, unarchiveSession } from "..
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
 import { resolveEditTarget } from "../session/edit";
+import { createManualWorkspace, manualProjectCandidates } from "../session/manual";
 import { selfCommand } from "../process/self";
 import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
@@ -154,6 +155,9 @@ function openUrl(url: string): void {
 type Launch =
   | { kind: "resume"; id: string; message?: string }
   | { kind: "edit"; path: string; agentId: string }
+  /** Create a manual workspace, then edit it exactly like `edit`. Created after Ink
+   * tears down: the worktree fetch can take seconds and must not freeze the UI. */
+  | { kind: "manual"; sessionId: string; project: string }
   | { kind: "create" }
   | { kind: "config" }
   | { kind: "output"; ref: string; title: string };
@@ -164,7 +168,7 @@ type Confirm =
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v output · m amendments · O open PR · p poll PRs · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -287,6 +291,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [agentCursor, setAgentCursor] = useState(0);
   const [amendmentCursor, setAmendmentCursor] = useState(0);
+  /** The `n` project chooser inside the agents picker; null when not choosing. */
+  const [projectPick, setProjectPick] = useState<{ options: string[]; cursor: number } | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [notice, setNotice] = useState(initialNotice);
@@ -452,7 +458,33 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     // Agent picker: output and editing both hand the terminal to a child process.
     if (mode === "agents") {
       const agents = pickerView?.agents ?? [];
-      if (input === "q" || key.escape || !pickerView) return setMode("list");
+      // Project chooser for a new manual workspace swallows input until picked/cancelled.
+      if (projectPick && pickerView) {
+        if (input === "q" || key.escape) { setProjectPick(null); setNotice("cancelled"); return; }
+        if (key.downArrow || input === "j")
+          return setProjectPick({ ...projectPick, cursor: Math.min(projectPick.cursor + 1, projectPick.options.length - 1) });
+        if (key.upArrow || input === "k") return setProjectPick({ ...projectPick, cursor: Math.max(projectPick.cursor - 1, 0) });
+        if (key.return) {
+          const project = projectPick.options[projectPick.cursor]!;
+          setProjectPick(null);
+          onLaunch({ kind: "manual", sessionId: pickerView.session.id, project });
+          return exit();
+        }
+        return;
+      }
+      // Leaving the picker (including its session vanishing mid-choice) drops any open
+      // chooser so the next `v` never reopens a stale one for another session.
+      if (input === "q" || key.escape || !pickerView) { setProjectPick(null); return setMode("list"); }
+      if (input === "n") {
+        if (!config) return setNotice("config is unavailable");
+        const options = manualProjectCandidates(config.projects.map((p) => p.name), agents);
+        if (options.length === 0) return setNotice("no projects configured");
+        if (options.length === 1) {
+          onLaunch({ kind: "manual", sessionId: pickerView.session.id, project: options[0]! });
+          return exit();
+        }
+        return setProjectPick({ options, cursor: 0 });
+      }
       if (key.downArrow || input === "j") return setAgentCursor((c) => Math.min(c + 1, Math.max(0, agents.length - 1)));
       if (key.upArrow || input === "k") return setAgentCursor((c) => Math.max(c - 1, 0));
       if (input === "e") {
@@ -472,7 +504,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         if (!a) return;
         const ref = agentOutputRef(a);
         if (!ref) {
-          setNotice(`agent ${a.id} has no output yet`);
+          setNotice(a.kind === "manual" ? `${a.id} is a manual workspace with no agent output · e to edit` : `agent ${a.id} has no output yet`);
           return;
         }
         onLaunch({ kind: "output", ref, title: `${a.id} (${a.runtime}:${a.model})` });
@@ -521,12 +553,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       onLaunch({ kind: "resume", id: selected.session.id });
       exit();
     } else if (input === "v") {
-      if (selected.agents.length === 0) {
-        setNotice(`${selected.session.id} has no agents yet`);
-        return;
-      }
+      // Opens even with no agents: the picker is also where `n` starts a manual workspace.
       setPickerId(selected.session.id);
       setAgentCursor(0);
+      setProjectPick(null);
       setMode("agents");
     } else if (input === "m") {
       if (selected.amendments.length === 0) {
@@ -595,7 +625,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
 
   if (mode === "agents" && pickerView) {
-    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} />;
+    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} projectPick={projectPick} />;
   }
 
   if (mode === "amendments" && pickerView) {
@@ -665,10 +695,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
               <Text>
                 {`    ├─ ${agentLabel(a, v.prs)} `}
                 <Text color={display.color}>{display.label.padEnd(8)}</Text>
-                <Text dimColor>
-                  {" "}
-                  {a.runtime}:{a.model}
-                </Text>
+                {a.runtime ? (
+                  <Text dimColor>
+                    {" "}
+                    {a.runtime}:{a.model}
+                  </Text>
+                ) : null}
                 <Text color="green"> {usd(a.cost)}</Text>
                 {a.attempt > 0 ? <Text color="yellow"> ↻{a.attempt}</Text> : null}
               </Text>
@@ -765,14 +797,38 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   );
 }
 
-/** The agent picker shows worktree paths alongside output so the human can inspect or edit. */
-function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor: number; notice: string; confirmText: string | null }) {
+/** The agent picker shows worktree paths alongside output so the human can inspect or
+ * edit, and starts manual workspaces (`n`), choosing a project when several qualify. */
+function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
+  view: View; cursor: number; notice: string; confirmText: string | null;
+  projectPick: { options: string[]; cursor: number } | null;
+}) {
+  if (projectPick) {
+    const own = new Set(view.agents.map((a) => a.project_name));
+    return (
+      <Box flexDirection="column">
+        <Text bold>
+          New manual workspace in {view.session.id} <Text dimColor>choose a project</Text>
+        </Text>
+        {projectPick.options.map((p, i) => (
+          <Text key={p}>
+            <Text color={i === projectPick.cursor ? "cyan" : undefined}>{i === projectPick.cursor ? "❯ " : "  "}</Text>
+            <Text bold>{p}</Text>
+            {own.has(p) ? <Text dimColor> (in this session)</Text> : null}
+          </Text>
+        ))}
+        <Box marginTop={1}>
+          <Text dimColor>j/k move · enter create + edit · esc/q cancel</Text>
+        </Box>
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column">
       <Text bold>
         Agents of {view.session.id} <Text dimColor>{view.session.title ?? ""}</Text>
       </Text>
-      {view.agents.length === 0 && <Text dimColor>No agents.</Text>}
+      {view.agents.length === 0 && <Text dimColor>No agents. Press n for a manual workspace.</Text>}
       {view.agents.map((a, i) => {
         const display = agentDisplayStatus(a);
         const ref = agentOutputRef(a);
@@ -780,12 +836,14 @@ function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor
           <Text key={a.id}>
             <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
             <Text bold>{a.id}</Text>
-            {a.kind === "pr_fix" || a.kind === "review" ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
+            {a.kind ? <Text color="cyan"> {agentLabel(a, view.prs)}</Text> : null}{" "}
             <Text color={display.color}>{display.label.padEnd(8)}</Text>
-            <Text dimColor>
-              {" "}
-              {a.runtime}:{a.model}
-            </Text>
+            {a.runtime ? (
+              <Text dimColor>
+                {" "}
+                {a.runtime}:{a.model}
+              </Text>
+            ) : null}
             <Text color="green"> {usd(a.cost)}</Text>
             <Text dimColor> {a.project_name}</Text>
             {ref ? null : <Text dimColor> (no output)</Text>}
@@ -796,7 +854,7 @@ function AgentsPanel({ view, cursor, notice, confirmText }: { view: View; cursor
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
         {confirmText ? <Text color="yellow">{confirmText}</Text> : null}
-        <Text dimColor>j/k move · enter/v view output · e edit worktree · esc/q back</Text>
+        <Text dimColor>j/k move · enter/v view output · e edit worktree · n new manual workspace · esc/q back</Text>
       </Box>
     </Box>
   );
@@ -882,9 +940,10 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
   }
 }
 
-/** The dashboard's name for an agent row: "Agent", or `pr-fix #<n>` for a PR-watch
- * fix agent so it's obvious which PR it's working on. */
+/** The dashboard's name for an agent row: "Agent", `manual` for a human workspace, or
+ * `pr-fix #<n>` for a PR-watch fix agent so it's obvious which PR it's working on. */
 function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
+  if (a.kind === "manual") return "manual";
   if (a.kind === "review") return `review:${a.persona ?? "?"}`;
   if (a.kind !== "pr_fix") return "Agent";
   const pr = prs.find((p) => p.id === a.session_pr_id);
@@ -959,7 +1018,8 @@ function pagerInvocation(ref: string): { command: string; args: string[] } {
  * screen (so it keeps real scrollback), then re-enters the dashboard when the child
  * exits. Hand-offs: enter/o resumes the selected session's supervisor (and
  * stamps `last_seen_at` so its "needs input" badge clears), c creates a fresh one,
- * v pages agent output, e edits a worktree, and C edits config then refreshes
+ * v pages agent output, e edits a worktree, n creates a manual workspace and edits
+ * it, and C edits config then refreshes
  * sessions onto the validated config.
  */
 export async function runDashboard(): Promise<void> {
@@ -1025,6 +1085,21 @@ export async function runDashboard(): Promise<void> {
         + (blocked ? ` · ${blocked} blocked (refresh on resume or r)` : "")
         + (failed ? ` · ${failed} failed` : "");
       continue;
+    }
+
+    if (launch.kind === "manual") {
+      // Created here, on the normal screen, so the fetch's wait is visible; then it
+      // takes exactly the `e` path below.
+      console.log(`Creating a manual workspace for ${launch.project}…`);
+      try {
+        if (!config) throw new Error("config is unavailable");
+        const created = createManualWorkspace(config, launch.sessionId, launch.project);
+        launch = { kind: "edit", path: created.worktree_path!, agentId: created.id };
+        pendingNotice = `manual workspace ${created.id} · ${collapseHome(created.worktree_path!)}`;
+      } catch (err) {
+        pendingNotice = `could not create a manual workspace: ${err instanceof Error ? err.message : String(err)}`;
+        continue;
+      }
     }
 
     // Runs on the normal screen so the child keeps real scrollback.

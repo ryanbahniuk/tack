@@ -6,7 +6,9 @@ type EditTarget =
   | { ok: false; reason: "not_found" | "no_worktree" | "none" | "ambiguous" | "running"; candidates?: AgentRow[]; message: string };
 
 /** Resolve before touching the terminal: the CLI must never silently pick one of
- * several trees, and a running writer needs an explicit override in either UI. */
+ * several trees, and a running writer needs an explicit override in either UI.
+ * Manual workspaces resolve like any worker but never need the override: no runtime
+ * ever writes to them. */
 export function resolveEditTarget(
   agents: AgentRow[], agentId: string | undefined, exists: (p: string) => boolean,
   opts: { force?: boolean } = {},
@@ -24,7 +26,7 @@ export function resolveEditTarget(
     if (candidates.length > 1) return { ok: false, reason: "ambiguous", candidates, message: "Several agent worktrees exist. Pass an agent id." };
     agent = candidates[0]!;
   }
-  if (!opts.force && (agent.status === "pending" || agent.status === "running"))
+  if (!opts.force && agent.kind !== "manual" && (agent.status === "pending" || agent.status === "running"))
     return { ok: false, reason: "running", message: `Agent ${agent.id} is still running. Use --force to edit its worktree anyway.` };
   return { ok: true, agent, path: agent.worktree_path! };
 }
@@ -45,6 +47,8 @@ export function worktreeEditSummary(agent: AgentRow, prs: SessionPrRow[], path: 
     lines.push("These edits aren't on the PR yet.");
     if (pr.head_branch) lines.push(`git -C ${shellArg(path)} commit -am "…" && git -C ${shellArg(path)} push origin ${shellArg(`HEAD:${pr.head_branch}`)}`);
     else lines.push("PR head branch is unavailable; refresh PR status before pushing.");
+  } else if (!pr && agent.kind === "manual") {
+    lines.push(`Ask the supervisor to open a PR for ${agent.id}; open_pr commits leftover changes when it opens the PR.`);
   } else if (!pr) {
     lines.push("The supervisor's open_pr commits leftover changes when it opens the PR.");
   }

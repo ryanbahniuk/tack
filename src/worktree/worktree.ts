@@ -485,21 +485,29 @@ export function worktreeDiff(wt: Worktree, runBase?: string): string {
   return r.status === 0 ? (r.stdout ?? "") : "";
 }
 
+/** Repo-relative paths of new files not yet added (respecting .gitignore). They're
+ * invisible to `git diff`, yet open_pr's commit would include them. */
+export function untrackedFiles(worktreePath: string): string[] {
+  const r = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: worktreePath, encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return (r.stdout ?? "").split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
 /**
- * The repo-relative paths an agent's branch changed since it forked — the basis for
+ * The repo-relative paths an agent's worktree changed since it forked — the basis for
  * cross-agent conflict prediction (a file two sibling agents both touch is a merge
- * collision waiting to happen). Taken against the recorded fork point so it reflects
- * committed work, matching `worktreeDiff`. Empty when the worktree or base is gone.
+ * collision waiting to happen). Compares the working tree (committed and uncommitted
+ * edits) against the recorded fork point, matching `worktreeDiff`, plus untracked
+ * files. Empty when the worktree or base is gone.
  */
 export function changedFiles(repo: string, branch: string, worktreePath: string): string[] {
   const base = readBaseRef(repo, branch);
   if (!base || !existsSync(worktreePath)) return [];
   const r = spawnSync("git", ["diff", "--name-only", base], { cwd: worktreePath, encoding: "utf8" });
   if (r.status !== 0) return [];
-  return (r.stdout ?? "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const tracked = (r.stdout ?? "").split("\n").map((s) => s.trim()).filter(Boolean);
+  // Untracked files collide just the same (most visible in a human's manual workspace).
+  return [...new Set([...tracked, ...untrackedFiles(worktreePath)])];
 }
 
 /** Fail closed on stale/offline heads and divergence. Never reset or discard a

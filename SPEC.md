@@ -302,7 +302,8 @@ session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, statu
                      updated_at, UNIQUE(session_id, key))
 ```
 
-`sessions` also carries `pr_watch_pid`; `agents` carries `kind` (NULL | `pr_fix`),
+`sessions` also carries `pr_watch_pid`; `agents` carries `kind` (NULL | `pr_fix` |
+`review` | `manual` — see "Manual workspaces" below),
 `session_pr_id`, `post_fixed_at`, `fix_outcome`, `fix_pushed_sha`, and
 `continues_agent_id` (see §11 PR watch). Continuation prompt refs, start markers,
 and per-fix diff baselines survive detached retries and archive restore.
@@ -654,7 +655,7 @@ live legacy processes count as stale; `unknown` versions never do. Watchers stam
 their own code and config versions at startup. Config versions are SHA-256 hashes
 of `CONFIG_PATH` contents, read fresh on every check. A live component is stale when
 either code or config differs; missing/unreadable config returns `unknown`.
-Dashboard `C` opens config in `$VISUAL` / `$EDITOR` (fallback `vi`) in every layout,
+Dashboard `C` opens config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`) in every layout,
 even with no sessions. Unchanged config shows a notice; invalid edits retain the
 previous config without refreshing sessions. Valid changes reload dashboard config
 and use the same bulk refresh as `session refresh --all`, reporting refreshed,
@@ -662,6 +663,30 @@ blocked, and failed counts. Claude's prompt-submit hook stamps the best-effort
 turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
 notification covers Esc interruptions, which do not fire Stop. Adapters without
 these hooks leave it null. A live headless runner is always treated as busy.
+
+### Worktree editing and manual workspaces
+
+`tack session edit <session> [agent]` (`src/session/edit.ts`) opens an existing
+worktree in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`), rooted at the tree;
+afterwards it prints the branch, Git status and, for an open PR, a push hint. It
+observes only — never commits or pushes. Dashboard `v` → `e` is the same path.
+
+`--new [project]` (dashboard: `v` → `n`) creates a **manual workspace**
+(`src/session/manual.ts`): a clean `tack/<session>/<id>` worktree from
+`createWorktree` (fresh remote default branch, fork point pinned) recorded as an
+`agents` row with `kind = 'manual'`, `status = 'done'`, no runtime/model/pid/
+resume_ref/refs and zero cost. `finished_at` stays NULL so it never reads as unread
+agent work. Omitted projects resolve only when unambiguous (one configured project,
+or one project among the session's agents); the dashboard otherwise shows a chooser
+with the session's projects first.
+
+A manual row is the human's work, never a conversation: `runAgent`,
+`runAgentToCompletion`, `spawnAgentRunner`, archive/unarchive, `continue_agent` and
+`review_agent` all refuse or skip it. Everywhere else it is a worker:
+`check_conflicts` includes it (uncached, since hand edits don't touch the row, and
+counting untracked files), `read_agent_output` reads its diff live, `open_pr`
+commits leftover edits then captures the diff before pushing, and `fix_pr` on its
+PR falls back to a fresh `pr_fix` (no lineage to continue).
 
 ### PR watch
 

@@ -50,6 +50,7 @@ import {
 } from "../src/supervisor/supervise";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
+import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
 import { summarizeProject } from "../src/projects/summarize";
 import {
@@ -1231,7 +1232,9 @@ const sessionShow = defineCommand({
       const alive = a.status === "running";
       const statusColor = alive ? pc.yellow : a.status === "done" ? pc.green : a.status === "failed" ? pc.red : pc.gray;
       console.log(
-        `  ${pc.cyan(a.id)}  ${statusColor(a.status.padEnd(8))} ${pc.dim(`${a.runtime}:${a.model}`)}  ${usd(a.cost)}  ${pc.dim(a.project_name)}`,
+        a.kind === "manual"
+          ? `  ${pc.cyan(a.id)}  ${pc.blue("manual".padEnd(8))} ${pc.dim("human workspace")}  ${usd(a.cost)}  ${pc.dim(a.project_name)}`
+          : `  ${pc.cyan(a.id)}  ${statusColor(a.status.padEnd(8))} ${pc.dim(`${a.runtime}:${a.model}`)}  ${usd(a.cost)}  ${pc.dim(a.project_name)}`,
       );
       if (a.branch) console.log(pc.dim(`    ${a.branch}`));
     }
@@ -1339,21 +1342,48 @@ const sessionRetitle = defineCommand({
 });
 
 const sessionEdit = defineCommand({
-  meta: { name: "edit", description: "Open an agent's worktree in $VISUAL or $EDITOR" },
+  meta: {
+    name: "edit",
+    description: "Open an agent's worktree in $VISUAL or $EDITOR, or create a manual workspace with --new [project]",
+  },
   args: {
     session: { type: "positional", description: "Session id", required: true },
-    agent: { type: "positional", description: "Agent id (required when several worktrees exist)", required: false },
+    // `--new` is a boolean so `--new --print-path` can't swallow the next flag as its
+    // value; with it set, this positional names the project instead of an agent.
+    agent: { type: "positional", description: "Agent id (required when several worktrees exist); with --new, the project", required: false },
+    new: { type: "boolean", description: "Create a clean manual workspace (its own worktree) for a project and edit it" },
     force: { type: "boolean", description: "Allow editing a pending or running agent's worktree" },
     "print-path": { type: "boolean", description: "Print just the worktree path without opening an editor" },
   },
-  run({ args }) {
+  async run({ args }) {
     const id = String(args.session);
     requireSession(id);
-    const target = resolveEditTarget(listAgents(id), args.agent, existsSync, { force: args.force });
+    let target: ReturnType<typeof resolveEditTarget>;
+    if (args.new) {
+      const config = await loadConfig();
+      const resolved = resolveManualProject(config.projects.map(p => p.name), listAgents(id), args.agent);
+      if (!resolved.ok) {
+        console.error(pc.red(resolved.message));
+        if (resolved.candidates.length) console.error(`Projects: ${resolved.candidates.join(", ")}`);
+        return process.exit(1);
+      }
+      let created;
+      try {
+        created = createManualWorkspace(config, id, resolved.project);
+      } catch (err) {
+        console.error(pc.red(`Could not create a manual workspace: ${(err as Error).message}`));
+        return process.exit(1);
+      }
+      // Status goes to stderr so `--print-path` stdout stays just the path.
+      console.error(pc.dim(`Created manual workspace ${created.id} for ${resolved.project} on ${created.branch}`));
+      target = { ok: true, agent: created, path: created.worktree_path! };
+    } else {
+      target = resolveEditTarget(listAgents(id), args.agent, existsSync, { force: args.force });
+    }
     if (!target.ok) {
       console.error(pc.red(target.message));
       for (const a of target.candidates ?? [])
-        console.error(`${a.id}  ${a.project_name}  ${a.status}  ${a.branch ?? "(no branch)"}  ${a.worktree_path}`);
+        console.error(`${a.id}  ${a.kind === "manual" ? "manual  " : ""}${a.project_name}  ${a.status}  ${a.branch ?? "(no branch)"}  ${a.worktree_path}`);
       return process.exit(1);
     }
     if (args["print-path"]) { console.log(target.path); return; }

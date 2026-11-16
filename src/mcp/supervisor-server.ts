@@ -16,6 +16,7 @@ import {
   listPrFixAgents,
   listSessionPrs,
   prFeedbackSourceIds,
+  setAgentRefs,
   resolveAmendment,
   unlinkSessionJiraTicket,
   upsertSessionJiraTicket,
@@ -26,6 +27,7 @@ import {
 import { overlapWithSiblings, sessionFileCollisions } from "../supervisor/conflicts";
 import {
   readArtifact,
+  writeAgentArtifact,
   writeAmendmentArtifact,
   writeSharedContext,
 } from "../artifacts/store";
@@ -34,6 +36,7 @@ import { prepareAgent } from "../agent/execute";
 import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
+import { manualWorkspaceDiff } from "../session/manual";
 import { commitWorktreeAsync, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
 import {
   fetchPrChecks,
@@ -202,7 +205,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     const persona = resolvePersona(config, name);
     const target = getAgent(agentId);
     if (!target || target.session_id !== sessionId) throw new Error("Reviewed agent is not in this session.");
-    if (target.kind) throw new Error("Only normal worker agents can be reviewed; review and PR-fix agents cannot.");
+    // Manual workspaces are refused too: they have no captured diff until open_pr, and
+    // the human's in-progress edits keep moving under a reviewer.
+    if (target.kind) throw new Error("Only normal worker agents can be reviewed; review, PR-fix and manual-workspace rows cannot.");
     if (target.status !== "done") throw new Error("Reviewed agent must be done; use wait_for_agents first.");
     if (!readArtifact(target.diff_ref).trim()) throw new Error("Reviewed agent has no diff to review.");
     if (!target.branch || !target.diff_base) throw new Error("Reviewed agent has no local branch/baseline.");
@@ -455,29 +460,39 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
     async ({ agentId, title, body, slug, base, draft }) => {
       const session = requireSession();
-      const a = getAgent(agentId);
+      let a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
       if (a.kind === "review") throw new Error("Review agents report findings and cannot open PRs.");
       if (!a.branch || !a.worktree_path)
         throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
+      const proj = config.projects.find((p) => p.name === a!.project_name);
+      if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
+      if (a.kind === "manual") {
+        // A manual workspace never "finishes", so nothing captured its diff: fold the
+        // human's leftover edits into the branch, then capture what it now carries.
+        await commitWorktreeAsync(a.worktree_path, `Tack: commit manual edits in ${agentId}`);
+        const diff = manualWorkspaceDiff(a, proj.path);
+        setAgentRefs(agentId, { diffRef: diff.trim() ? writeAgentArtifact(sessionId, agentId, "diff", diff) : null });
+        a = getAgent(agentId)!;
+      }
       // The diff is captured (against the fork point) when the agent finishes, so no
       // diff means there's nothing to push — fail legibly rather than letting `gh`
       // reject an empty branch, which matters most when PRs open unattended.
       if (!a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
-      const proj = config.projects.find((p) => p.name === a.project_name);
-      if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
+      const worktreePath = a.worktree_path!;
+      const branch = a.branch!;
       // Safety net: fold any changes the agent left uncommitted into its branch so
       // nothing is dropped from the PR (a push only carries commits).
-      await commitWorktreeAsync(a.worktree_path, `Tack: finalize work for agent ${agentId}`);
+      await commitWorktreeAsync(worktreePath, `Tack: finalize work for agent ${agentId}`);
       const baseSync: Awaited<ReturnType<typeof syncBranchWithBase>> & {
         prFixAgentId?: string;
         prFixSkipped?: string;
-      } = await syncBranchWithBase(proj.path, a.branch, a.worktree_path, base);
+      } = await syncBranchWithBase(proj.path, branch, worktreePath, base);
       const asDraft = config.draftPrs || !!draft;
       const pr = await openSessionPr({
         repoPath: proj.path,
-        localBranch: a.branch,
+        localBranch: branch,
         prBranch: sessionPrBranch(sessionId, slug ?? title),
         title,
         body,
@@ -836,12 +851,18 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       const output = readArtifact(a.output_ref);
-      const diff = readArtifact(a.diff_ref);
+      // A manual workspace has no runtime output and no captured diff; read its
+      // worktree live so the supervisor sees the human's current edits.
+      const repo = config.projects.find((p) => p.name === a.project_name)?.path;
+      const diff = a.kind === "manual" && repo ? manualWorkspaceDiff(a, repo) : readArtifact(a.diff_ref);
       return text({
         status: a.status,
+        ...(a.kind ? { kind: a.kind } : {}),
         cost: a.cost,
         branch: a.branch,
-        output: output || "(no textual output captured)",
+        output: a.kind === "manual"
+          ? "(manual workspace — the human's hand edits; no agent output. Open it as a PR with open_pr when asked.)"
+          : output || "(no textual output captured)",
         ...(a.kind === "review" ? { review: a.review_ref ? JSON.parse(readArtifact(a.review_ref)) : null } : {}),
         diffPreview: diff ? diff.split("\n").slice(0, 200).join("\n") : "(no diff)",
       });
@@ -855,7 +876,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Check for collisions across the session's agents BEFORE opening PRs: files that more than one agent " +
         "changed in the same project (a merge conflict waiting to happen across the N branches). Run this once " +
         "agents finish; if it reports collisions, resolve them with continue_agent on the owning agent before " +
-        "opening pull requests. Empty means the branches touch disjoint files and should merge cleanly.",
+        "opening pull requests. Manual workspaces (kind manual, the human's edits) are included but can't be " +
+        "continued: reconcile by continuing the agent side of the collision, or ask the human — never modify " +
+        "the manual workspace. Empty means the branches touch disjoint files and should merge cleanly.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },

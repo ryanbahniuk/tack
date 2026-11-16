@@ -13,6 +13,7 @@ import {
 } from "../db";
 import type { TackConfig } from "../config/schema";
 import { runAgent } from "./execute";
+import { MANUAL_NOT_RUNNABLE } from "../session/manual";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const TERMINAL: ReadonlySet<AgentStatus> = new Set(["done", "failed", "stopped"]);
@@ -39,6 +40,9 @@ export function isTransientError(message: string | null | undefined): boolean {
  * captured to a sibling `.runner.log`. Returns the pid.
  */
 export function spawnAgentRunner(sessionId: string, agentId: string, options: { resume?: boolean } = {}): number {
+  // Refuse up front so no detached process (or pid) is ever attached to a manual row.
+  const row = getAgent(agentId);
+  if (row?.kind === "manual") throw new Error(`Agent ${agentId} ${MANUAL_NOT_RUNNABLE}.`);
   mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
   const fd = openSync(join(LOGS_DIR, sessionId, `${agentId}.runner.log`), "a");
   const { command, args } = selfInvocation();
@@ -80,6 +84,8 @@ export function spawnSupervisorRunner(sessionId: string, mode: "fresh" | "resume
 export async function runAgentToCompletion(agentId: string, config: TackConfig, options: { resume?: boolean } = {}): Promise<void> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
+  // Before stamping a pid: a manual row must never look like it has a live runner.
+  if (agent.kind === "manual") throw new Error(`Agent ${agentId} ${MANUAL_NOT_RUNNABLE}.`);
   setAgentPid(agentId, process.pid);
 
   // Dependency ordering (SPEC "correctness of parallel work"): the supervisor can fan
