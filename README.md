@@ -569,10 +569,14 @@ The header shows the current layout, range, and live/working session counts.
 Working supervisors show a cyan spinner and elapsed turn time in their session row;
 a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
 in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J` (open the session's tickets), `t`, `P`, `c`, `C`, `r`, `w`, `x`, `a`, `d`, `z`, `q`.
-Press `t` for every linked Jira ticket across the sessions shown (open work first,
-then done), with each ticket's session and its state; `enter/o` opens the ticket,
-`g` jumps to its session, `esc/q` goes back. `P` polls Jira now instead of waiting
-for the 2-minute refresh (from the list or the tickets view).
+Press `t` for every Jira ticket linked to any session, archived ones included
+whatever `z` says (open work first, newest link first, then done), with each
+ticket's session and its state. `f` cycles the status filter (all, open, in progress,
+to do, done), `a` hides or shows archived sessions, and `/` filters by ticket key or
+title and session id or title (`enter` keeps it, `esc` clears it). `enter/o` opens the
+ticket, `g` jumps to its session (showing archived sessions if needed), `esc/q` goes
+back. `P` polls Jira now instead of waiting for the 2-minute refresh: from the list it
+polls the sessions shown, from the tickets view the sessions of the filtered tickets.
 Press `w` (wake) on a session that stopped working after the laptop slept or lost
 its connection: after `y`, Tack restarts its supervisor (even mid-turn or with a plan
 pending, which is re-presented), relaunches agents whose runner died or that failed
