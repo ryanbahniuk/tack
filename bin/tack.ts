@@ -56,6 +56,7 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { describeReconnect, parkReconnectedSupervisor, reconnectAllSessions, reconnectSession } from "../src/session/reconnect";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
@@ -1044,6 +1045,56 @@ const sessionRefresh = defineCommand({
   },
 });
 
+/** Recovery after sleep or a network drop: restart the supervisor even on current
+ * code, revive agents the outage killed, restart a dead PR watcher, then park the
+ * replacement supervisor detached in tmux and hand the terminal back. */
+const sessionReconnect = defineCommand({
+  meta: { name: "reconnect", description: "Recover a session after sleep or a lost connection; restarts the supervisor detached in tmux (--all for every active session)" },
+  args: {
+    session: { type: "positional", required: false, description: "Session id (or use --all)" },
+    all: { type: "boolean", description: "Reconnect every active session" },
+  },
+  async run({ args }) {
+    if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
+    const config = await loadConfig();
+    if (args.all) {
+      for (const result of await reconnectAllSessions(config)) {
+        const id = result.session.id;
+        if (result.status === "error") {
+          console.error(`${id}: ${result.error}`);
+          process.exitCode = 1;
+        } else {
+          console.log(`${id}: ${describeReconnect(result)}${result.parked ? " · parked in tmux" : ""}`);
+          if (result.failedAgents.length) process.exitCode = 1;
+        }
+      }
+      return;
+    }
+    const id = String(args.session);
+    requireSession(id);
+    const result = await reconnectSession(id, config);
+    if (!getSession(id)!.resume_ref) {
+      console.log(pc.dim(`${id}: ${describeReconnect(result)}`));
+      console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
+      return process.exit(1);
+    }
+    // Unlike refresh, always relaunch: the user asked to reconnect this session,
+    // so a supervisor that was already down comes back too.
+    const park = await parkReconnectedSupervisor(id, config);
+    console.log(`${id}: ${describeReconnect(result)}${park.parked ? " · parked in tmux" : ""}`);
+    if (park.parked) {
+      console.log(pc.dim(`Rejoin it with \`tack session resume ${id}\`.`));
+      console.log(pc.dim("Watch work with `tack dashboard`."));
+    } else if (park.reason === "no-tmux") {
+      console.log(pc.dim(`tmux is unavailable, so the supervisor is stopped. Run \`tack session resume ${id}\` to start it.`));
+    } else {
+      console.error(pc.red(`Could not park the supervisor in tmux. Run \`tack session resume ${id}\` to start it.`));
+      process.exitCode = 1;
+    }
+    if (result.failedAgents.length) process.exitCode = 1;
+  },
+});
+
 const sessionResume = defineCommand({
   meta: {
     name: "resume",
@@ -1469,9 +1520,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

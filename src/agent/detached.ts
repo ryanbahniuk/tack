@@ -25,10 +25,12 @@ const MAX_TRANSIENT_RETRIES = 2;
 
 /** Heuristic: does this failure look transient (worth a retry) rather than a genuine
  * task failure? Matches the usual provider/network blips the runtimes surface as
- * error text. Conservative — anything unrecognized is treated as a real failure. */
+ * error text, including the connection-loss text a sleeping laptop or dropped
+ * network leaves behind (so `reconnect` can revive those runs). Conservative —
+ * anything unrecognized is treated as a real failure. */
 export function isTransientError(message: string | null | undefined): boolean {
   if (!message) return false;
-  return /rate.?limit|overloaded|429|50[0-9]\b|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|temporarily unavailable|service unavailable/i.test(
+  return /rate.?limit|overloaded|429|50[0-9]\b|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|temporarily unavailable|service unavailable|connection error|fetch failed|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENETDOWN|network is unreachable/i.test(
     message,
   );
 }
