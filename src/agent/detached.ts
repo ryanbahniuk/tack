@@ -1,3 +1,4 @@
+import { encodePreflight, type RunnerPreflight } from "./preflight";
 import { spawn } from "node:child_process";
 import { openSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -24,10 +25,12 @@ const MAX_TRANSIENT_RETRIES = 2;
 
 /** Heuristic: does this failure look transient (worth a retry) rather than a genuine
  * task failure? Matches the usual provider/network blips the runtimes surface as
- * error text. Conservative — anything unrecognized is treated as a real failure. */
+ * error text, including the connection-loss text a sleeping laptop or dropped
+ * network leaves behind (so `reconnect` can revive those runs). Conservative —
+ * anything unrecognized is treated as a real failure. */
 export function isTransientError(message: string | null | undefined): boolean {
   if (!message) return false;
-  return /rate.?limit|overloaded|429|50[0-9]\b|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|temporarily unavailable|service unavailable/i.test(
+  return /rate.?limit|overloaded|429|50[0-9]\b|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network error|temporarily unavailable|service unavailable|connection error|fetch failed|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENETDOWN|network is unreachable/i.test(
     message,
   );
 }
@@ -39,7 +42,7 @@ export function isTransientError(message: string | null | undefined): boolean {
  * already tees to the agent's log via the adapter; this process's own stdio is
  * captured to a sibling `.runner.log`. Returns the pid.
  */
-export function spawnAgentRunner(sessionId: string, agentId: string, options: { resume?: boolean } = {}): number {
+export function spawnAgentRunner(sessionId: string, agentId: string, options: { resume?: boolean; preflight?: RunnerPreflight } = {}): number {
   // Refuse up front so no detached process (or pid) is ever attached to a manual row.
   const row = getAgent(agentId);
   if (row?.kind === "manual") throw new Error(`Agent ${agentId} ${MANUAL_NOT_RUNNABLE}.`);
@@ -49,7 +52,7 @@ export function spawnAgentRunner(sessionId: string, agentId: string, options: { 
   const child = spawn(command, [...args, "__run-agent", agentId, ...(options.resume ? ["--resume"] : [])], {
     detached: true,
     stdio: ["ignore", fd, fd],
-    env: process.env,
+    env: { ...process.env, TACK_RUNNER_PREFLIGHT: options.preflight ? encodePreflight(options.preflight) : "" },
   });
   child.unref();
   if (child.pid === undefined) throw new Error(`Failed to spawn runner for agent ${agentId}`);
@@ -81,7 +84,7 @@ export function spawnSupervisorRunner(sessionId: string, mode: "fresh" | "resume
 
 /** The `__run-agent` entrypoint: self-gate on declared dependencies, then drive the
  * agent to completion with transient-failure retry. */
-export async function runAgentToCompletion(agentId: string, config: TackConfig, options: { resume?: boolean } = {}): Promise<void> {
+export async function runAgentToCompletion(agentId: string, config: TackConfig, options: { resume?: boolean; preflight?: RunnerPreflight } = {}): Promise<void> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
   // Before stamping a pid: a manual row must never look like it has a live runner.
@@ -102,6 +105,8 @@ export async function runAgentToCompletion(agentId: string, config: TackConfig, 
     const continuation = Boolean(getAgent(agentId)?.continuation_prompt_ref || agent.continues_agent_id);
     await drain(runAgent(agentId, config, {
       resume: (options.resume && attempt === 0) || (attempt > 0 && continuation),
+      preflight: options.preflight,
+      startupLogging: true,
     }));
     const row = getAgent(agentId);
     if (!row || row.status !== "failed") return;

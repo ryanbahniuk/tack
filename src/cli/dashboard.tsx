@@ -1,3 +1,4 @@
+import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { startRemoteReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
 import React, { useEffect, useRef, useState } from "react";
@@ -7,8 +8,10 @@ import {
   agentCostBySession,
   countOpenPrFeedbackByPr,
   getSession,
+  listAgents,
   listAgentsBySession,
   listInterruptedAgents,
+  listAllSessionJiraTickets,
   listPendingAmendmentsBySession,
   listSessionJiraTicketsBySession,
   listSessionPrs,
@@ -16,12 +19,14 @@ import {
   listSessions,
   type AgentRow,
   type AmendmentRow,
+  type JiraTicketWithSessionRow,
   type SessionJiraTicketRow,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, refreshAllStaleSessions, refreshSession, staleSessionIds } from "../session/refresh";
+import { describeReconnect, parkReconnectedSupervisor, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
@@ -33,7 +38,7 @@ import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
 import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
 import { isAlive } from "../process/self";
-import { closeJiraClient, refreshSessionJiraTickets, resolveTicketUrl } from "../projects/jira";
+import { closeJiraClient, refreshSessionJiraTickets, resolveTicketUrl, type JiraRefreshResult } from "../projects/jira";
 import { ensureConfigExists } from "../config/ensure";
 import { currentConfigVersion } from "../process/version";
 import { loadConfig } from "../config/load";
@@ -192,9 +197,10 @@ type Launch =
 type Confirm =
   | { action: "delete" | "stop" | "refresh"; id: string }
   | { action: "edit"; agentId: string; path: string }
-  | { action: "unarchive"; id: string; count: number };
+  | { action: "unarchive"; id: string; count: number }
+  | { action: "reconnect"; id: string; count: number; planPending: boolean };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -421,10 +427,23 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // float as they start needing input) and deletions never move the highlight onto
   // the wrong session under the human's cursor.
   const [cursorId, setCursorId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"list" | "agents" | "amendments">("list");
+  const [mode, setMode] = useState<"list" | "agents" | "amendments" | "tickets">("list");
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [agentCursor, setAgentCursor] = useState(0);
   const [amendmentCursor, setAmendmentCursor] = useState(0);
+  /** Tickets-view selection, pinned to a (session, ticket) id like `cursorId` so a
+   * status change that re-sorts the list keeps the highlight; `index` is the
+   * fallback when that ticket disappears (unlinked), clamping to a neighbor. */
+  const [ticketSel, setTicketSel] = useState<{ id: string | null; index: number }>({ id: null, index: 0 });
+  /** Tickets-view filters, reset each time `t` opens the view. */
+  const [ticketFilter, setTicketFilter] = useState<TicketFilter>(DEFAULT_TICKET_FILTER);
+  /** `/` text entry in progress: keystrokes edit `ticketFilter.text` instead of
+   * running the panel's shortcuts, until enter (keep) or esc (clear). */
+  const [ticketTyping, setTicketTyping] = useState(false);
+  /** Every linked ticket, archived sessions included — independent of `z` and only
+   * read while the tickets view is open (see the tick below). */
+  const [allTickets, setAllTickets] = useState<JiraTicketWithSessionRow[]>([]);
+  const ticketsSigRef = useRef("");
   /** Persona chooser for the selected session. */
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
@@ -439,11 +458,26 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const selected = rows[cursor] as View | undefined;
   const pickerView = rows.find((r) => r.session.id === pickerId);
 
+  // Entries the tickets view shows: the full ticket history joined with live views
+  // for the sessions on screen, then narrowed by the view's filters.
+  const shownTickets = mode === "tickets" ? filterTicketEntries(ticketEntries(allTickets, rows), ticketFilter) : [];
+
+  /** Re-read the whole ticket history; re-renders only when its fingerprint moved. */
+  const refreshTickets = () => {
+    const next = listAllSessionJiraTickets();
+    const sig = ticketsSignature(next);
+    if (sig !== ticketsSigRef.current) {
+      ticketsSigRef.current = sig;
+      setAllTickets(next);
+    }
+  };
+
   const sigRef = useRef("");
   const refresh = () => {
     const next = snapshot(showArchived);
     sigRef.current = signature(next);
     setRows(next);
+    if (mode === "tickets") refreshTickets();
   };
 
   // The dashboard only observes — it never marks a session seen. The "unread work"
@@ -465,6 +499,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     return () => clearInterval(t);
   }, [showArchived]);
 
+  // The tickets view's history query rides the same 1s cadence, but only while the
+  // view is open: the main list never needs archived sessions' tickets.
+  useEffect(() => {
+    if (mode !== "tickets") return;
+    refreshTickets();
+    const t = setInterval(refreshTickets, 1000);
+    return () => clearInterval(t);
+  }, [mode]);
+
   // Kept fresh so the refresh effect below (which fires on mount + every
   // `prWatch.intervalSeconds`, like the PR watcher, not on every 1s snapshot)
   // always sees the sessions currently on screen.
@@ -480,6 +523,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // `refreshing` guards against a slow `gh` call stacking with the next tick.
   // Never touches `setRows`: it only writes to SQLite, and the 1s snapshot poll
   // above already re-reads `listSessionPrs`.
+  useEffect(() => config ? startBaseCacheRefresher(config) : undefined, [config]);
+
   const refreshing = useRef(false);
   useEffect(() => {
     if (!config) return;
@@ -510,19 +555,39 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // Only a configured `jira` block can be "unavailable"; without one the feature is
   // simply off and stays silent. Like PRs, never touches `setRows`.
   const refreshingJira = useRef(false);
+  /** One Jira poll, shared by the 2-minute tick and the on-demand `P` so both sit
+   * behind the same `refreshingJira` guard and can never overlap. The background
+   * tick stays silent; on demand it reports progress/results in the notice line and
+   * re-snapshots so new statuses show immediately instead of on the next 1s poll. */
+  const pollJira = (cfg: TackConfig, ids: string[], onDemand: boolean) => {
+    if (refreshingJira.current) {
+      if (onDemand) setNotice("Jira poll already in progress…");
+      return;
+    }
+    refreshingJira.current = true;
+    if (onDemand) setNotice("polling Jira…");
+    refreshSessionJiraTickets(cfg, ids)
+      .then((res) => {
+        setJiraUnavailable(Boolean(cfg.jira) && res.unavailable);
+        if (onDemand) setNotice(describeJiraPoll(cfg, res));
+      })
+      .catch((err) => {
+        if (onDemand) setNotice(`Jira poll failed: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        refreshingJira.current = false;
+        if (onDemand) refresh();
+      });
+  };
+  const startJiraPoll = () => {
+    if (!config) return setNotice("config is unavailable");
+    pollJira(config, rows.map((v) => v.session.id), true);
+  };
   useEffect(() => {
     if (!config) return;
-    const run = () => {
-      if (refreshingJira.current) return;
-      refreshingJira.current = true;
-      const ids = activeSessionIds(rowsRef.current);
-      refreshSessionJiraTickets(config, ids)
-        .then((res) => setJiraUnavailable(Boolean(config.jira) && res.unavailable))
-        .catch(() => {})
-        .finally(() => {
-          refreshingJira.current = false;
-        });
-    };
+    // The background tick skips archived sessions (see `activeSessionIds`); the
+    // on-demand `P` still polls whatever the human is looking at.
+    const run = () => pollJira(config, activeSessionIds(rowsRef.current), false);
     run();
     const t = setInterval(run, 120_000);
     return () => {
@@ -560,6 +625,26 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
             } else setNotice(`${id}: ${result.refreshed ? "watcher refreshed" : "already current"}`);
           }).catch(err => setNotice(`refresh failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
           return;
+        } else if (confirm.action === "reconnect") {
+          // Runs in the background and keeps the dashboard open: the replacement
+          // supervisor is parked in tmux rather than launched in the foreground,
+          // so enter attaches when the user wants the conversation. The busy flag
+          // covers stopping the old TUI, which can take a couple of seconds.
+          const id = confirm.id;
+          setConfirm(null);
+          if (!config) { setNotice("Configuration unavailable"); return; }
+          setSessionRefreshing(true);
+          setNotice(`reconnecting ${id}…`);
+          void (async () => {
+            const result = await reconnectSession(id, config);
+            const park = await parkReconnectedSupervisor(id, config);
+            const summary = `${id}: ${describeReconnect(result)}`;
+            if (park.parked) setNotice(`${summary} · parked in tmux · enter to attach`);
+            else if (park.reason === "no-resume-ref") setNotice(`${summary} · no resume handle yet — it never got far enough to follow up on`);
+            else if (park.reason === "no-tmux") setNotice(`${summary} · tmux unavailable, supervisor stopped · enter to resume`);
+            else setNotice(`${summary} · could not park in tmux · enter to resume`);
+          })().catch(err => setNotice(`reconnect failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
+          return;
         } else if (confirm.action === "delete") {
           deleteSession(confirm.id);
           setNotice(`deleted ${confirm.id}`);
@@ -588,6 +673,60 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (key.downArrow || input === "j")
         return setAmendmentCursor((c) => Math.min(c + 1, Math.max(0, pending.length - 1)));
       if (key.upArrow || input === "k") return setAmendmentCursor((c) => Math.max(c - 1, 0));
+      return;
+    }
+
+    // Cross-session tickets view: read-only, like the rest of the Jira surface. `q`
+    // backs out here rather than quitting (ctrl+c above still quits).
+    if (mode === "tickets") {
+      // Typing a `/` filter captures every key — `q`, `j`, `g`… are text here — so
+      // a search for "quality" can't quit the view or jump to a session.
+      if (ticketTyping) {
+        if (key.escape) {
+          setTicketFilter((f) => ({ ...f, text: "" }));
+          return setTicketTyping(false);
+        }
+        if (key.return) return setTicketTyping(false);
+        if (key.backspace || key.delete) return setTicketFilter((f) => ({ ...f, text: f.text.slice(0, -1) }));
+        // Printable only (a paste may arrive as several characters at once).
+        const text = key.ctrl || key.meta ? "" : input.replace(/[\u0000-\u001f\u007f]/g, "");
+        if (text) setTicketFilter((f) => ({ ...f, text: f.text + text }));
+        return;
+      }
+      const entries = shownTickets;
+      const index = ticketCursorIndex(entries, ticketSel);
+      const entry = entries[index];
+      const move = (next: number) => {
+        const target = entries[Math.max(0, Math.min(next, entries.length - 1))];
+        if (target) setTicketSel({ id: ticketEntryId(target), index: Math.max(0, Math.min(next, entries.length - 1)) });
+      };
+      if (input === "q" || key.escape) return setMode("list");
+      if (key.downArrow || input === "j") return move(index + 1);
+      if (key.upArrow || input === "k") return move(index - 1);
+      if (input === "/") return setTicketTyping(true);
+      if (input === "f") return setTicketFilter((f) => ({ ...f, status: nextTicketStatusFilter(f.status) }));
+      if (input === "a") return setTicketFilter((f) => ({ ...f, hideArchived: !f.hideArchived }));
+      // Polls what the view is showing (archived sessions included), not just the
+      // main list's rows; same guard as the background tick, so they never overlap.
+      if (input === "P") {
+        if (!config) return setNotice("config is unavailable");
+        if (entries.length === 0) return setNotice("no tickets match the filters — nothing to poll");
+        return pollJira(config, [...new Set(entries.map((e) => e.session.id))], true);
+      }
+      if (!entry) return;
+      if (key.return || input === "o") {
+        const url = resolveTicketUrl(config, entry.ticket);
+        if (!url) return setNotice(`can't open ${entry.ticket.key}: no Jira site is configured — add a \`jira\` block (siteUrl) to your Tack config`);
+        openUrl(url);
+        return setNotice(`opened ${entry.ticket.key} in browser`);
+      }
+      if (input === "g") {
+        // An archived session only has a row in the main list with `z` on, so turn
+        // it on first or the cursor would fall back to the top row.
+        if (entry.session.status === "archived" && !showArchived) setShowArchived(true);
+        setCursorId(entry.session.id);
+        return setMode("list");
+      }
       return;
     }
 
@@ -677,6 +816,17 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         return RANGES[Math.max(0, Math.min(RANGES.length - 1, index))]!;
       });
     }
+    // Cross-session Jira: independent of the selected session, so they work with an
+    // empty list and in the full-screen insights layout too.
+    if (input === "t") {
+      setTicketSel({ id: null, index: 0 });
+      setTicketFilter(DEFAULT_TICKET_FILTER);
+      setTicketTyping(false);
+      // Read now so the first frame already has the history, not an empty list.
+      refreshTickets();
+      return setMode("tickets");
+    }
+    if (input === "P") return startJiraPoll();
     if (input === "q") return exit();
     if (input === "C") {
       onLaunch({ kind: "config" });
@@ -761,6 +911,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
     } else if (input === "r") {
       setConfirm({ action: "refresh", id: selected.session.id });
+    } else if (input === "w") {
+      // "wake": recover a session the laptop's sleep or a network drop broke.
+      const s = selected.session;
+      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
+      setConfirm({ action: "reconnect", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
+        planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
     } else if (input === "a") {
@@ -786,6 +942,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
     : confirm.action === "refresh"
       ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
+    : confirm.action === "reconnect"
+      ? `Reconnect ${confirm.id}? Restarts the supervisor detached in tmux and revives ${confirm.count} dropped agent(s).${confirm.planPending ? " Pending plan will be re-presented." : ""} (y/N)`
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
@@ -802,6 +960,21 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         view={pickerView}
         cursor={Math.min(amendmentCursor, Math.max(0, pickerView.amendments.length - 1))}
         notice={notice}
+      />
+    );
+  }
+
+  if (mode === "tickets") {
+    return (
+      <TicketsPanel
+        entries={shownTickets}
+        total={allTickets.length}
+        filter={ticketFilter}
+        typing={ticketTyping}
+        cursor={ticketCursorIndex(shownTickets, ticketSel)}
+        notice={notice}
+        jiraUnavailable={jiraUnavailable}
+        size={size}
       />
     );
   }
@@ -967,6 +1140,208 @@ function AmendmentsPanel({ view, cursor, notice }: { view: View; cursor: number;
   );
 }
 
+/** One (session, ticket) pair in the cross-session tickets view. A key linked to
+ * several sessions gets one entry per session, since each is separate work.
+ * `session` comes from the history query, so every entry has it; `view` is the
+ * live dashboard row, present only while that session is on the main list. */
+export interface TicketEntry {
+  ticket: SessionJiraTicketRow;
+  session: { id: string; title: string | null; status: SessionRow["status"]; created_at: string };
+  view?: View;
+}
+
+/** Stable identity for a tickets-view entry across snapshots. */
+function ticketEntryId(e: TicketEntry): string {
+  return `${e.session.id}:${e.ticket.id}`;
+}
+
+/** Content fingerprint of the ticket history, so the 1s read only re-renders on a
+ * visible change (a link, a status refresh, a session archived or retitled). */
+function ticketsSignature(tickets: readonly JiraTicketWithSessionRow[]): string {
+  return tickets
+    .map((t) => `${t.id}/${t.session_status}/${t.session_title ?? ""}/${t.status ?? ""}/${t.status_category ?? ""}/${t.title ?? ""}/${t.url ?? ""}`)
+    .join("|");
+}
+
+/** Open work first — in progress before to do — then done. */
+function ticketSortWeight(category: string | null): number {
+  if (category === "indeterminate") return 0;
+  if (category === "done") return 2;
+  return 1;
+}
+
+/** Every ticket in the history as a view entry, open work first and, inside each
+ * status group, the newest link first. Sessions on screen get their live `View`
+ * (for the needs-input/working/live badge); the rest render from the joined row. */
+export function ticketEntries(tickets: readonly JiraTicketWithSessionRow[], rows: readonly View[]): TicketEntry[] {
+  const views = new Map(rows.map((v) => [v.session.id, v]));
+  return tickets
+    .map(({ session_title, session_status, session_created_at, ...ticket }) => ({
+      ticket,
+      session: { id: ticket.session_id, title: session_title, status: session_status, created_at: session_created_at },
+      view: views.get(ticket.session_id),
+    }))
+    .sort(
+      (a, b) =>
+        ticketSortWeight(a.ticket.status_category) - ticketSortWeight(b.ticket.status_category) ||
+        b.ticket.created_at.localeCompare(a.ticket.created_at),
+    );
+}
+
+/** The `f` cycle, in order. Buckets use Jira's stable status category, like the
+ * glyphs: `indeterminate` = in progress, `new`/unknown = to do, `done` = done. */
+export const TICKET_STATUS_FILTERS = ["all", "open", "in_progress", "todo", "done"] as const;
+export type TicketStatusFilter = (typeof TICKET_STATUS_FILTERS)[number];
+
+export interface TicketFilter {
+  status: TicketStatusFilter;
+  /** `a`: drop tickets whose session is archived (shown by default). */
+  hideArchived: boolean;
+  /** `/`: case-insensitive substring over ticket key/title and session id/title. */
+  text: string;
+}
+
+export const DEFAULT_TICKET_FILTER: TicketFilter = { status: "all", hideArchived: false, text: "" };
+
+export function nextTicketStatusFilter(current: TicketStatusFilter): TicketStatusFilter {
+  return TICKET_STATUS_FILTERS[(TICKET_STATUS_FILTERS.indexOf(current) + 1) % TICKET_STATUS_FILTERS.length]!;
+}
+
+function matchesTicketStatus(category: string | null, status: TicketStatusFilter): boolean {
+  switch (status) {
+    case "all": return true;
+    case "open": return category !== "done";
+    case "in_progress": return category === "indeterminate";
+    case "todo": return category !== "done" && category !== "indeterminate";
+    case "done": return category === "done";
+  }
+}
+
+/** Narrow entries by the view's filters, keeping their order. */
+export function filterTicketEntries(entries: readonly TicketEntry[], filter: TicketFilter): TicketEntry[] {
+  const needle = filter.text.trim().toLowerCase();
+  return entries.filter((e) => {
+    if (!matchesTicketStatus(e.ticket.status_category, filter.status)) return false;
+    if (filter.hideArchived && e.session.status === "archived") return false;
+    if (!needle) return true;
+    return [e.ticket.key, e.ticket.title, e.session.id, e.session.title].some((field) => field?.toLowerCase().includes(needle));
+  });
+}
+
+const TICKET_STATUS_LABELS: Record<TicketStatusFilter, string> = {
+  all: "all", open: "open", in_progress: "in progress", todo: "to do", done: "done",
+};
+
+/** The active filters for the header, e.g. `status: open · archived hidden · "X"`; empty when none. */
+export function describeTicketFilters(filter: TicketFilter): string {
+  const parts: string[] = [];
+  if (filter.status !== "all") parts.push(`status: ${TICKET_STATUS_LABELS[filter.status]}`);
+  if (filter.hideArchived) parts.push("archived hidden");
+  if (filter.text.trim()) parts.push(JSON.stringify(filter.text.trim()));
+  return parts.join(" · ");
+}
+
+/** The pinned entry when it still exists, else the remembered index clamped. */
+function ticketCursorIndex(entries: readonly TicketEntry[], sel: { id: string | null; index: number }): number {
+  const pinned = sel.id ? entries.findIndex((e) => ticketEntryId(e) === sel.id) : -1;
+  return pinned >= 0 ? pinned : Math.max(0, Math.min(sel.index, entries.length - 1));
+}
+
+/** The notice for an on-demand Jira poll. A missing `jira` block reads as "not
+ * configured" rather than "unavailable", which would send the human hunting for
+ * an auth problem that doesn't exist. Skips list a few keys, then a count. */
+export function describeJiraPoll(config: TackConfig, res: JiraRefreshResult): string {
+  if (res.unavailable) {
+    return config.jira
+      ? "Jira unavailable — check the jira config / Atlassian MCP auth"
+      : "Jira isn't configured — add a `jira` block to your Tack config";
+  }
+  const skippedKeys = new Set(res.skipped.map((s) => s.key));
+  const refreshed = new Set(res.tickets.map((t) => t.key).filter((k) => !skippedKeys.has(k))).size;
+  let text = `Jira: refreshed ${refreshed} ticket(s)`;
+  if (res.skipped.length > 0) {
+    const shown = res.skipped.slice(0, 3).map((s) => `${s.key}: ${s.reason}`);
+    const more = res.skipped.length - shown.length;
+    text += ` · ${res.skipped.length} skipped (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`;
+  }
+  return text;
+}
+
+/** Compact session state for a tickets-view row, in the main list's colors. */
+function sessionBadge(v: View): React.ReactElement {
+  if (v.needsInput) return <Text color="yellow">◆ needs input</Text>;
+  if (v.working) return <Text color="cyan">working</Text>;
+  if (v.live) return <Text color="green">● live</Text>;
+  return <Text color="gray">○ <Text dimColor>{v.session.status}</Text></Text>;
+}
+
+/** A tickets-view row's session state: the live badge while the session is on the
+ * main list, else a static one from its stored status. An archived session that is
+ * still live (or waiting on you) keeps a dim `archived` marker beside its badge. */
+function ticketSessionBadge(e: TicketEntry): React.ReactElement {
+  const archived = e.session.status === "archived";
+  if (e.view && (e.view.needsInput || e.view.working || e.view.live)) {
+    return <Text>{sessionBadge(e.view)}{archived ? <Text dimColor> archived</Text> : null}</Text>;
+  }
+  return <Text color="gray">○ <Text dimColor>{e.session.status}</Text></Text>;
+}
+
+const TICKETS_HINT = "j/k move · enter/o open ticket · g go to session · f status · a archived · / search · P poll Jira · esc/q back";
+const TICKETS_TYPING_HINT = "type to filter · enter keep · esc clear";
+
+/** Every Jira ticket linked to any existing session — archived ones included, and
+ * independent of the main list's `z` — one row per (session, ticket), narrowed by
+ * the view's own filters. Rows truncate to one line each and window around the
+ * cursor inside the same body budget as the main list, so the panel fits the terminal. */
+function TicketsPanel({ entries, total, filter, typing, cursor, notice, jiraUnavailable, size }: {
+  entries: TicketEntry[]; total: number; filter: TicketFilter; typing: boolean; cursor: number;
+  notice: string; jiraUnavailable: boolean; size: { columns: number; rows: number };
+}) {
+  const sessions = new Set(entries.map((e) => e.session.id)).size;
+  const done = entries.filter((e) => e.ticket.status_category === "done").length;
+  const filters = describeTicketFilters(filter);
+  const footer = [
+    notice,
+    jiraUnavailable ? "jira unavailable — ticket status not updating" : "",
+    typing ? `/${filter.text}▏  ${TICKETS_TYPING_HINT}` : TICKETS_HINT,
+  ].filter(Boolean);
+  const budget = dashboardBodyHeight(size.rows, size.columns, footer);
+  const window = windowSessionLines(entries.map(() => 1), cursor, budget);
+  return (
+    <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
+      <Text bold wrap="truncate">
+        Jira tickets · {entries.length} of {total} · {sessions} session{sessions === 1 ? "" : "s"}
+        {" · "}<Text color={done > 0 ? "green" : undefined} dimColor={done === 0}>{done} done</Text>
+        {filters ? <Text color="cyan">{" · "}{filters}</Text> : null}
+      </Text>
+      <Box flexDirection="column" height={budget} flexShrink={0} overflowY="hidden">
+        {total === 0 && <Text dimColor wrap="truncate">No Jira tickets linked to any session.</Text>}
+        {total > 0 && entries.length === 0 && <Text dimColor wrap="truncate">No tickets match the filters.</Text>}
+        {window.above > 0 && <Text dimColor wrap="truncate">↑ {window.above} more</Text>}
+        {entries.slice(window.start, window.end).map((e, offset) => {
+          const i = window.start + offset;
+          const { glyph, color } = ticketStatusDisplay(e.ticket.status_category);
+          return (
+            <Text key={ticketEntryId(e)} wrap="truncate">
+              <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
+              <Text bold>{e.ticket.key}</Text>{" "}
+              <Text color={color}>{glyph} {e.ticket.status ?? "?"}</Text>
+              {e.ticket.title ? <Text dimColor>{"  "}{oneLine(e.ticket.title, 60)}</Text> : null}
+              {"  "}<Text>{e.session.id}</Text>{" "}
+              {ticketSessionBadge(e)}
+              {e.session.title ? <Text dimColor>{"  "}{oneLine(e.session.title, 40)}</Text> : null}
+            </Text>
+          );
+        })}
+        {window.below > 0 && <Text dimColor wrap="truncate">↓ {window.below} more</Text>}
+      </Box>
+      <Box marginTop={1} flexDirection="column" flexShrink={0}>
+        {footer.flatMap((line) => wrapFooter(line, size.columns)).map((line, i) => <Text key={i} wrap="truncate" dimColor>{line}</Text>)}
+      </Box>
+    </Box>
+  );
+}
+
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /** Compact duration of the supervisor's current turn, refreshed by spinner ticks. */
@@ -1057,20 +1432,21 @@ function prRollup(prs: SessionPrRow[]): React.ReactElement {
 
 /** Glyph + color for a ticket, keyed on Jira's stable status *category* rather than
  *  the per-project workflow name ("In Review", "QA", …), so every project's tickets
- *  read the same way: to do = gray ○, in progress = yellow ●, done = magenta ✔. */
+ *  read the same way: to do = gray ○, in progress = yellow ●, done = green ✔
+ *  (green, not PR-merged magenta, so "ticket done" and "PR merged" stay distinct). */
 function ticketStatusDisplay(category: string | null): { glyph: string; color: string } {
-  if (category === "done") return { glyph: "✔", color: "magenta" };
+  if (category === "done") return { glyph: "✔", color: "green" };
   if (category === "indeterminate") return { glyph: "●", color: "yellow" };
   if (category === "new") return { glyph: "○", color: "gray" };
   return { glyph: "·", color: "gray" };
 }
 
 /** Compact per-session ticket summary for the collapsed line, mirroring `prRollup`:
- *  all done is the magenta badge, some done a yellow fraction, none a dim count. */
+ *  all done is the green badge, some done a yellow fraction, none a dim count. */
 function ticketRollup(tickets: SessionJiraTicketRow[]): React.ReactElement {
   const done = tickets.filter((t) => t.status_category === "done").length;
   const total = tickets.length;
-  if (done === total) return <Text color="magenta">✔ {done} done</Text>;
+  if (done === total) return <Text color="green">✔ {done} done</Text>;
   if (done > 0) return <Text color="yellow">{`${done}/${total} done`}</Text>;
   return <Text dimColor>{`${total} ticket${total === 1 ? "" : "s"}`}</Text>;
 }

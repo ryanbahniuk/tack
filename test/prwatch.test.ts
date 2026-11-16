@@ -12,6 +12,7 @@ import {
   feedbackQuote,
   fetchPrStatus,
   isBotAuthor,
+  isBotPrSummary,
   normalizeFeedback,
   type PrStatus,
   type ReviewThread,
@@ -161,6 +162,41 @@ describe("normalizeFeedback", () => {
     );
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ sourceId: "PRR_real", kind: "review", author: "alice", url: PR_URL });
+  });
+
+  test("skips bot PR summaries but keeps humans, threads and real bot feedback", () => {
+    const cursorSummary = "<!-- CURSOR_SUMMARY\nmeta: 1\n-->\n\n### PR Summary\n\n**Medium Risk**\nAdds widgets.";
+    const items = normalizeFeedback(
+      status({
+        comments: [
+          { id: "IC_cursor", author: { login: "cursor[bot]" }, body: cursorSummary },
+          { id: "IC_human", author: { login: "bob" }, body: cursorSummary },
+          { id: "IC_bot_real", author: { login: "coderabbitai", is_bot: true }, body: "Consider X" },
+        ],
+        reviews: [
+          { id: "PRR_rabbit", author: { login: "coderabbitai[bot]" }, body: "<!-- x -->\n## Summary by CodeRabbit\n- New widgets" },
+          { id: "PRR_copilot", author: { login: "copilot-pull-request-reviewer" }, body: "## Pull request overview\nThis PR adds widgets." },
+        ],
+      }),
+      [
+        {
+          isResolved: false,
+          comments: { nodes: [{ databaseId: 9, author: { login: "cursor", __typename: "Bot" }, body: cursorSummary }] },
+        },
+      ],
+      [],
+    );
+    expect(items.map((i) => i.sourceId)).toEqual(["9", "IC_human", "IC_bot_real"]);
+  });
+
+  test("isBotPrSummary matches known headings only for bot conversation items", () => {
+    for (const body of ["PR Summary", "# pr summary", "## Walkthrough\nChanges", "**Pull request overview**"]) {
+      expect(isBotPrSummary({ kind: "issue_comment", body, isBot: true })).toBe(true);
+    }
+    expect(isBotPrSummary({ kind: "issue_comment", body: "PR Summary", isBot: false })).toBe(false);
+    expect(isBotPrSummary({ kind: "review_thread", body: "PR Summary", isBot: true })).toBe(false);
+    expect(isBotPrSummary({ kind: "ci_check", body: "PR Summary", isBot: true })).toBe(false);
+    expect(isBotPrSummary({ kind: "issue_comment", body: "Please fix the PR summary typo", isBot: true })).toBe(false);
   });
 
   test("skips minimized conversation comments", () => {
@@ -754,7 +790,7 @@ describe("triggerPrWatch", () => {
 
 
 describe("postFix replies", () => {
-  async function runReplies(root: string, reply = true, single = false, runtime?: RuntimeKind | null) {
+  async function runReplies(root: string, reply = true, single = false, runtime?: RuntimeKind | null, notApplicable = false) {
     const session = createSession({ title: "post-fix replies" });
     upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open" });
     const pr = listSessionPrs(session.id)[0]!;
@@ -769,11 +805,17 @@ describe("postFix replies", () => {
         { id: "IC_pending", kind: "issue_comment", decision: "pending", reply: "not reported" },
         { id: "IC_unreported", kind: "issue_comment", decision: "fixed" },
       ] : []),
+      ...(notApplicable ? [
+        { id: "IC_bot_na", kind: "issue_comment", author: "cursor", bot: true, decision: "not_applicable", reply: "Bot summary, nothing to do." },
+        { id: "11", kind: "review_thread", author: "lint", bot: true, decision: "not_applicable", reply: "Bot thread, nothing to do." },
+        { id: "IC_human_na", kind: "issue_comment", author: "bob", decision: "not_applicable", reply: "Human question answered." },
+      ] : []),
     ] as const;
     for (const entry of entries) {
       const f = insertPrFeedback({
         sessionPrId: pr.id, sourceId: entry.id, sourceKind: entry.kind,
         author: "author" in entry ? entry.author : "alice", url: `${PR_URL}#${entry.id}`,
+        authorIsBot: "bot" in entry,
         inReplyTo: entry.kind === "review_thread" ? "10" : null,
         bodyRef: writePrFeedbackArtifact(session.id, pr.id, entry.id, "body", "<!-- meta -->\n### Please fix"),
       });
@@ -827,6 +869,26 @@ describe("postFix replies", () => {
       });
     });
   }
+
+  test("bot not_applicable items are handled silently; human ones still get replies", async () => {
+    await withGh({}, async (root, calls) => {
+      const { rows } = await runReplies(root, true, true, null, true);
+      const bodies = calls().filter(args => args.includes("POST"))
+        .map(args => args.find(arg => arg.startsWith("body="))!);
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toContain("Human question answered.");
+      expect(bodies[0]).not.toContain("Bot summary");
+      expect(bodies[0]).not.toContain("Bot thread");
+      for (const id of ["IC_bot_na", "11"]) {
+        const row = rows.find(f => f.source_id === id)!;
+        // Still an explicit verdict for draft promotion: handled, decided, reply_ref kept.
+        expect(row).toMatchObject({ decision: "not_applicable", reply_url: null });
+        expect(row.handled_at).toBeTruthy();
+        expect(row.reply_ref).toBeTruthy();
+      }
+      expect(rows.find(f => f.source_id === "IC_human_na")?.reply_url).toBe("https://github.com/reply/batch");
+    });
+  });
 
   test("uses the same linked format for a single conversation item", async () => {
     await withGh({}, async (root, calls) => {
@@ -953,7 +1015,7 @@ describe("postFix outcomes", () => {
         ALTER TABLE agents DROP COLUMN continues_agent_id;
         ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
         ALTER TABLE agents DROP COLUMN diff_base;
-        ALTER TABLE sessions DROP COLUMN pr_fix_enabled; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; DELETE FROM _migrations WHERE version >= 11;
+        ALTER TABLE sessions DROP COLUMN pr_fix_enabled; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; ALTER TABLE sessions DROP COLUMN summary_ref; ALTER TABLE sessions DROP COLUMN summary_at; ALTER TABLE session_prs DROP COLUMN body_ref; DELETE FROM _migrations WHERE version >= 11;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, post_fixed_at, created_at, updated_at)
           VALUES ('a', 's', 'app', 'done', 'then', 'then', 'then');`);
@@ -977,7 +1039,7 @@ test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
         ALTER TABLE agents DROP COLUMN continues_agent_id;
         ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at;
         ALTER TABLE agents DROP COLUMN diff_base;
-      ALTER TABLE sessions DROP COLUMN pr_fix_enabled; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; DELETE FROM _migrations WHERE version >= 12;
+      ALTER TABLE sessions DROP COLUMN pr_fix_enabled; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; ALTER TABLE sessions DROP COLUMN summary_ref; ALTER TABLE sessions DROP COLUMN summary_at; ALTER TABLE session_prs DROP COLUMN body_ref; DELETE FROM _migrations WHERE version >= 12;
       INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
       INSERT INTO agents (id, session_id, project_name, status, kind, created_at, updated_at)
         VALUES ('a', 's', 'app', 'done', 'pr_fix', 'then', 'then');`);

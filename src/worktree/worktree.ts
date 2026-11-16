@@ -1,3 +1,5 @@
+import { isBaseCacheFresh, recordBaseCacheFreshness } from "./base-freshness";
+import type { TackConfig } from "../config/schema";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -87,7 +89,7 @@ function readBaseRef(repo: string, branch: string): string | null {
 /** Bounds the pre-worktree / pre-snapshot fetch so an unreachable remote or an auth
  * prompt can't stall agent startup or a supervisor sync; on timeout we just use the
  * already-local remote ref. */
-const FETCH_TIMEOUT_MS = 15_000;
+export const FETCH_TIMEOUT_MS = 15_000;
 
 /** `git rev-parse --verify --quiet <ref>^{commit}`, or null if the ref doesn't resolve. */
 function tryResolveCommit(repo: string, ref: string): string | null {
@@ -120,7 +122,7 @@ function remoteDefaultBranch(repo: string): string | null {
 
 /** Fetch argv + env shared by the sync (agent worktree) and async (supervisor
  * snapshot) paths, so both refresh the default branch the same way. */
-function defaultBranchFetch(remoteRef: string): { args: string[]; env: Record<string, string | undefined> } {
+export function defaultBranchFetch(remoteRef: string): { args: string[]; env: Record<string, string | undefined> } {
   return {
     args: ["fetch", "--quiet", "origin", remoteRef.slice("origin/".length)],
     // Never block on a credential prompt; a headless run has no one to answer it.
@@ -137,11 +139,13 @@ function defaultBranchFetch(remoteRef: string): { args: string[]; env: Record<st
  * already-local `origin/<branch>`), and a repo with no origin at all — e.g. a
  * local-only project — keeps the old behavior of forking from HEAD.
  */
-function resolveStartPoint(repo: string): string {
+export function resolveStartPoint(repo: string, project?: string, config?: TackConfig, onPhase?: (label: string) => void): string {
   const remoteRef = remoteDefaultBranch(repo);
   if (remoteRef) {
+    const fresh = !!project && !!config?.baseCache?.enabled && isBaseCacheFresh(project, config.baseCache.maxAgeSeconds * 1000, remoteRef) && !!tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
     const { args, env } = defaultBranchFetch(remoteRef);
-    spawnSync("git", args, {
+    if (!fresh) onPhase?.(`fetching ${remoteRef}`);
+    const fetch = fresh ? null : spawnSync("git", args, {
       cwd: repo,
       encoding: "utf8",
       timeout: FETCH_TIMEOUT_MS,
@@ -149,6 +153,7 @@ function resolveStartPoint(repo: string): string {
       env,
     });
     const sha = tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
+    if (sha && fetch?.status === 0 && project) { try { recordBaseCacheFreshness(project, remoteRef, sha); } catch {} }
     if (sha) return sha;
   }
   return git(["rev-parse", "HEAD"], repo);
@@ -161,13 +166,14 @@ function resolveStartPoint(repo: string): string {
  * branches — and the PRs opened from them — start from current upstream code. Falls
  * back to HEAD only when the repo has no usable origin. See `resolveStartPoint`.
  */
-export function createWorktree(repo: string, sessionId: string, agentId: string): Worktree {
+export function createWorktree(repo: string, sessionId: string, agentId: string, project?: string, config?: TackConfig, onPhase?: (label: string) => void): Worktree {
   assertRepoRoot(repo);
   const root = sessionWorktreesRoot(sessionId);
   mkdirSync(root, { recursive: true });
   const path = join(root, agentId);
   const branch = `tack/${sessionId}/${agentId}`;
-  const base = resolveStartPoint(repo);
+  const base = resolveStartPoint(repo, project, config, onPhase);
+  onPhase?.("creating worktree");
   git(["worktree", "add", "-b", branch, path, base], repo);
   // Pin the fork point so the accumulated diff is recoverable even after the agent
   // commits (which moves the branch HEAD away from `base`).
@@ -222,8 +228,10 @@ export function existingWorktree(repo: string, path: string, branch: string): Wo
 }
 
 /** Reuses an existing worktree at the expected path, else creates one (resume-safe). */
-export function ensureWorktree(repo: string, sessionId: string, agentId: string): Worktree {
-  return reuseWorktree(repo, sessionId, agentId) ?? createWorktree(repo, sessionId, agentId);
+export function ensureWorktree(repo: string, sessionId: string, agentId: string, project?: string, config?: TackConfig, onPhase?: (label: string) => void): Worktree {
+  const existing = reuseWorktree(repo, sessionId, agentId);
+  if (existing) { onPhase?.("reusing worktree"); return existing; }
+  return createWorktree(repo, sessionId, agentId, project, config, onPhase);
 }
 
 /** `ensureWorktree` for a PR-fix agent: reuse on resume/retry (so a retried run keeps
@@ -256,7 +264,7 @@ export function ensureRemoteReviewWorktree(repo: string, sessionId: string, agen
 // must never block on `spawnSync` (see src/prwatch/watch.ts), and for supervisor
 // snapshot syncs, which run inside the MCP server and may fan out per project.
 
-async function gitAsync(
+export async function gitAsync(
   args: string[],
   cwd: string,
   opts: { timeoutMs?: number; env?: Record<string, string | undefined> } = {},
@@ -416,7 +424,7 @@ export async function syncSnapshot(repo: string, sessionId: string, project: str
     const f = await gitAsync(args, repo, { timeoutMs: FETCH_TIMEOUT_MS, env });
     fetched = f.code === 0 && !f.timedOut;
     sha = tryResolveCommit(repo, `refs/remotes/${remoteRef}`);
-    if (sha) ref = remoteRef;
+    if (sha) { ref = remoteRef; if (fetched) { try { recordBaseCacheFreshness(project, remoteRef, sha); } catch {} } }
   }
   if (!sha) {
     const head = await gitAsync(["rev-parse", "--verify", "HEAD^{commit}"], repo);

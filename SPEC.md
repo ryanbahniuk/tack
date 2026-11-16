@@ -364,6 +364,13 @@ Adapter specifics, hidden behind the interface:
   Both escape hatches preserve the first approval timestamp and clear the
   awaiting-input flag; neither adds a supervisor-callable approval path. A plain
   chat "yes" is never approval.
+  Follow-up questions also show "◆ needs input" (`awaiting_reason` `"question"`).
+  A PreToolUse hook on Claude's native `AskUserQuestion` runs the silent
+  `tack __await-input <id> question`, and a PostToolUse hook clears it with `--clear`
+  once answered. Plain-text questions are caught at turn end (below). The next
+  submitted prompt clears a question too. None of these paths overwrites or clears
+  a pending `"plan"` flag, which keeps the lifecycle above, so only `"plan"` blocks
+  `session refresh`.
   With `autoOpenPrs: false`, `open_pr` is excluded from the allow hook and backed
   by a `permissions.ask` rule; its ask hook supplies the prompt wording.
   Attended runs create `<TACK_HOME>/supervisor/<sessionId>/artifacts` for
@@ -445,7 +452,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
    feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
-   a **detached** `tack __run-agent <agentId>` runner.
+   a **detached** `tack __run-agent <agentId>` runner. Long-lived launchers check runtime version pins and model availability once per process and hand the result to the runner; missing or mismatched handoffs fall back to runner checks, and unknown model availability never blocks.
 3. Each agent (`runAgent`) creates its worktree, materializes context, mounts the
    coordination server, runs its runtime autonomously, and persists usage/cost/refs
    as events stream; on completion it captures the worktree diff.
@@ -467,7 +474,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
 **one agent per affected project** (so one PR per repo), splitting a project only
 into genuinely independent units that each merit their own PR. Every worktree
 forks from the project's remote default branch (`origin/HEAD`, else `origin/main` /
-`origin/master`, fetched best-effort first; local HEAD only when there is no origin),
+`origin/master`; a background refresher keeps its remote-tracking ref current, with a best-effort inline fetch when the cache is stale, missing, or disabled; local HEAD only when there is no usable origin). The `baseCache` defaults are enabled, a 120-second refresh interval, and a 600-second maximum age. Snapshot syncs also warm the cache,
 so agent branches and their PRs start from current upstream code even when the
 user's checkout is stale — and never from a sibling's branch — so ordered work within
 one project must go to a single agent; a same-project `dependsOn` would wait but
@@ -609,7 +616,15 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
   `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
-  Atlassian MCP client (`src/projects/jira.ts`); `J` opens the session's tickets.
+  Atlassian MCP client (`src/projects/jira.ts`); `P` polls now, sharing the
+  background tick's in-flight guard so the two never overlap. `J` opens the session's
+  tickets; `t` lists every ticket linked to any existing session, archived included
+  and regardless of `z` (one `listAllSessionJiraTickets` join, read on the 1s tick only
+  while the view is open). Open work comes first, newest link first within each status,
+  one row per session, with the session's state; `f` (status), `a` (archived) and `/`
+  (text) filter it, `g` jumps to the session (turning `z` on for an archived one) and
+  `P` polls the filtered entries' sessions. Done is green, so it reads apart from
+  merged-PR magenta.
   Track-only — never writes to Jira.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents + PR watcher), `archive`/`unarchive`, `delete` (kill pids, purge worktrees
@@ -655,6 +670,14 @@ reattaching. A blocked supervisor stays live with a notice to refresh once idle;
 a stale watcher can still be refreshed independently. Refreshed supervisors get
 a seed telling them tools/permissions may have changed and to re-run `sync_projects`.
 
+`session reconnect <id>` (dashboard `w`) recovers from sleep or a network drop: it
+always stops the supervisor (no mid-turn or pending-plan guard), revives agents
+the outage killed, restarts a dead PR watcher, and relaunches the supervisor parked
+in tmux with a reconnect seed. It never opens a foreground TUI, so the CLI returns
+and the dashboard stays open; `session resume` attaches. Without tmux the
+supervisor stays stopped until resume. `--all` parks only supervisors that were
+running.
+
 Code versions are memoized per process: content hashes of the entry script's Tack
 source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
 uncommitted edits, or executable size/mtime for compiled Tack. Missing stamps on
@@ -668,7 +691,14 @@ previous config without refreshing sessions. Valid changes reload dashboard conf
 and use the same bulk refresh as `session refresh --all`, reporting refreshed,
 blocked, and failed counts. Claude's prompt-submit hook stamps the best-effort
 turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
-notification covers Esc interruptions, which do not fire Stop. Adapters without
+notification covers Esc interruptions, which do not fire Stop. On Stop, `__turn-end` also
+reads the hook's stdin on a best-effort basis. It takes the final assistant message
+from `last_assistant_message`, falling back to the last assistant text in the JSONL
+`transcript_path`. If that message ends in a question (`endsWithQuestion`, in
+`src/cli/question.ts`), it marks the session awaiting input with reason `"question"`.
+The detector ignores trailing fenced code, emphasis, closing quotes and brackets.
+`idle_prompt` never touches the awaiting flag. Empty or invalid input only clears
+the turn marker. Adapters without
 these hooks leave it null. A live headless runner is always treated as busy.
 
 ### Worktree editing and manual workspaces

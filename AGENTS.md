@@ -39,7 +39,7 @@ src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (
 src/agent/               execute.ts (prepare/run + activity/error), continue.ts (pre-PR continuation), detached.ts (background runner, dependency self-gate + retry)
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection), write-guard.ts (publishable-page write scope)
 src/context/build.ts     per-agent context file
-src/worktree/            session-scoped worktrees, supervisor snapshots (syncSnapshot) + PR branch nomenclature
+src/worktree/            session-scoped worktrees, background base cache, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply, promote drafts), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
@@ -48,6 +48,7 @@ src/session/manual.ts    manual workspaces (kind "manual"): project resolution, 
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    per-session auto-fix toggle
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
+src/session/reconnect.ts post-sleep/network-loss recovery: supervisor restart + agent revive
 src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
@@ -93,8 +94,8 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   fills codex pricing from models.dev). A runtime opts into live discovery by
   implementing `Runtime.listModels`. The same listing gates spawns:
   `checkModelOffered` (`src/runtimes/availability.ts`, cached per runtime per
-  process) refuses `spawn_agent`, fails `runAgent` early, and makes `tack runtimes
-  doctor` warn when a model isn't offered. An unknown listing never blocks.
+  process) refuses `spawn_agent`, and makes `tack runtimes
+  doctor` warn when a model isn't offered. Long-lived launchers hand their runtime/model preflight to detached runners; missing or mismatched handoffs fall back to the runner check. An unknown listing never blocks.
 - **Add a runtime (e.g. Bedrock):** add the kind to `RuntimeKind`
   (`src/config/schema.ts`), implement `Runtime` in `src/runtimes/`, wire it in
   `selectRuntime` (`src/runtimes/index.ts`), handle its `bin`/version in
@@ -147,3 +148,14 @@ pending-plan/mid-turn guard. `--all` refreshes stale active sessions and parks
 replacement supervisors detached in tmux; without tmux they stay stopped until
 resume. Interactive `session resume` refreshes automatically when idle; dashboard
 `r` confirms refresh and `stale` marks sessions running older code.
+
+`tack session reconnect <id>` (dashboard `w`) recovers a session broken by sleep or
+a network drop. It always restarts the supervisor, even mid-turn or with a plan
+pending (reported as `planPending`, re-presented on resume). It revives non-manual,
+non-`pr_fix` agents that are orphaned or failed with an `isTransientError` error,
+and restarts a dead PR watcher. `pr_fix` stays with the watcher, which fails and
+post-fixes orphaned fixes itself. It never opens a foreground TUI: the single form
+always relaunches the supervisor parked in tmux (`parkReconnectedSupervisor`) and
+the dashboard stays open; `--all` parks only supervisors that were running. Without
+tmux the supervisor stays stopped until `tack session resume`.
+Logic lives in `src/session/reconnect.ts`; supervisor stop is shared with refresh.

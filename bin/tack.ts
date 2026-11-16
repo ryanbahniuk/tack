@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { decodePreflight } from "../src/agent/preflight";
 import { followAgent } from "../src/cli/follow";
 import { startRemoteReview } from "../src/session/review";
 import { setPrFix } from "../src/session/pr-fix";
@@ -37,9 +38,12 @@ import {
   listSessions,
   listSharedContext,
   sessionTotalCost,
+  clearSessionAwaitingInputFor,
   setSessionAwaitingInput,
+  setSessionAwaitingInputIfFree,
   setSupervisorTurnStartedAt,
 } from "../src/db";
+import { endsWithQuestion, finalAssistantText } from "../src/cli/question";
 import { readArtifact } from "../src/artifacts/store";
 import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
@@ -52,6 +56,7 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
+import { describeReconnect, parkReconnectedSupervisor, reconnectAllSessions, reconnectSession } from "../src/session/reconnect";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
@@ -75,6 +80,8 @@ import { runSupervisorServer } from "../src/mcp/supervisor-server";
 import { runPrWatcher, triggerPrWatch } from "../src/prwatch/watch";
 import {
   ensureRuntimeInstalled,
+  installPlanFor,
+  installRuntime,
   fetchPricingCatalog,
   pricingForModel,
   resolveRuntime,
@@ -107,21 +114,35 @@ function asRuntimeKind(name: string): RuntimeKind {
 }
 
 /** Ensures the given runtimes are available, installing pinned versions
- * transparently. Prints a status line per runtime; returns false if any ended in
- * failure. Defaults to all runtimes (used by `tack init`). */
-function ensureRuntimes(config: TackConfig, kinds: RuntimeKind[] = RUNTIME_KINDS): boolean {
-  let ok = true;
+ * transparently. With `latest`, unpinned runtimes are also installed/upgraded to
+ * their latest release (`tack runtimes install`); without it they're only
+ * reported (`tack init`). Prints a status line per runtime and returns the
+ * results. Defaults to all runtimes. */
+function ensureRuntimes(
+  config: TackConfig,
+  kinds: RuntimeKind[] = RUNTIME_KINDS,
+  opts: { latest?: boolean } = {},
+): EnsureResult[] {
+  const results: EnsureResult[] = [];
   for (const kind of kinds) {
+    const plan = installPlanFor(config.runtimes[kind]);
     const pin = config.runtimes[kind]?.version;
-    if (pin && !isPresentAtManagedOrPath(config, kind, pin)) {
+    if (plan === "pinned" && pin && !isPresentAtManagedOrPath(config, kind, pin)) {
       console.log(pc.dim(`Installing ${kind} ${pin}…`));
+    } else if (plan === "latest" && opts.latest) {
+      console.log(pc.dim(`Installing latest ${kind} (bun add -g)…`));
     }
-    const res = ensureRuntimeInstalled(config, kind);
+    const res = opts.latest ? installRuntime(config, kind) : ensureRuntimeInstalled(config, kind);
     printEnsure(res);
-    if (res.action === "failed" || res.action === "mismatch") ok = false;
+    results.push(res);
   }
-  return ok;
+  return results;
 }
+
+/** True if any ensure result is a hard failure (a failed install or a `bin` that
+ * doesn't satisfy its pin). */
+const ensureFailed = (results: EnsureResult[]) =>
+  results.some((r) => r.action === "failed" || r.action === "mismatch");
 
 /** Cheap pre-check so we only print "Installing…" when an install will actually run. */
 function isPresentAtManagedOrPath(config: TackConfig, kind: RuntimeKind, pin: string): boolean {
@@ -133,18 +154,27 @@ function isPresentAtManagedOrPath(config: TackConfig, kind: RuntimeKind, pin: st
 }
 
 function printEnsure(res: EnsureResult): void {
+  console.log(ensureLine(res));
+  if (res.warning) console.log(pc.yellow(`${" ".padEnd(7)} ! ${res.warning}`));
+}
+
+function ensureLine(res: EnsureResult): string {
   const label = pc.cyan(res.kind.padEnd(7));
+  // A latest-install carries its before/after label (`upgraded A → B`) in `message`.
+  const found = `${pc.bold(res.bin ?? "")} ${pc.dim(res.version ?? "")}${res.message ? `  ${pc.dim(res.message)}` : ""}`;
   switch (res.action) {
     case "present":
-      return console.log(`${label} ${pc.green("ready")}    ${pc.bold(res.bin ?? "")} ${pc.dim(res.version ?? "")}`);
+      return `${label} ${pc.green("ready")}    ${found}`;
     case "installed":
-      return console.log(`${label} ${pc.green("installed")} ${pc.bold(res.bin ?? "")} ${pc.dim(res.version ?? "")}`);
+      return `${label} ${pc.green("installed")} ${found}`;
+    case "upgraded":
+      return `${label} ${pc.green("upgraded")}  ${found}`;
     case "unpinned-missing":
-      return console.log(`${label} ${pc.yellow("not found")} — install it, or pin a version in config so \`tack install\` fetches it`);
+      return `${label} ${pc.yellow("not found")} — run \`tack runtimes install ${res.kind}\` to install the latest`;
     case "mismatch":
-      return console.log(`${label} ${pc.red("mismatch")} ${res.bin} ${pc.dim(res.version ?? "")} (${res.message})`);
+      return `${label} ${pc.red("mismatch")} ${res.bin} ${pc.dim(res.version ?? "")} (${res.message})`;
     case "failed":
-      return console.log(`${label} ${pc.red("failed")}   ${res.message ?? ""}`);
+      return `${label} ${pc.red("failed")}   ${res.message ?? ""}`;
   }
 }
 
@@ -160,7 +190,9 @@ const init = defineCommand({
     }
     const config = await loadConfig();
     console.log(pc.bold("\nRuntimes"));
-    ensureRuntimes(config);
+    // Pinned-only here: init never fetches "latest" behind the user's back — that's
+    // what `tack runtimes install` is for, so point at it when something's missing.
+    const results = ensureRuntimes(config);
 
     // If we're inside a git repo, register it as a project so running `tack init`
     // in a repo is all it takes to start working on it.
@@ -169,28 +201,54 @@ const init = defineCommand({
       console.log(pc.bold("\nProject"));
       await addProjects(config, [root]);
     }
+
+    const missing = results.filter((r) => r.action === "unpinned-missing").map((r) => r.kind);
+    if (missing.length > 0) {
+      const target = missing.length === RUNTIME_KINDS.length ? "" : ` ${missing.join(" ")}`;
+      console.log(pc.dim(`\nRun \`tack runtimes install${target}\` to install the latest ${missing.join(" + ")} and sync models.`));
+    }
   },
 });
 
 const runtimeInstall = defineCommand({
-  meta: { name: "install", description: "Install a runtime's pinned version (or --all)" },
+  meta: {
+    name: "install",
+    description:
+      "Install the runtimes (default: claude + codex) — latest release unless pinned, pins into ~/.tack/runtimes — then sync models",
+  },
   args: {
-    runtime: { type: "positional", required: false, description: "Runtime to install (claude | codex)" },
-    all: { type: "boolean", description: "Install all configured runtimes" },
+    runtime: { type: "positional", required: false, description: "Runtime to install (claude | codex); defaults to both" },
+    all: { type: "boolean", description: "Install every runtime (the default; kept for back-compat)" },
+    models: { type: "boolean", default: true, description: "Sync models afterwards (--no-models to skip)" },
   },
   async run({ args }) {
-    const config = await loadConfig();
-    let kinds: RuntimeKind[];
-    if (args.all) {
-      kinds = RUNTIME_KINDS;
-    } else if (args.runtime) {
-      kinds = [asRuntimeKind(String(args.runtime))];
-    } else {
-      console.error(pc.red(`Specify a runtime (${RUNTIME_KINDS.join(" | ")}) or --all.`));
-      return process.exit(1);
+    // Works before `tack init`: the first-run path is `runtimes install` → log in → init.
+    const config = await requireConfig();
+    const kinds = args.runtime && !args.all ? [asRuntimeKind(String(args.runtime))] : RUNTIME_KINDS;
+
+    console.log(pc.bold("Runtimes"));
+    const results = ensureRuntimes(config, kinds, { latest: true });
+    const failed = ensureFailed(results);
+
+    // Models reflect whatever login each CLI has right now; a runtime with no stored
+    // credentials still syncs (catalog / whatever it offers), but the user is told to
+    // re-sync after logging in.
+    const unauthed = kinds.filter((k) => runtimeAuth(k).state === "unknown");
+    if (args.models) {
+      console.log(pc.bold("\nModels"));
+      await syncModels({ allPricing: false });
     }
-    const ok = ensureRuntimes(config, kinds);
-    if (!ok) process.exit(1);
+
+    if (unauthed.length > 0) {
+      const login: Record<RuntimeKind, string> = {
+        claude: "`claude`, then `/login` (exit when done)",
+        codex: "`codex login`",
+      };
+      console.log(pc.bold("\nNext steps"));
+      for (const k of unauthed) console.log(`  Log in to ${pc.cyan(k)}: ${login[k]}`);
+      console.log(`  Then run ${pc.bold("`tack models sync`")} so models match the login.`);
+    }
+    if (failed) process.exit(1);
   },
 });
 
@@ -326,7 +384,7 @@ const sessionFollow = defineCommand({
 // double-printing (see the note on `projects`). `alias: "runtime"` accepts the
 // singular spelling.
 const runtimes = defineCommand({
-  meta: { name: "runtimes", alias: "runtime", description: "Manage runtime CLIs (list, doctor, install, pin, sync)" },
+  meta: { name: "runtimes", alias: "runtime", description: "Manage runtime CLIs: install (latest, or pinned) + sync models, list, doctor, pin, sync" },
   subCommands: { list: runtimeList, doctor, install: runtimeInstall, pin: runtimePin, sync: runtimeSync },
   default: "list",
 });
@@ -673,117 +731,128 @@ const modelsSync = defineCommand({
     all: { type: "boolean", description: "Also re-fetch pricing for codex models that already have it" },
   },
   async run({ args }) {
-    const config = await requireConfig();
-
-    // 1) Gather the models each runtime that resolves to a working binary (honoring
-    // any version pin) offers — an unavailable CLI contributes no models. A runtime
-    // that can list models for the signed-in account is authoritative: that live
-    // list is what "the models the connected CLIs allow" means, borrowing curated
-    // catalog fields for ids the catalog knows. Otherwise fall back to the catalog.
-    const candidates: Model[] = [];
-    const offered = new Map<RuntimeKind, Model[]>();
-    for (const kind of RUNTIME_KINDS) {
-      let version: string;
-      let bin: string;
-      try {
-        ({ version, bin } = resolveRuntime(config, kind));
-      } catch (err) {
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.yellow("not connected")} ${pc.dim((err as Error).message)}`);
-        continue;
-      }
-      const live = selectRuntime(kind).listModels?.(bin) ?? null;
-      if (live) {
-        const merged = live.map((m) => MODEL_CATALOG[kind].find((c) => c.id === m.id) ?? m);
-        offered.set(kind, merged);
-        candidates.push(...merged);
-        console.log(
-          `${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · ${merged.length} model(s) offered to this login`)}`,
-        );
-      } else {
-        candidates.push(...MODEL_CATALOG[kind]);
-        console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · using Tack's catalog`)}`);
-      }
-    }
-
-    // Skip candidates whose id is already configured under another key (e.g. a
-    // hand-added `gpt-6.1-sol-high`) so sync doesn't duplicate them.
-    const configuredIds = new Set(config.models.map((m) => `${m.runtime}:${m.id}`));
-    const added = await addModelsToConfig(
-      CONFIG_PATH,
-      candidates.filter((c) => !configuredIds.has(`${c.runtime}:${c.id}`)),
-    );
-    if (added.length === 0) {
-      console.log(pc.dim("\nNo new models to add — every offered model is already configured."));
-    } else {
-      console.log(`\nAdded ${pc.bold(String(added.length))} model(s) to ${pc.dim(CONFIG_PATH)}:`);
-      for (const m of added) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
-    }
-
-    // 2) Prune configured models an authoritative runtime no longer offers — the
-    // login would reject them at run time (`model_not_found`). Any role pinned to one
-    // is re-pinned first (the config must stay loadable between writes) to the best
-    // replacement from the same provider; if there is none, the model is kept and
-    // the user is told to re-pin by hand rather than leaving the role dangling.
-    let current = await requireConfig();
-    const stale = current.models.filter(
-      (m) => offered.has(m.runtime) && !offered.get(m.runtime)!.some((o) => o.id === m.id),
-    );
-    const staleKeys = new Set(stale.map((m) => m.key));
-    // Retained stale keys still cannot serve as replacements for other candidates.
-    const allStaleKeys = new Set(staleKeys);
-    for (const role of ROLE_KEYS) {
-      let changed = false;
-      const next = roleModelKeys(current, role).map((key) => {
-        const pinned = stale.find((m) => m.key === key);
-        if (!pinned) return key;
-        // Rank the runtime's own offering (best-first) ahead of other configured models.
-        const rank = (m: Model) => {
-          const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
-          return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-        };
-        const pool = current.models
-          .filter((m) => !allStaleKeys.has(m.key) && m.provider === pinned.provider)
-          .sort((a, b) => rank(a) - rank(b));
-        const replacement = pickReplacement(pinned, pool);
-        if (!replacement) {
-          staleKeys.delete(pinned.key);
-          console.log(
-            pc.red(`\n! roles.${role} includes ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
-              pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
-          );
-          return key;
-        }
-        changed = true;
-        console.log(
-          pc.yellow(`\n! roles.${role} included ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
-            `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
-            pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
-        );
-        return replacement.key;
-      });
-      if (changed) {
-        const keys = [...new Set(next)];
-        await setRoleInConfig(CONFIG_PATH, role, keys.length === 1 ? keys[0]! : keys);
-        current = await requireConfig();
-      }
-    }
-    const removed = await removeModelsFromConfig(CONFIG_PATH, staleKeys);
-    if (removed.length > 0) {
-      console.log(`\nRemoved ${pc.bold(String(removed.length))} model(s) no longer offered:`);
-      for (const m of removed) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
-    }
-
-    // 3) Fill codex pricing. Reload first so models added above are considered.
-    const fresh = await requireConfig();
-    try {
-      await fillCodexPricing(fresh, Boolean(args.all));
-    } catch (err) {
-      // Pricing is best-effort here — a freshly seeded catalog is still useful
-      // offline — so warn rather than fail the whole command.
-      console.error(pc.red(`\nCould not fetch pricing: ${(err as Error).message}`));
-    }
+    await syncModels({ allPricing: Boolean(args.all) });
   },
 });
+
+/**
+ * The body of `tack models sync`, shared with `tack runtimes install`: reconcile the
+ * configured models with what the connected runtime CLIs offer (add new ones, prune
+ * ones the login can't use and re-pin their roles), then fill codex pricing from
+ * models.dev. `allPricing` re-fetches pricing for codex models that already have it.
+ * A pricing failure is a printed warning, never a throw.
+ */
+async function syncModels(opts: { allPricing: boolean }): Promise<void> {
+  const config = await requireConfig();
+
+  // 1) Gather the models each runtime that resolves to a working binary (honoring
+  // any version pin) offers — an unavailable CLI contributes no models. A runtime
+  // that can list models for the signed-in account is authoritative: that live
+  // list is what "the models the connected CLIs allow" means, borrowing curated
+  // catalog fields for ids the catalog knows. Otherwise fall back to the catalog.
+  const candidates: Model[] = [];
+  const offered = new Map<RuntimeKind, Model[]>();
+  for (const kind of RUNTIME_KINDS) {
+    let version: string;
+    let bin: string;
+    try {
+      ({ version, bin } = resolveRuntime(config, kind));
+    } catch (err) {
+      console.log(`${pc.cyan(kind.padEnd(7))} ${pc.yellow("not connected")} ${pc.dim((err as Error).message)}`);
+      continue;
+    }
+    const live = selectRuntime(kind).listModels?.(bin) ?? null;
+    if (live) {
+      const merged = live.map((m) => MODEL_CATALOG[kind].find((c) => c.id === m.id) ?? m);
+      offered.set(kind, merged);
+      candidates.push(...merged);
+      console.log(
+        `${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · ${merged.length} model(s) offered to this login`)}`,
+      );
+    } else {
+      candidates.push(...MODEL_CATALOG[kind]);
+      console.log(`${pc.cyan(kind.padEnd(7))} ${pc.green("connected")} ${pc.dim(`${version} · using Tack's catalog`)}`);
+    }
+  }
+
+  // Skip candidates whose id is already configured under another key (e.g. a
+  // hand-added `gpt-6.1-sol-high`) so sync doesn't duplicate them.
+  const configuredIds = new Set(config.models.map((m) => `${m.runtime}:${m.id}`));
+  const added = await addModelsToConfig(
+    CONFIG_PATH,
+    candidates.filter((c) => !configuredIds.has(`${c.runtime}:${c.id}`)),
+  );
+  if (added.length === 0) {
+    console.log(pc.dim("\nNo new models to add — every offered model is already configured."));
+  } else {
+    console.log(`\nAdded ${pc.bold(String(added.length))} model(s) to ${pc.dim(CONFIG_PATH)}:`);
+    for (const m of added) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
+  }
+
+  // 2) Prune configured models an authoritative runtime no longer offers — the
+  // login would reject them at run time (`model_not_found`). Any role pinned to one
+  // is re-pinned first (the config must stay loadable between writes) to the best
+  // replacement from the same provider; if there is none, the model is kept and
+  // the user is told to re-pin by hand rather than leaving the role dangling.
+  let current = await requireConfig();
+  const stale = current.models.filter(
+    (m) => offered.has(m.runtime) && !offered.get(m.runtime)!.some((o) => o.id === m.id),
+  );
+  const staleKeys = new Set(stale.map((m) => m.key));
+  // Retained stale keys still cannot serve as replacements for other candidates.
+  const allStaleKeys = new Set(staleKeys);
+  for (const role of ROLE_KEYS) {
+    let changed = false;
+    const next = roleModelKeys(current, role).map((key) => {
+      const pinned = stale.find((m) => m.key === key);
+      if (!pinned) return key;
+      // Rank the runtime's own offering (best-first) ahead of other configured models.
+      const rank = (m: Model) => {
+        const i = (offered.get(m.runtime) ?? []).findIndex((o) => o.id === m.id);
+        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      const pool = current.models
+        .filter((m) => !allStaleKeys.has(m.key) && m.provider === pinned.provider)
+        .sort((a, b) => rank(a) - rank(b));
+      const replacement = pickReplacement(pinned, pool);
+      if (!replacement) {
+        staleKeys.delete(pinned.key);
+        console.log(
+          pc.red(`\n! roles.${role} includes ${pinned.key}, which ${pinned.runtime} no longer offers, and no other ${pinned.provider} model is configured.`) +
+            pc.dim(`\n  Kept ${pinned.key}; re-pin with \`tack roles set ${role} <model>\`.`),
+        );
+        return key;
+      }
+      changed = true;
+      console.log(
+        pc.yellow(`\n! roles.${role} included ${pinned.key}, which ${pinned.runtime} no longer offers to this login.`) +
+          `\n  Re-pinned ${role} ${pc.dim(pinned.key)} → ${pc.cyan(replacement.key)}` +
+          pc.dim(` (change with \`tack roles set ${role} <model>\`)`),
+      );
+      return replacement.key;
+    });
+    if (changed) {
+      const keys = [...new Set(next)];
+      await setRoleInConfig(CONFIG_PATH, role, keys.length === 1 ? keys[0]! : keys);
+      current = await requireConfig();
+    }
+  }
+  const removed = await removeModelsFromConfig(CONFIG_PATH, staleKeys);
+  if (removed.length > 0) {
+    console.log(`\nRemoved ${pc.bold(String(removed.length))} model(s) no longer offered:`);
+    for (const m of removed) console.log(`  ${pc.cyan(m.key)}  ${pc.dim(`${m.runtime}:${m.id}`)}`);
+  }
+
+  // 3) Fill codex pricing. Reload first so models added above are considered.
+  const fresh = await requireConfig();
+  try {
+    await fillCodexPricing(fresh, opts.allPricing);
+  } catch (err) {
+    // Pricing is best-effort here — a freshly seeded catalog is still useful
+    // offline — so warn rather than fail the whole command.
+    console.error(pc.red(`\nCould not fetch pricing: ${(err as Error).message}`));
+  }
+}
 
 // Folded into `models sync`; kept hidden so `tack models sync-pricing` and the
 // `--all` escape hatch keep working for anyone who scripted them.
@@ -1040,6 +1109,56 @@ const sessionRefresh = defineCommand({
   },
 });
 
+/** Recovery after sleep or a network drop: restart the supervisor even on current
+ * code, revive agents the outage killed, restart a dead PR watcher, then park the
+ * replacement supervisor detached in tmux and hand the terminal back. */
+const sessionReconnect = defineCommand({
+  meta: { name: "reconnect", description: "Recover a session after sleep or a lost connection; restarts the supervisor detached in tmux (--all for every active session)" },
+  args: {
+    session: { type: "positional", required: false, description: "Session id (or use --all)" },
+    all: { type: "boolean", description: "Reconnect every active session" },
+  },
+  async run({ args }) {
+    if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
+    const config = await loadConfig();
+    if (args.all) {
+      for (const result of await reconnectAllSessions(config)) {
+        const id = result.session.id;
+        if (result.status === "error") {
+          console.error(`${id}: ${result.error}`);
+          process.exitCode = 1;
+        } else {
+          console.log(`${id}: ${describeReconnect(result)}${result.parked ? " · parked in tmux" : ""}`);
+          if (result.failedAgents.length) process.exitCode = 1;
+        }
+      }
+      return;
+    }
+    const id = String(args.session);
+    requireSession(id);
+    const result = await reconnectSession(id, config);
+    if (!getSession(id)!.resume_ref) {
+      console.log(pc.dim(`${id}: ${describeReconnect(result)}`));
+      console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
+      return process.exit(1);
+    }
+    // Unlike refresh, always relaunch: the user asked to reconnect this session,
+    // so a supervisor that was already down comes back too.
+    const park = await parkReconnectedSupervisor(id, config);
+    console.log(`${id}: ${describeReconnect(result)}${park.parked ? " · parked in tmux" : ""}`);
+    if (park.parked) {
+      console.log(pc.dim(`Rejoin it with \`tack session resume ${id}\`.`));
+      console.log(pc.dim("Watch work with `tack dashboard`."));
+    } else if (park.reason === "no-tmux") {
+      console.log(pc.dim(`tmux is unavailable, so the supervisor is stopped. Run \`tack session resume ${id}\` to start it.`));
+    } else {
+      console.error(pc.red(`Could not park the supervisor in tmux. Run \`tack session resume ${id}\` to start it.`));
+      process.exitCode = 1;
+    }
+    if (result.failedAgents.length) process.exitCode = 1;
+  },
+});
+
 const sessionResume = defineCommand({
   meta: {
     name: "resume",
@@ -1200,7 +1319,7 @@ function ticketStatusLabel(status: string | null, category: string | null): stri
   const label = status ?? "?";
   switch (category) {
     case "done":
-      return pc.magenta(`✔ ${label}`);
+      return pc.green(`✔ ${label}`);
     case "indeterminate":
       return pc.yellow(`● ${label}`);
     case "new":
@@ -1465,9 +1584,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1567,7 +1686,7 @@ if (hidden === "__mcp") {
 } else if (hidden === "__run-agent") {
   const [, , , agentId] = process.argv;
   const config = await loadConfig();
-  await runAgentToCompletion(agentId!, config, { resume: process.argv[4] === "--resume" });
+  await runAgentToCompletion(agentId!, config, { resume: process.argv[4] === "--resume", preflight: decodePreflight(process.env.TACK_RUNNER_PREFLIGHT) });
 } else if (hidden === "__run-supervisor") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
@@ -1595,7 +1714,12 @@ if (hidden === "__mcp") {
   try {
     const sessionId = process.argv[3];
     const input = JSON.parse(await Bun.stdin.text());
-    if (sessionId && typeof input?.prompt === "string") setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
+    if (sessionId && typeof input?.prompt === "string") {
+      setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
+      // The human replied, so an open question is answered. A pending plan keeps
+      // its own lifecycle (elicitation / /approve), so only "question" clears here.
+      clearSessionAwaitingInputFor(sessionId, "question");
+    }
     if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
       approveSessionPlan(sessionId);
       process.stdout.write(JSON.stringify({
@@ -1628,7 +1752,34 @@ if (hidden === "__mcp") {
   }
   process.exit(0);
 } else if (hidden === "__turn-end") {
-  try { if (process.argv[3]) setSupervisorTurnStartedAt(process.argv[3]!, null); } catch { /* best-effort hook */ }
+  // Stop / idle_prompt hook. Always clears the turn flag; on Stop, a final message
+  // that ends in a question also marks the session awaiting the human's answer.
+  // Best-effort and silent: empty or malformed stdin just skips the question check.
+  const sessionId = process.argv[3];
+  try { if (sessionId) setSupervisorTurnStartedAt(sessionId, null); } catch { /* best-effort hook */ }
+  try {
+    const raw = await Bun.stdin.text();
+    const input = raw.trim() ? JSON.parse(raw) : null;
+    // idle_prompt (Notification) never touches the awaiting flag: it fires while
+    // the human is still reading, and must not clear a question or plan.
+    if (sessionId && input?.hook_event_name === "Stop") {
+      const text = finalAssistantText(input);
+      if (text && endsWithQuestion(text)) setSessionAwaitingInputIfFree(sessionId, "question");
+    }
+  } catch { /* best-effort hook */ }
+  process.exit(0);
+} else if (hidden === "__await-input") {
+  // Silent PreToolUse / PostToolUse hook around the native question tool:
+  // `__await-input <id> <reason>` marks the session awaiting (never overwriting a
+  // different reason, e.g. a pending plan); `--clear` clears only that reason.
+  // Prints nothing so it can't affect the tool's permission decision.
+  try {
+    const [, , , sessionId, reason, flag] = process.argv;
+    if (sessionId && reason) {
+      if (flag === "--clear") clearSessionAwaitingInputFor(sessionId, reason);
+      else setSessionAwaitingInputIfFree(sessionId, reason);
+    }
+  } catch { /* best-effort hook; never block the question */ }
   process.exit(0);
 } else if (hidden === "__guard-write") {
   let raw = "";

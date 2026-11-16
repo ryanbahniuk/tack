@@ -1,3 +1,4 @@
+import { computePreflight } from "../agent/preflight";
 import type { TackConfig } from "../config/schema";
 import { resolvePersona, resolveModel, modelForPersona } from "../config/load";
 import { getAgent, getSession, listSessionPrs } from "../db";
@@ -28,7 +29,9 @@ export function startPersonaReview(config: TackConfig, sessionId: string, { agen
       prompt: `Review agent ${target.id}'s work using your persona and the shared contract. Report findings with report_review.` +
         (prompt ? `\n\nExtra focus:\n${prompt}` : ""),
     });
-    spawnAgentRunner(session.id, agent.id);
+    let preflight;
+    try { preflight = computePreflight(config, m); } catch { /* runner reports the failure */ }
+    spawnAgentRunner(session.id, agent.id, { preflight });
     return { agentId: agent.id, persona: name, model: m.key, reviews: target.id };
 }
 
@@ -50,7 +53,9 @@ export function startRemoteReview(config: TackConfig, sessionId: string, { perso
         prompt: `Review PR #${pr.number} (${pr.url}) using your persona and the shared contract. Report findings with report_review.` +
           (prompt ? `\n\nExtra focus:\n${prompt}` : ""),
       });
-      spawnAgentRunner(session.id, agent.id);
+      let preflight;
+      try { preflight = computePreflight(config, m); } catch { /* runner reports the failure */ }
+      spawnAgentRunner(session.id, agent.id, { preflight });
       return { agentId: agent.id, prId: pr.id, number: pr.number, url: pr.url, model: m.key };
     });
     return { persona: name, reviews };

@@ -60,10 +60,32 @@ export function refreshBlockedReason(session: SessionRow, probes = {
   return null;
 }
 
-async function waitUntilGone(alive: () => boolean): Promise<boolean> {
+export async function waitUntilGone(alive: () => boolean): Promise<boolean> {
   const deadline = Date.now() + 1500;
   while (alive() && Date.now() < deadline) await Bun.sleep(75);
   return !alive();
+}
+
+/** Stop a session's supervisor so a caller can launch its replacement: ask a tmux
+ * TUI to exit (killing it if it lingers), otherwise SIGTERM a live headless runner
+ * or launcher. Then bank the cost the dying turn accrued and clear the turn flag,
+ * which a killed turn's Stop hook never got to clear. Shared by refresh and
+ * reconnect; it applies no guards of its own. Returns whether anything was live. */
+export async function stopSupervisorProcess(session: SessionRow, config: TackConfig): Promise<boolean> {
+  const id = session.id;
+  const tmuxAlive = () => tmuxHasSession(tmuxSessionName(id));
+  const wasLive = tmuxAlive() || isAlive(session.pid);
+  if (tmuxAlive()) {
+    tmuxRequestExit(id);
+    if (!await waitUntilGone(tmuxAlive)) tmuxKillSession(id);
+  } else if (isAlive(session.pid)) {
+    try { process.kill(session.pid!, "SIGTERM"); } catch { /* exited */ }
+    if (!await waitUntilGone(() => isAlive(session.pid))) throw new Error(`Supervisor ${id} did not exit`);
+  }
+  if (tmuxAlive()) throw new Error(`Supervisor ${id} did not exit`);
+  if (session.supervisor_model) recoverSupervisorCost({ session, model: resolveModel(config, session.supervisor_model), cwd: supervisorCwd(id), sessionRef: session.resume_ref ?? undefined });
+  setSupervisorTurnStartedAt(id, null);
+  return wasLive;
 }
 
 /** Refresh only Tack-owned supervisor/watcher processes. Agent work is untouched.
@@ -75,19 +97,7 @@ export async function refreshSession(id: string, config: TackConfig, opts: { for
   if (!stale.stale) return { ...stale, refreshed: false, blocked: null };
   const blocked = !opts.force && !opts.watcherOnly ? refreshBlockedReason(session) : null;
   if (blocked) return { ...stale, refreshed: false, blocked };
-  if (stale.supervisor && !opts.watcherOnly) {
-    const tmuxAlive = () => tmuxHasSession(tmuxSessionName(id));
-    if (tmuxAlive()) {
-      tmuxRequestExit(id);
-      if (!await waitUntilGone(tmuxAlive)) tmuxKillSession(id);
-    } else if (isAlive(session.pid)) {
-      try { process.kill(session.pid!, "SIGTERM"); } catch { /* exited */ }
-      if (!await waitUntilGone(() => isAlive(session.pid))) throw new Error(`Supervisor ${id} did not exit`);
-    }
-    if (tmuxAlive()) throw new Error(`Supervisor ${id} did not exit`);
-    if (session.supervisor_model) recoverSupervisorCost({ session, model: resolveModel(config, session.supervisor_model), cwd: supervisorCwd(id), sessionRef: session.resume_ref ?? undefined });
-    setSupervisorTurnStartedAt(id, null);
-  }
+  if (stale.supervisor && !opts.watcherOnly) await stopSupervisorProcess(session, config);
   if (stale.watcher) {
     try { process.kill(session.pr_watch_pid!, "SIGTERM"); } catch { /* exited */ }
     // Never clear a live pid: spawnPrWatcher must not race a still-running watcher.

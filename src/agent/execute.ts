@@ -1,3 +1,4 @@
+import { usablePreflight, type RunnerPreflight } from "./preflight";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
@@ -25,7 +26,7 @@ import {
 import { getDb } from "../db";
 import { appendAgentArtifact, readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
-import { ensureReviewWorktree, ensureRemoteReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
+import { ensureReviewWorktree, ensureRemoteReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, sessionWorktreesRoot, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
@@ -80,7 +81,7 @@ export function prepareAgent(input: {
 export async function* runAgent(
   agentId: string,
   config: TackConfig,
-  options: { resume?: boolean } = {},
+  options: { resume?: boolean; preflight?: RunnerPreflight; startupLogging?: boolean } = {},
 ): AsyncGenerator<AgentEvent, { ok: boolean; agent: AgentRow }> {
   const agent = getAgent(agentId);
   if (!agent) throw new Error(`Unknown agent ${agentId}`);
@@ -97,7 +98,8 @@ export async function* runAgent(
   // agents, `tack agent`, retries): a model the login doesn't offer fails the agent
   // right away — before a worktree or a runtime run — with the remediation inline,
   // instead of a late `model_not_found` buried in the log. Unknown never blocks.
-  const offered = checkModelOffered(config, model, {
+  const preflight = usablePreflight(options.preflight, model.key, model.runtime) ? options.preflight : undefined;
+  const offered = preflight ? { ok: preflight.modelOffered } : checkModelOffered(config, model, {
     role: roleModelKeys(config, "agent").includes(model.key) ? "agent" : undefined,
   });
   if (offered.ok === false) {
@@ -108,7 +110,16 @@ export async function* runAgent(
     return { ok: false, agent: getAgent(agent.id)! };
   }
 
-  const worktree = agentWorktree(agent, project.path);
+  const started = Date.now();
+  let phaseStarted = started, phase = "";
+  const setPhase = (next: string) => {
+    if (phase === next) return;
+    if (phase && options.startupLogging) console.error(`[startup] ${phase} ${Date.now() - phaseStarted}ms`);
+    phase = next; phaseStarted = Date.now(); setAgentActivity(agent.id, next);
+  };
+  setPhase(agent.worktree_path && existsSync(agent.worktree_path) || existsSync(join(sessionWorktreesRoot(agent.session_id), agent.id)) ? "reusing worktree" : "creating worktree");
+  const worktree = agentWorktree(agent, project.path, project.name, config, setPhase);
+  setPhase("preparing context");
   setAgentWorktree(agent.id, worktree.path, worktree.branch);
 
   // Persist the baseline for later review spawns as well as continuations.
@@ -131,7 +142,7 @@ export async function* runAgent(
   });
 
   const runtime = selectRuntime(model.runtime);
-  const resolved = resolveRuntime(config, model.runtime); // verifies the version pin
+  const resolved = preflight ?? resolveRuntime(config, model.runtime); // verifies the version pin
   const coordination = selfCommand(["__mcp", session.id, agent.id]);
   const logPath = join(LOGS_DIR, session.id, `${agent.id}.log`);
   // Both runtime adapters support headless resume. Pending agents that never
@@ -161,6 +172,8 @@ export async function* runAgent(
   // dashboard (persisted below) instead of only in the raw log.
   let lastError: string | null = null;
 
+  setPhase(`starting ${model.runtime}`);
+  let firstEvent = true, firstResponse = false;
   for await (const ev of runtime.run({
     prompt,
     cwd: worktree.path,
@@ -174,6 +187,11 @@ export async function* runAgent(
     mcpServers: [{ name: "tack", command: coordination.command, args: coordination.args }],
     logPath,
   })) {
+    if (firstEvent) { firstEvent = false; setPhase("waiting for first response"); }
+    if (!firstResponse && ev.type !== "session") {
+      firstResponse = true; if (options.startupLogging) console.error(`[startup] first response after ${Date.now() - started}ms total`);
+    }
+    if (ev.type === "tool_call" && phase) { if (options.startupLogging) console.error(`[startup] ${phase} ${Date.now() - phaseStarted}ms`); phase = ""; }
     switch (ev.type) {
       case "session":
         setAgentResumeRef(agent.id, ev.ref);
@@ -217,6 +235,7 @@ export async function* runAgent(
     yield ev;
   }
 
+  if (phase && options.startupLogging) console.error(`[startup] ${phase} ${Date.now() - phaseStarted}ms`);
   const diff = worktreeDiff(worktree, agent.diff_base ?? undefined);
   const diffRef = diff.trim() ? writeAgentArtifact(session.id, agent.id, "diff", diff) : null;
   setAgentRefs(agent.id, { outputRef, diffRef });
@@ -235,7 +254,7 @@ export async function* runAgent(
  * pushed onto the PR branch as a fast-forward. Both reuse an existing worktree on
  * resume/retry.
  */
-function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
+function agentWorktree(agent: AgentRow, repoPath: string, project: string, config: TackConfig, onPhase: (label: string) => void): Worktree {
   // Never replace a disappeared lineage cwd with a cold checkout: the runtime
   // conversation is tied to the original directory.
   if ((agent.continues_agent_id || agent.continuation_prompt_ref) &&
@@ -244,10 +263,11 @@ function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
   if (agent.continues_agent_id) {
     if (!agent.worktree_path || !agent.branch || !agent.diff_base)
       throw new Error(`Continuation ${agent.id} has no worktree/baseline`);
+    onPhase("reusing worktree");
     return { repo: repoPath, path: agent.worktree_path, branch: agent.branch, base: agent.diff_base };
   }
   if (agent.continuation_prompt_ref && agent.worktree_path && agent.branch)
-    return existingWorktree(repoPath, agent.worktree_path, agent.branch);
+    return (onPhase("reusing worktree"), existingWorktree(repoPath, agent.worktree_path, agent.branch));
   if (agent.kind === "review") {
     const reviewed = agent.reviews_agent_id ? getAgent(agent.reviews_agent_id) : null;
     if (!agent.reviews_agent_id && agent.session_pr_id) {
@@ -265,7 +285,7 @@ function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
       throw new Error(`PR-fix agent ${agent.id} has no PR head branch to work on (session_pr_id=${agent.session_pr_id})`);
     return ensurePrWorktree(repoPath, agent.session_id, agent.id, pr.head_branch);
   }
-  return ensureWorktree(repoPath, agent.session_id, agent.id);
+  return ensureWorktree(repoPath, agent.session_id, agent.id, project, config, onPhase);
 }
 
 /**

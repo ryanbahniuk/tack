@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { supervisorPromptPath } from "../src/supervisor/prompt";
-import { resolve } from "node:path";
-import { approveSessionPlan, createSession, getSession, setSessionAwaitingInput } from "../src/db";
+import { join, resolve } from "node:path";
+import { approveSessionPlan, createSession, getSession, setSessionAwaitingInput, setSupervisorTurnStartedAt } from "../src/db";
 import { APPROVE_PROMPT_MARKER, isApprovePrompt } from "../src/supervisor/approve-prompt";
 
 describe("isApprovePrompt", () => {
@@ -72,4 +73,104 @@ test("prompt-submit marks ordinary turns busy and turn-end silently clears the m
   expect(result.stdout.toString()).toBe("");
   expect(result.stderr.toString()).toBe("");
   expect(getSession(session.id)?.supervisor_turn_started_at).toBeNull();
+});
+
+function hook(args: string[], input?: string) {
+  const result = Bun.spawnSync([
+    process.execPath, resolve(import.meta.dir, "../bin/tack.ts"), ...args,
+  ], { env: { ...process.env }, ...(input === undefined ? {} : { stdin: Buffer.from(input) }), stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("");
+  expect(result.stderr.toString()).toBe("");
+}
+
+function turnEnd(sessionId: string, input?: unknown) {
+  hook(["__turn-end", sessionId], input === undefined ? undefined : typeof input === "string" ? input : JSON.stringify(input));
+}
+
+describe("__turn-end question detection", () => {
+  test("a Stop whose final message asks a question marks the session awaiting", () => {
+    const session = createSession({});
+    setSupervisorTurnStartedAt(session.id, new Date().toISOString());
+    turnEnd(session.id, { hook_event_name: "Stop", last_assistant_message: "Which repo should agent 2 touch?" });
+    const row = getSession(session.id)!;
+    expect(row.supervisor_turn_started_at).toBeNull();
+    expect(row.awaiting_reason).toBe("question");
+    expect(row.awaiting_input_at).toBeString();
+  });
+
+  test("a non-question Stop leaves the flag unset", () => {
+    const session = createSession({});
+    turnEnd(session.id, { hook_event_name: "Stop", last_assistant_message: "All agents are done." });
+    expect(getSession(session.id)!.awaiting_input_at).toBeNull();
+  });
+
+  test("never overwrites a pending plan", () => {
+    const session = createSession({});
+    setSessionAwaitingInput(session.id, "plan");
+    turnEnd(session.id, { hook_event_name: "Stop", last_assistant_message: "Approve?" });
+    expect(getSession(session.id)!.awaiting_reason).toBe("plan");
+  });
+
+  test("idle_prompt clears the turn flag but never touches the awaiting flag", () => {
+    const session = createSession({});
+    setSessionAwaitingInput(session.id, "question");
+    setSupervisorTurnStartedAt(session.id, new Date().toISOString());
+    turnEnd(session.id, { hook_event_name: "Notification", notification_type: "idle_prompt", last_assistant_message: "ok." });
+    const row = getSession(session.id)!;
+    expect(row.supervisor_turn_started_at).toBeNull();
+    expect(row.awaiting_reason).toBe("question");
+  });
+
+  test("empty or malformed stdin still clears the turn flag", () => {
+    for (const input of ["", "{", "null"]) {
+      const session = createSession({});
+      setSupervisorTurnStartedAt(session.id, new Date().toISOString());
+      turnEnd(session.id, input);
+      expect(getSession(session.id)!.supervisor_turn_started_at).toBeNull();
+      expect(getSession(session.id)!.awaiting_input_at).toBeNull();
+    }
+  });
+
+  test("falls back to the transcript when last_assistant_message is absent", () => {
+    const session = createSession({});
+    const path = join(mkdtempSync(join(tmpdir(), "tack-turn-end-")), "t.jsonl");
+    writeFileSync(path, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Here's the plan." }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Shall I go ahead?" }] } }),
+    ].join("\n") + "\n");
+    turnEnd(session.id, { hook_event_name: "Stop", transcript_path: path });
+    expect(getSession(session.id)!.awaiting_reason).toBe("question");
+  });
+});
+
+describe("question answers", () => {
+  test("__approve-prompt clears a question but leaves a pending plan", () => {
+    const asked = createSession({});
+    setSessionAwaitingInput(asked.id, "question");
+    expect(submit(asked.id, JSON.stringify({ prompt: "use the api repo" }))).toBe("");
+    expect(getSession(asked.id)!.awaiting_input_at).toBeNull();
+    expect(getSession(asked.id)!.awaiting_reason).toBeNull();
+
+    const planned = createSession({});
+    setSessionAwaitingInput(planned.id, "plan");
+    expect(submit(planned.id, JSON.stringify({ prompt: "what about tests?" }))).toBe("");
+    expect(getSession(planned.id)!.awaiting_reason).toBe("plan");
+    expect(getSession(planned.id)!.plan_approved_at).toBeNull();
+  });
+
+  test("__await-input marks and --clear clears a question, never touching a plan", () => {
+    const session = createSession({});
+    hook(["__await-input", session.id, "question"]);
+    expect(getSession(session.id)!.awaiting_reason).toBe("question");
+    hook(["__await-input", session.id, "question", "--clear"]);
+    expect(getSession(session.id)!.awaiting_input_at).toBeNull();
+
+    setSessionAwaitingInput(session.id, "plan");
+    hook(["__await-input", session.id, "question"]);
+    expect(getSession(session.id)!.awaiting_reason).toBe("plan");
+    hook(["__await-input", session.id, "question", "--clear"]);
+    expect(getSession(session.id)!.awaiting_reason).toBe("plan");
+    hook(["__await-input"]);
+  });
 });

@@ -10,6 +10,9 @@ export default ({
     // { name: "my-app", path: "~/Code/my-app", description: "What this repo is." },
   ],
 
+  // Background refresh of project default branches.
+  baseCache: { enabled: true, intervalSeconds: 120, maxAgeSeconds: 600 },
+
   models: [
     { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
     { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },
@@ -52,9 +55,10 @@ export default ({
   // continues — so a self-updating CLI like claude never blocks a run; "strict" turns
   // it back into a hard failure for reproducible setups; "off" skips the check.
   // Pin with \`tack runtimes pin <runtime> <version>\`; \`tack runtimes sync\` re-pins to
-  // whatever's installed now. A pinned-but-missing version is fetched into
-  // ~/.tack/runtimes/ by \`tack init\` / \`tack runtimes install\`; \`tack runtimes doctor\`
-  // reports resolution and drift without changing anything.
+  // whatever's installed now. \`tack runtimes install\` installs/upgrades an unpinned
+  // runtime to its latest release (\`bun add -g\`), fetches a pinned one into
+  // ~/.tack/runtimes/ (as \`tack init\` also does), never installs over a \`bin\`, then
+  // syncs models; \`tack runtimes doctor\` reports resolution and drift without changing anything.
   runtimes: {
     // claude: { version: "2.1.261" },                                  // advisory pin (warn on drift)
     // codex: { bin: "~/.local/bin/codex", version: "0.147.0", versionPolicy: "strict" },

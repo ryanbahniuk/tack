@@ -188,6 +188,13 @@ export class ClaudeRuntime implements Runtime {
       const command = shellJoin([opts.onPlanPresented.command, ...opts.onPlanPresented.args]);
       preToolUse.push({ matcher: opts.planApprovalTool, hooks: [{ type: "command", command }] });
     }
+    // (1b) Likewise mark the session awaiting input while the native question
+    // picker is up. Silent (no stdout), so it never sets a permission decision;
+    // the auto-allow matchers in (3) only cover the mounted MCP servers.
+    if (opts.onQuestionAsked) {
+      const command = shellJoin([opts.onQuestionAsked.command, ...opts.onQuestionAsked.args]);
+      preToolUse.push({ matcher: ASK_USER_QUESTION_TOOL, hooks: [{ type: "command", command }] });
+    }
     // (2) Gate the approval tools (e.g. open_pr) behind a per-call human ok — the
     // model can't open a PR without the human okaying that call.
     // We use a hook so the prompt carries our own wording via
@@ -253,6 +260,13 @@ export class ClaudeRuntime implements Runtime {
         ...(ask.length ? { ask } : {}),
       };
     if (preToolUse.length) settings.hooks = { PreToolUse: preToolUse };
+    if (opts.onQuestionAnswered) {
+      const command = shellJoin([opts.onQuestionAnswered.command, ...opts.onQuestionAnswered.args]);
+      settings.hooks = {
+        ...settings.hooks,
+        PostToolUse: [{ matcher: ASK_USER_QUESTION_TOOL, hooks: [{ type: "command", command }] }],
+      };
+    }
     if (opts.onUserPrompt) {
       const command = shellJoin([opts.onUserPrompt.command, ...opts.onUserPrompt.args]);
       settings.hooks = {
@@ -467,6 +481,9 @@ function mergeLocalAllowRules(cwd: string, rules: readonly string[]): void {
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
 }
+
+/** Claude's native "ask the human a multiple-choice question" tool. */
+export const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
 
 /**
  * The interactive read-only supervisor's `permissions.deny` list. Without plan mode

@@ -602,6 +602,29 @@ export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
     || KNOWN_BOT_LOGINS.has((a.login ?? "").replace(/\[bot\]$/i, "").toLowerCase());
 }
 
+/** Headings that open informational bot PR summaries (Cursor, CodeRabbit, Copilot).
+ * Matched against the first visible line, case-insensitively. */
+const BOT_SUMMARY_HEADINGS = [
+  "pr summary", "summary by coderabbit", "pull request overview", "walkthrough",
+];
+
+/** First visible line: bot comments often start with multiline HTML metadata and
+ * open with a markdown heading. */
+function firstVisibleLine(body: string): string {
+  return body.replace(/<!--[\s\S]*?(?:-->|$)/g, "")
+    .split("\n").map((line) => line.trim().replace(/^#+\s*/, "").trim())
+    .find(Boolean) ?? "";
+}
+
+/** A bot's auto-generated PR summary describes the PR rather than asking for changes,
+ * so feeding it to a fix agent only yields a useless "nothing to do" reply. Only
+ * conversation-level bot posts qualify: inline threads and humans are always feedback. */
+export function isBotPrSummary(item: Pick<PrFeedbackItem, "kind" | "body" | "isBot">): boolean {
+  if (!item.isBot || (item.kind !== "issue_comment" && item.kind !== "review")) return false;
+  const first = firstVisibleLine(item.body).replace(/[*_`:]+/g, "").trim().toLowerCase();
+  return BOT_SUMMARY_HEADINGS.some((h) => first === h || first.startsWith(`${h} `));
+}
+
 /**
  * The pure heart of PR watch input: turns a PR's raw comments into the list of NEW
  * feedback items a fix agent should consider. Includes:
@@ -610,8 +633,9 @@ export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
  *  - reviews with a non-empty summary body (`review`; an empty body is just the
  *    envelope for inline comments, which arrive as threads),
  *  - conversation comments (`issue_comment`) that aren't minimized.
- * Bots are included. Anything containing `PR_WATCH_MARKER` (Tack's own replies) is
- * dropped, as is any sourceId already in `alreadyHandledIds` (ingested earlier).
+ * Bots are included, except their informational PR summaries (`isBotPrSummary`).
+ * Anything containing `PR_WATCH_MARKER` (Tack's own replies) is dropped, as is any
+ * sourceId already in `alreadyHandledIds` (ingested earlier).
  */
 export function normalizeFeedback(
   status: Pick<PrStatus, "comments" | "reviews" | "url">,
@@ -623,6 +647,7 @@ export function normalizeFeedback(
   const take = (item: PrFeedbackItem) => {
     if (!item.body.trim()) return;
     if (item.body.includes(PR_WATCH_MARKER)) return;
+    if (isBotPrSummary(item)) return;
     if (seen.has(item.sourceId)) return;
     seen.add(item.sourceId); // de-dupe within one pass too
     out.push(item);
@@ -717,9 +742,7 @@ export function buildReplyBody(input: {
 /** Quote only visible text: bot comments often start with multiline HTML metadata. */
 export function feedbackQuote(original: string, kind?: PrFeedbackKind): string {
   if (kind === "ci_check") return `Failing check: ${original.split("\n")[0] || "ci"}`;
-  return (original.replace(/<!--[\s\S]*?(?:-->|$)/g, "")
-    .split("\n").map((line) => line.trim().replace(/^#+\s*/, "").trim())
-    .find(Boolean) ?? "").slice(0, 200);
+  return firstVisibleLine(original).slice(0, 200);
 }
 
 /** GitHub cannot thread conversation comments, review summaries or CI checks. Collect their

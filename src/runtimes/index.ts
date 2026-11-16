@@ -16,7 +16,14 @@ export {
   DEFAULT_VERSION_POLICY,
   type ResolvedRuntime,
 } from "./resolve";
-export { ensureRuntimeInstalled, type EnsureResult, type EnsureAction } from "./install";
+export {
+  ensureRuntimeInstalled,
+  installRuntime,
+  installPlanFor,
+  type EnsureResult,
+  type EnsureAction,
+  type InstallPlan,
+} from "./install";
 export { runtimeAuth, type AuthStatus } from "./auth";
 
 /** Picks the runtime implementation for a runtime kind. */
