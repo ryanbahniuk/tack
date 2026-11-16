@@ -79,9 +79,8 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   pick or skip it. Optional `model` accepts a key or non-empty list; omitted uses
   `roles.agent`. Reviews prefer a candidate different from the author's model,
   falling back to all candidates. The supervisor chooses personas by `whenToUse`
-  per unit. `open_pr` requires normal workers to have a finished review with a report,
-  or `skipReview`
-  with a reason when none applies.
+  per unit. `open_pr` requires normal workers to have a finished review with a
+  report, or `skipReview` with a reason when none applies.
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
   provider, name, version, runtime, id, optional effort/pricing) and assign roles to

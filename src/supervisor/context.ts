@@ -185,6 +185,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
       "   findings back via `continue_agent` on the author; optionally re-review after fixes.",
       "   Every normal worker unit needs a persona review, or `open_pr` with `skipReview` and a reason",
       "   if no persona applies; `open_pr` enforces this gate. Note verdicts in the PR body.",
+      "   Review agents never become PRs.",
     ] : []),
     ...(config.autoOpenPrs
       ? [

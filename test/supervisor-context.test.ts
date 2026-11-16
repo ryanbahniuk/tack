@@ -84,6 +84,7 @@ describe("persona contexts", () => {
     expect(written).toContain("skipReview");
     expect(written).toContain("blocker/major");
     expect(written).toContain("Note verdicts in the PR body");
+    expect(written).toContain("Review agents never become PRs.");
   });
 
   test("review context preserves persona instructions and reports without commits", async () => {

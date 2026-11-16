@@ -192,12 +192,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool("list_personas", {
-    description: "List configured reviewer personas; choose personas by whenToUse.",
+    description: "List configured reviewer personas; choose personas by whenToUse. " +
+      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change.",
     inputSchema: {}, annotations: { readOnlyHint: true },
   }, async () => text(config.personas));
 
   server.registerTool("review_agent", {
-    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Choose the persona by whenToUse. Returns immediately.",
+    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Choose by whenToUse. " +
+      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change. Returns immediately.",
     inputSchema: { persona: z.string(), agentId: z.string(), prompt: z.string().optional(), model: z.string().optional() },
   }, async ({ persona: name, agentId, prompt, model }) => {
     const session = requireSession();
