@@ -327,6 +327,21 @@ const migrations: Migration[] = [
     sql: `ALTER TABLE session_prs ADD COLUMN ready_promoted_at TEXT;`,
   },
   { version: 17, name: "session_pr_fix_enabled", sql: `ALTER TABLE sessions ADD COLUMN pr_fix_enabled INTEGER NOT NULL DEFAULT 1;` },
+  {
+    version: 18,
+    name: "session_summary",
+    // A durable local record of what a session did, so a later supervisor can learn
+    // from it (`search_past_sessions` / `read_past_session`). `summary_ref` is the
+    // composed markdown summary (rewritten each time `open_pr` succeeds) and
+    // `summary_at` when that last happened; `session_prs.body_ref` is the PR
+    // description the supervisor wrote. NULL = written before this existed — readers
+    // compose a summary on the fly instead, so there is no backfill.
+    sql: `
+      ALTER TABLE sessions ADD COLUMN summary_ref TEXT;
+      ALTER TABLE sessions ADD COLUMN summary_at TEXT;
+      ALTER TABLE session_prs ADD COLUMN body_ref TEXT;
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */
