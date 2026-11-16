@@ -17,32 +17,20 @@ and [AGENTS.md](./AGENTS.md) for the contributor guide.
 
 ## Quickstart
 
+Copy and paste from top to bottom. It ends with your first session.
+
 ### 1. Prerequisites
 
 ```bash
-brew install oven-sh/bun/bun gh tmux uv
+brew install oven-sh/bun/bun gh tmux
 ```
 
 | Tool | Required? | What it enables |
 | --- | --- | --- |
-| [Bun](https://bun.sh) | **Required** | Runs Tack (no build step) and installs pinned runtimes. |
-| `claude` (Claude Code) | **Required** for the default supervisor and summary roles | The supervisor and Claude-backed agents. |
-| `codex` (Codex CLI) | Required for the starter's default `agent` role | Codex-backed agents. If you skip it, point `agent` at a Claude model (see below). |
+| [Bun](https://bun.sh) | **Required** | Runs Tack (no build step) and installs the runtimes. |
+| `claude` / `codex` | Installed by Tack (step 3) | The supervisor (Claude) and agents (Codex by default). |
 | [`gh`](https://cli.github.com) | Strongly recommended | Opening PRs, discovering them and PR watch. Without it, PR status never updates. |
-| `tmux` | Recommended | Detaching from a live supervisor and reattaching later, plus `prefix N` / `prefix B`. |
-| `uv` (`uvx`) | Optional | Mounting the Atlassian MCP server for the supervisor ([Chime setup](#recommended-chime-setup)). |
-
-Install and log in to the runtimes and GitHub. Tack uses your existing logins and
-never manages credentials itself.
-
-```bash
-# Skip any runtime you already have on PATH
-bun add -g @anthropic-ai/claude-code @openai/codex
-
-claude          # log in once, then exit
-codex login     # ChatGPT login or API key
-gh auth login
-```
+| `tmux` | Recommended | Detaching from a live supervisor and reattaching later. |
 
 ### 2. Install Tack
 
@@ -50,45 +38,58 @@ gh auth login
 git clone git@github.com:ryanbahniuk/tack.git
 cd tack
 bun install
-bun link        # puts `tack` on your PATH (the rest of this README assumes it)
+bun link        # puts `tack` on your PATH
 ```
 
-### 3. Initialise
+### 3. Install the runtimes
 
 ```bash
-tack init
+tack runtimes install
 ```
 
-`tack init` writes a starter config to `~/.tack/config.ts` (set `TACK_HOME` to use
-another state root) and installs any pinned runtime versions. If you run it inside
-a git repo, it also registers that repo as a project and describes it with the
-summary model.
+This installs the latest Claude Code and Codex CLIs with bun and syncs Tack's
+models with them. It also writes a starter config to `~/.tack/config.ts` (set
+`TACK_HOME` to use another state root).
 
-### 4. Add projects, sync models and check your setup
+> **No Codex?** Run `tack runtimes install claude`, then `tack roles set agent opus-5`
+> so agents run on Claude.
+
+### 4. Log in
 
 ```bash
-tack projects add ~/Code/my-app   # one repo; auto-writes description + metadata
-tack projects add --all           # or: every git repo in the current directory
+claude             # type /login, then exit
+codex login        # ChatGPT login or API key
+gh auth login
 
-tack models sync                  # add models your logins offer, prune the rest, fill codex pricing
-tack runtimes doctor              # binaries, version pins, auth and role models in one check
+tack models sync   # match the models to what your logins offer
 ```
 
-> **No Codex?** Run `tack roles set agent opus-5` so agents run on Claude.
+Tack uses your existing logins and never manages credentials itself.
 
-### 5. First run: one cheap agent
+### 5. Add projects
 
 ```bash
-tack agent my-app "Add a short CONTRIBUTING note about running tests"
+cd ~/Code/my-app && tack init     # registers the repo you're in
+tack projects add ~/Code/other    # add more by path
+tack projects add --all           # or every git repo in the current directory
 ```
 
-This runs one agent directly (no supervisor) in its own worktree and streams its
-output. It's the cheapest way to confirm the runtime pipeline works.
+The summary model writes each project's description for you.
 
-### 6. A real session
+### 6. Check your setup
 
 ```bash
-tack                 # same as `tack session create`
+tack runtimes doctor   # binaries, version pins, auth and role models in one check
+```
+
+### 7. Your first session
+
+Skim [Before your first session](#before-your-first-session) first: sessions spend
+real money and open PRs.
+
+```bash
+tack                                   # same as `tack session create`
+tack -m "Add a CONTRIBUTING note"      # or pass the first message up front
 ```
 
 In another terminal:
@@ -100,7 +101,7 @@ tack dashboard
 **What to expect:**
 
 1. You land in the supervisor's own interactive chat (Claude Code or Codex). Describe
-   the problem, or pass it up front with `tack -m "…"`.
+   the problem, unless you passed it with `-m`.
 2. The supervisor reads Tack-owned snapshots of the relevant repos and proposes a
    plan. An **approval prompt** appears. If it doesn't, type `/approve` in the chat
    or run `tack session approve <session>`.
@@ -427,14 +428,14 @@ tack projects remove <name|path>
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `name` | yes | Used by `tack agent <project>` and in the dashboard. |
+| `name` | yes | Shown in the dashboard and used by the supervisor. |
 | `path` | yes | `~` is expanded. |
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
 
 `projects add` and `projects refresh` have the summary model write `description`
-and `metadata` for you. `tack agent` and `tack session create` also auto-register
-the current git repo if it isn't configured yet.
+and `metadata` for you. `tack session create` also auto-registers the current git
+repo if it isn't configured yet.
 
 ### Models and roles
 
@@ -482,8 +483,8 @@ tack roles set agent opus-5               # back to a single model
 ```bash
 tack runtimes                    # list status (same as `tack runtimes list`; alias `runtime`)
 tack runtimes doctor             # resolve binaries, check pins + drift, check auth, check role models
+tack runtimes install [runtime]  # install claude + codex (or one), then sync models (--no-models skips)
 tack runtimes pin claude 2.1.261 # write a version pin
-tack runtimes install claude     # install a pinned version (or --all)
 tack runtimes sync [runtime]     # re-pin pinned runtimes to what's installed now (adopt drift)
 ```
 
@@ -496,8 +497,8 @@ runtimes: {
 
 | Field | Notes |
 | --- | --- |
-| `bin` | A specific executable. Defaults to the runtime name on `PATH`. Tack never installs over a `bin` you set. |
-| `version` | Checked against `<bin> --version` before runs. A pinned-but-missing version is installed into `~/.tack/runtimes/` by `tack init` or `tack runtimes install`. |
+| `bin` | A specific executable. Defaults to the runtime name on `PATH`. Tack never installs over a `bin` you set; `runtimes install` only verifies it. |
+| `version` | Checked against `<bin> --version` before runs. Without a pin, `tack runtimes install` installs or upgrades the latest release globally (`bun add -g`). With one, it installs that version into `~/.tack/runtimes/` instead, as `tack init` does. |
 | `versionPolicy` | What a mismatch does: `"warn"` (default) logs once and continues, so a self-updating claude never blocks; `"strict"` fails the run; `"off"` skips the check. |
 
 ### Personas
@@ -547,10 +548,12 @@ See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 | --- | --- |
 | No plan approval prompt appears | Type `/approve` in the supervisor chat, or run `tack session approve <session>`. |
 | Agent fails with `model_not_found`, or doctor warns that a model isn't offered | `tack models sync` (re-pins roles to models your login offers). |
-| Agents fail because `codex` isn't installed | Install and log in to codex, or `tack roles set agent opus-5`. |
+| Agents fail because `codex` isn't installed | `tack runtimes install codex` and `codex login`, or `tack roles set agent opus-5`. |
+| A runtime is outdated or `not found` | `tack runtimes install [runtime]` installs or upgrades it to the latest. A pinned runtime gets its pin. |
+| `runtimes install` warns that PATH resolves elsewhere | Another copy (e.g. a native installer's `~/.local/bin/claude`) shadows bun's. Put bun's global bin (`bun pm bin -g`) earlier on PATH, or remove the other copy. |
 | Version drift warning | `tack runtimes doctor` to see it; `tack runtimes sync` to adopt the installed version, or `tack runtimes install <runtime>` to restore the pin. |
 | `mismatch` / run stops on version | That runtime has `versionPolicy: "strict"`. Sync, install the pin or relax the policy. |
-| Auth failures mid-run | `tack runtimes doctor` shows auth state; run `claude` (log in) or `codex login`. |
+| Auth failures mid-run | `tack runtimes doctor` shows auth state; run `claude` (then `/login`) or `codex login`, then `tack models sync`. |
 | PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
 | PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
 | Session seems stuck or its supervisor exited | `tack session resume <session>`. |
@@ -573,10 +576,12 @@ bun test                          # unit tests under test/
 bun run ./bin/tack.ts --help      # run from source without bun link
 
 # Always use a throwaway state root so you never touch a real ~/.tack:
-TACK_HOME=$(mktemp -d)/tack bun run ./bin/tack.ts init
+export TACK_HOME=$(mktemp -d)/tack
+bun run ./bin/tack.ts init
 ```
 
-Live runs cost money and change repos, so validate with `tack agent <project>
-"<small task>"` before `tack session create`. See [SPEC.md](./SPEC.md) for the
+Live runs cost money and change repos. Validate a change with a small session
+first, such as `bun run ./bin/tack.ts -m "<small task>"` against that throwaway
+`TACK_HOME`. See [SPEC.md](./SPEC.md) for the
 design and [AGENTS.md](./AGENTS.md) for conventions and extension points (adding a
 model, runtime, persona or supervisor tool).
