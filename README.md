@@ -87,26 +87,25 @@ tack runtimes doctor   # binaries, version pins, auth and role models in one che
 Skim [Before your first session](#before-your-first-session) first: sessions spend
 real money and open PRs.
 
-```bash
-tack                                   # same as `tack session create`
-tack -m "Add a CONTRIBUTING note"      # or pass the first message up front
-```
-
-In another terminal:
+Open the dashboard, then press `c` to create a new session:
 
 ```bash
 tack dashboard
 ```
 
+Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does the same.
+
 **What to expect:**
 
-1. You land in the supervisor's own interactive chat (Claude Code or Codex). Describe
-   the problem, unless you passed it with `-m`.
+1. Pressing `c` puts you in the supervisor's own interactive chat (Claude Code or
+   Codex). Describe the problem. (With the CLI, you can pass it up front with `-m`.)
 2. The supervisor reads Tack-owned snapshots of the relevant repos and proposes a
    plan. An **approval prompt** appears. If it doesn't, type `/approve` in the chat
    or run `tack session approve <session>`.
-3. Agents spawn in their own worktrees. You can watch them in `tack dashboard`, where
-   cost, liveness and the Session → Agent → PR tree are shown.
+3. Agents spawn in their own worktrees. Detach with `prefix d` (with tmux) or exit
+   the chat to get back to the dashboard. Agents show up in its Session → Agent → PR
+   tree with cost and liveness. Press `enter` or `o` on a session to rejoin its
+   supervisor.
 4. When the work is done, the supervisor commits, pushes and opens **draft PRs**,
    one per unit of work, and PR watch takes over from there.
 
@@ -174,54 +173,9 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 
 ## Everyday use
 
-### Sessions
-
-```bash
-tack                                        # create a session (interactive supervisor chat)
-tack session create -m "Fix the flaky login test"   # seed the first message
-tack session create -b -m "…"               # --background: headless + detached, plan auto-approved
-tack session resume <session>               # rejoin a live supervisor, or resume a stopped one
-tack session resume <session> -m "Also update the docs"   # resume with a message (-b for headless)
-```
-
-Bare `tack session` lists sessions. `sessions` is accepted as an alias.
-
-| Command | What it does |
-| --- | --- |
-| `tack session list [--all]` | Sessions, status and cost; `◆ needs input` flags ones waiting on you. `--all` includes archived sessions. |
-| `tack session show <session>` | Agents, PRs, Jira tickets, cost split and pending amendments. |
-| `tack session context <session> [--all]` | The shared cross-agent contract (`--all` shows every version). |
-| `tack session approve <session>` | Approve a plan when the in-chat prompt didn't appear. |
-| `tack session follow <agentId>` | Stream an agent's live transcript. |
-| `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
-| `tack session retitle <session>` | Regenerate the title with the summary model. |
-| `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
-| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
-| `tack session stop <session>` | Stop the session and its agents. |
-| `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
-| `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
-| `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |
-
-`tack session resume` refreshes stale Tack processes automatically when the session
-is idle. `refresh --all` parks the replacement supervisors detached in tmux;
-without tmux they stay stopped until you resume them.
-
-### tmux: detach, reattach, new session, bug report
-
-With tmux installed, interactive supervisors run inside a Tack tmux server:
-
-| Key | Action |
-| --- | --- |
-| `prefix d` | Detach and leave the supervisor running. Reattach with `tack session resume <session>`. |
-| `prefix N` | Park this supervisor and open a new Tack session. |
-| `prefix B` | Park it and open a new session that reports a **Tack bug**, with a bounded digest of this session. |
-
-When you're nested inside your own tmux, press the prefix twice. The status bar
-shows the right keys. From any terminal, `tack session create --tack-bug-from
-<session> -m "what went wrong"` does the same as `prefix B`. Bug reports are always
-interactive, even with `-b`.
-
 ### Dashboard
+
+The dashboard is the primary way to drive Tack.
 
 ```bash
 tack dashboard
@@ -286,6 +240,53 @@ Insights adds a per-repo table sorted by agent count.
   doesn't repaint.
 
 </details>
+
+### Sessions
+
+```bash
+tack                                        # create a session (interactive supervisor chat)
+tack session create -m "Fix the flaky login test"   # seed the first message
+tack session create -b -m "…"               # --background: headless + detached, plan auto-approved
+tack session resume <session>               # rejoin a live supervisor, or resume a stopped one
+tack session resume <session> -m "Also update the docs"   # resume with a message (-b for headless)
+```
+
+Bare `tack session` lists sessions. `sessions` is accepted as an alias.
+
+| Command | What it does |
+| --- | --- |
+| `tack session list [--all]` | Sessions, status and cost; `◆ needs input` flags ones waiting on you. `--all` includes archived sessions. |
+| `tack session show <session>` | Agents, PRs, Jira tickets, cost split and pending amendments. |
+| `tack session context <session> [--all]` | The shared cross-agent contract (`--all` shows every version). |
+| `tack session approve <session>` | Approve a plan when the in-chat prompt didn't appear. |
+| `tack session follow <agentId>` | Stream an agent's live transcript. |
+| `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
+| `tack session retitle <session>` | Regenerate the title with the summary model. |
+| `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
+| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
+| `tack session stop <session>` | Stop the session and its agents. |
+| `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
+| `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
+| `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |
+
+`tack session resume` refreshes stale Tack processes automatically when the session
+is idle. `refresh --all` parks the replacement supervisors detached in tmux;
+without tmux they stay stopped until you resume them.
+
+### tmux: detach, reattach, new session, bug report
+
+With tmux installed, interactive supervisors run inside a Tack tmux server:
+
+| Key | Action |
+| --- | --- |
+| `prefix d` | Detach and leave the supervisor running. Reattach with `tack session resume <session>`. |
+| `prefix N` | Park this supervisor and open a new Tack session. |
+| `prefix B` | Park it and open a new session that reports a **Tack bug**, with a bounded digest of this session. |
+
+When you're nested inside your own tmux, press the prefix twice. The status bar
+shows the right keys. From any terminal, `tack session create --tack-bug-from
+<session> -m "what went wrong"` does the same as `prefix B`. Bug reports are always
+interactive, even with `-b`.
 
 ### Editing worktrees and manual workspaces
 
