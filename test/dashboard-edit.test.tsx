@@ -131,3 +131,54 @@ test("dashboard n creates a manual workspace, choosing a project when several qu
     deleteSession(session.id);
   }
 });
+
+test("a project chooser never survives its picker closing", async () => {
+  const prs = await import("../src/projects/prs");
+  const jira = await import("../src/projects/jira");
+  const gone = createSession({});
+  const other = createSession({});
+  const worker = (sessionId: string) => ({ ...createAgent({ sessionId, projectName: "beta" }), status: "done" as const });
+  const agentsBySession = new Map([[gone.id, [worker(gone.id)]], [other.id, [worker(other.id)]]]);
+  const list = spyOn(repositories, "listSessions").mockReturnValue([gone, other]);
+  const spies = [
+    list,
+    spyOn(repositories, "listAgents").mockImplementation(id => agentsBySession.get(id) ?? []),
+    spyOn(prs, "refreshSessionPrs").mockResolvedValue({ ghMissing: true } as never),
+    spyOn(jira, "refreshSessionJiraTickets").mockResolvedValue({ unavailable: false } as never),
+  ];
+  const config = { projects: [{ name: "alpha" }, { name: "beta" }], prWatch: { intervalSeconds: 3600, enabled: false } } as unknown as TackConfig;
+  const output = new PassThrough();
+  Object.assign(output, { columns: 240, rows: 60, isTTY: false });
+  const input = new PassThrough();
+  Object.assign(input, { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+  let frame = "";
+  output.on("data", chunk => { frame += chunk.toString(); });
+  const app = render(<Dashboard config={config} onLaunch={() => {}} />, {
+    stdout: output as unknown as NodeJS.WriteStream, stdin: input as unknown as NodeJS.ReadStream,
+    debug: true, patchConsole: false, exitOnCtrlC: false,
+  });
+  const press = async (key: string) => {
+    frame = "";
+    input.write(key);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    await app.waitUntilRenderFlush();
+  };
+  try {
+    await app.waitUntilRenderFlush();
+    await press("v");
+    await press("n");
+    expect(frame).toContain(`New manual workspace in ${gone.id}`);
+    // The picker's session disappears mid-choice (deleted elsewhere); the 1s poll sees it.
+    list.mockReturnValue([other]);
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    await press("x"); // any key while the picker has no session returns to the list
+    await press("v");
+    expect(frame).toContain(`Agents of ${other.id}`);
+    expect(frame).not.toContain("New manual workspace");
+  } finally {
+    app.unmount();
+    for (const s of spies) s.mockRestore();
+    deleteSession(gone.id);
+    deleteSession(other.id);
+  }
+});

@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import type { TackConfig } from "../config/schema";
 import { createManualAgent, type AgentRow } from "../db";
-import { createWorktree, worktreeDiff } from "../worktree/worktree";
+import { createWorktree, untrackedFiles, worktreeDiff } from "../worktree/worktree";
 import { shortId } from "../util/id";
 
 /**
@@ -11,8 +10,6 @@ import { shortId } from "../util/id";
  * (check_agents, check_conflicts, open_pr, the dashboard), but it has no runtime
  * conversation — runners, resume and continue_agent all refuse it.
  */
-
-export const isManual = (a: Pick<AgentRow, "kind">): boolean => a.kind === "manual";
 
 /** Thrown wherever something would run a manual row as a runtime conversation. */
 export const MANUAL_NOT_RUNNABLE =
@@ -23,9 +20,15 @@ export const MANUAL_NOT_RUNNABLE =
  * rest of the config. Session projects missing from the config are dropped — a
  * worktree needs the project's repo path. */
 export function manualProjectCandidates(projects: string[], sessionAgents: Pick<AgentRow, "project_name">[]): string[] {
-  const configured = new Set(projects);
-  const fromSession = [...new Set(sessionAgents.map(a => a.project_name))].filter(p => configured.has(p));
-  return [...fromSession, ...projects.filter(p => !fromSession.includes(p))];
+  return sessionFirst(projects, sessionProjects(projects, sessionAgents));
+}
+
+const sessionFirst = (projects: string[], fromSession: string[]) =>
+  [...fromSession, ...projects.filter(p => !fromSession.includes(p))];
+
+/** Distinct configured projects the session's agents use, in first-use order. */
+function sessionProjects(projects: string[], sessionAgents: Pick<AgentRow, "project_name">[]): string[] {
+  return [...new Set(sessionAgents.map(a => a.project_name))].filter(p => projects.includes(p));
 }
 
 export type ManualProjectResolution =
@@ -41,14 +44,14 @@ export type ManualProjectResolution =
 export function resolveManualProject(
   projects: string[], sessionAgents: Pick<AgentRow, "project_name">[], requested: string | undefined,
 ): ManualProjectResolution {
-  const candidates = manualProjectCandidates(projects, sessionAgents);
+  const fromSession = sessionProjects(projects, sessionAgents);
+  const candidates = sessionFirst(projects, fromSession);
   if (requested !== undefined && requested !== "") {
     if (projects.includes(requested)) return { ok: true, project: requested };
     return { ok: false, message: `Unknown project "${requested}".`, candidates };
   }
   if (projects.length === 0) return { ok: false, message: "No projects are configured.", candidates };
   if (projects.length === 1) return { ok: true, project: projects[0]! };
-  const fromSession = [...new Set(sessionAgents.map(a => a.project_name))].filter(p => projects.includes(p));
   if (fromSession.length === 1) return { ok: true, project: fromSession[0]! };
   return { ok: false, message: "Several projects could host this workspace. Pass a project name.", candidates };
 }
@@ -77,7 +80,6 @@ export function manualWorkspaceDiff(agent: AgentRow, repo: string): string {
   if (!agent.worktree_path || !agent.branch || !existsSync(agent.worktree_path)) return "";
   const diff = worktreeDiff({ repo, path: agent.worktree_path, branch: agent.branch, base: agent.diff_base ?? "HEAD" },
     agent.diff_base ?? undefined);
-  const untracked = (spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: agent.worktree_path, encoding: "utf8" })
-    .stdout ?? "").split("\n").map(s => s.trim()).filter(Boolean);
+  const untracked = untrackedFiles(agent.worktree_path);
   return diff + (untracked.length ? `${diff ? "\n" : ""}# Untracked files (not yet committed):\n${untracked.map(f => `#   ${f}`).join("\n")}\n` : "");
 }

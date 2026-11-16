@@ -1,6 +1,6 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigSchema, type Model, type TackConfig } from "../src/config/schema";
@@ -18,7 +18,14 @@ import { runAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnAgentRunner } from "../src/agent/detached";
 import { sessionNeedsInput } from "../src/cli/liveness";
 import { prContinuationDecision } from "../src/prwatch/watch";
-import { createWorktree } from "../src/worktree/worktree";
+import { changedFiles, createWorktree } from "../src/worktree/worktree";
+import * as worktrees from "../src/worktree/worktree";
+import * as configLoad from "../src/config/load";
+import * as prs from "../src/projects/prs";
+import * as watch from "../src/prwatch/watch";
+import * as detached from "../src/agent/detached";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { runSupervisorServer } from "../src/mcp/supervisor-server";
 import { editorCommand } from "../src/util/editor";
 
 const projects = (...names: string[]) => names;
@@ -88,9 +95,94 @@ function sessionFixture() {
   const config = ConfigSchema.parse({
     models: [model], projects: [{ name: "app", path: repo, description: "Test" }],
     roles: { agent: "test", supervisor: "test", summary: "test" },
+    personas: [{ name: "strict", description: "Find bugs" }],
   }) as unknown as TackConfig;
   return { repo, session, config };
 }
+
+const mocks: Array<{ mockRestore(): void }> = [];
+afterEach(() => { for (const m of mocks.splice(0).reverse()) m.mockRestore(); });
+
+/** Captures the supervisor server's registered tool handlers (same harness as
+ * test/personas.test.ts), with the push/gh and watcher side effects stubbed. */
+async function supervisorTools(sessionId: string, config: TackConfig) {
+  mocks.push(spyOn(configLoad, "loadConfig").mockResolvedValue(config));
+  mocks.push(spyOn(McpServer.prototype, "connect").mockResolvedValue());
+  mocks.push(spyOn(worktrees, "syncBranchWithBase").mockResolvedValue({ status: "up_to_date", base: "main", fetched: true }));
+  mocks.push(spyOn(watch, "spawnPrWatcher").mockReturnValue(null));
+  mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  const open = spyOn(prs, "openSessionPr").mockResolvedValue({ url: `https://github.com/acme/app/pull/${sessionId}`, number: 9, headBranch: "pr" });
+  mocks.push(open);
+  const register = spyOn(McpServer.prototype, "registerTool"); mocks.push(register);
+  await runSupervisorServer(sessionId);
+  const handlers = new Map(register.mock.calls.map(c => [c[0], c[2]]));
+  const call = async (name: string, args = {}) => {
+    const handler = handlers.get(name) as unknown as (args: unknown) => Promise<{ content: { text: string }[] }>;
+    return JSON.parse((await handler(args)).content[0]!.text);
+  };
+  return { call, open };
+}
+
+describe("supervisor tools on manual workspaces", () => {
+  test("open_pr refuses a manual workspace with no changes", async () => {
+    const { session, config } = sessionFixture();
+    const m = createManualWorkspace(config, session.id, "app");
+    const { call, open } = await supervisorTools(session.id, config);
+    await expect(call("open_pr", { agentId: m.id, title: "Nothing", body: "x" })).rejects.toThrow("made no changes");
+    expect(open).not.toHaveBeenCalled();
+    expect(getAgent(m.id)!.diff_ref).toBeNull();
+  });
+
+  test("open_pr commits tracked and untracked edits and saves the diff", async () => {
+    const { repo, session, config } = sessionFixture();
+    const m = createManualWorkspace(config, session.id, "app");
+    writeFileSync(join(m.worktree_path!, "shared.txt"), "human edit\n");
+    writeFileSync(join(m.worktree_path!, "new.txt"), "brand new\n");
+    const { call, open } = await supervisorTools(session.id, config);
+    expect(await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x" }))
+      .toMatchObject({ ok: true, number: 9 });
+    expect(open.mock.calls[0]![0]).toMatchObject({ localBranch: m.branch, repoPath: repo });
+    expect(git(["status", "--porcelain"], m.worktree_path!)).toBe("");
+    expect(git(["show", "--name-only", "--format=%s", "HEAD"], m.worktree_path!).split("\n"))
+      .toEqual([`Tack: commit manual edits in ${m.id}`, "", "new.txt", "shared.txt"]);
+    const diff = readFileSync(getAgent(m.id)!.diff_ref!, "utf8");
+    expect(diff).toContain("+human edit");
+    expect(diff).toContain("+brand new");
+    expect(listSessionPrs(session.id)[0]).toMatchObject({ agent_id: m.id, number: 9 });
+  });
+
+  test("read_agent_output returns the live diff, untracked files included", async () => {
+    const { session, config } = sessionFixture();
+    const m = createManualWorkspace(config, session.id, "app");
+    const { call } = await supervisorTools(session.id, config);
+    expect(await call("read_agent_output", { agentId: m.id })).toMatchObject({ kind: "manual", diffPreview: "(no diff)" });
+    writeFileSync(join(m.worktree_path!, "shared.txt"), "human edit\n");
+    writeFileSync(join(m.worktree_path!, "new.txt"), "new\n");
+    const out = await call("read_agent_output", { agentId: m.id });
+    expect(out.output).toContain("manual workspace");
+    expect(out.diffPreview).toContain("+human edit");
+    expect(out.diffPreview).toContain("#   new.txt");
+  });
+
+  test("review_agent refuses a manual workspace", async () => {
+    const { session, config } = sessionFixture();
+    const m = createManualWorkspace(config, session.id, "app");
+    const { call } = await supervisorTools(session.id, config);
+    await expect(call("review_agent", { agentId: m.id, persona: "strict" })).rejects.toThrow("manual-workspace rows cannot");
+  });
+});
+
+test("changedFiles counts untracked files, so a same-named new file collides", () => {
+  const { repo, session, config } = sessionFixture();
+  const a = createWorktree(repo, session.id, "agt_untracked_a");
+  const b = createWorktree(repo, session.id, "agt_untracked_b");
+  for (const wt of [a, b]) writeFileSync(join(wt.path, "fresh.txt"), wt.path);
+  expect(changedFiles(repo, a.branch, a.path)).toEqual(["fresh.txt"]);
+  const row = (id: string, wt: typeof a): AgentRow =>
+    ({ ...createAgent({ sessionId: session.id, projectName: "app" }), id, status: "done", worktree_path: wt.path, branch: wt.branch });
+  expect(sessionFileCollisions([row("agt_untracked_a", a), row("agt_untracked_b", b)], config))
+    .toEqual([{ project: "app", file: "fresh.txt", agents: ["agt_untracked_a", "agt_untracked_b"] }]);
+});
 
 describe("createManualWorkspace", () => {
   test("creates a done, runtime-less row on its own tack/<session>/<id> worktree", () => {

@@ -472,7 +472,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         }
         return;
       }
-      if (input === "q" || key.escape || !pickerView) return setMode("list");
+      // Leaving the picker (including its session vanishing mid-choice) drops any open
+      // chooser so the next `v` never reopens a stale one for another session.
+      if (input === "q" || key.escape || !pickerView) { setProjectPick(null); return setMode("list"); }
       if (input === "n") {
         if (!config) return setNotice("config is unavailable");
         const options = manualProjectCandidates(config.projects.map((p) => p.name), agents);
@@ -554,6 +556,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       // Opens even with no agents: the picker is also where `n` starts a manual workspace.
       setPickerId(selected.session.id);
       setAgentCursor(0);
+      setProjectPick(null);
       setMode("agents");
     } else if (input === "m") {
       if (selected.amendments.length === 0) {

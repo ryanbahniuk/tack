@@ -876,7 +876,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Check for collisions across the session's agents BEFORE opening PRs: files that more than one agent " +
         "changed in the same project (a merge conflict waiting to happen across the N branches). Run this once " +
         "agents finish; if it reports collisions, resolve them with continue_agent on the owning agent before " +
-        "opening pull requests. Empty means the branches touch disjoint files and should merge cleanly.",
+        "opening pull requests. Manual workspaces (kind manual, the human's edits) are included but can't be " +
+        "continued: reconcile by continuing the agent side of the collision, or ask the human — never modify " +
+        "the manual workspace. Empty means the branches touch disjoint files and should merge cleanly.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
