@@ -347,10 +347,11 @@ Adapter specifics, hidden behind the interface:
   without clobbering existing or corrupt files), and wires a PreToolUse hook
   on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
   — marking the session as awaiting input. The auto-allowed tool handler presents an
-  MCP elicitation form containing the summary, Approve and Keep planning choices,
-  and optional feedback. Approval opens the `spawn_agent` gate; keep planning returns
-  feedback for revision and another approval request, while cancellation asks the
-  supervisor to clarify changes in chat. Both leave the plan unapproved.
+  MCP elicitation form containing the summary and one optional "What would you
+  change?" field. Submitting it blank approves and opens the `spawn_agent` gate;
+  non-empty feedback returns keep-planning with that feedback for revision and
+  another approval request, while cancellation asks the supervisor to clarify
+  changes in chat. Both leave the plan unapproved.
   If the prompt never appears, the human can type `/approve` in the session or run
   `tack session approve <session>` themselves, then return to the session. Tack
   refreshes `.claude/commands/approve.md` on every attended Claude launch (including
@@ -434,8 +435,8 @@ stdout/stderr to the log, and yields parsed JSON lines.
    it refuses until the session's `plan_approved_at` is set. An attended claude
    session flips that gate when the human accepts the plan: the supervisor calls
    `request_plan_approval` with a short summary. A hook marks it awaiting input,
-   and the handler elicits approval or a request to keep planning with feedback;
-   cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
+   and the handler elicits "What would you change?" — a blank submission approves,
+   feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
    a **detached** `tack __run-agent <agentId>` runner.
