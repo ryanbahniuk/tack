@@ -1,3 +1,4 @@
+import { commitSubject } from "../worktree/commit-message";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
@@ -610,6 +611,24 @@ function feedbackItem(r: PrFeedbackRow, pr: SessionPrRow): PrFeedbackItem {
   };
 }
 
+/** Pick a subject from the work assigned to this fix, including conflict-only runs. */
+export function prFixCommitSubject(items: Pick<PrFeedbackRow, "source_kind">[], pr: Pick<SessionPrRow, "title" | "mergeable" | "base_branch">): string {
+  const hasReview = items.some(item => item.source_kind !== "ci_check");
+  const hasCi = items.some(item => item.source_kind === "ci_check");
+  const conflict = pr.mergeable === "CONFLICTING";
+  if (Number(hasReview) + Number(hasCi) + Number(conflict) > 1) return "Address PR feedback";
+  if (hasReview) {
+    const title = pr.title && commitSubject(pr.title);
+    const subject = title ? `Address review feedback on ${title}` : "Address review feedback";
+    return subject.length <= 72 ? subject : "Address review feedback";
+  }
+  if (hasCi) return "Fix failing CI checks";
+  if (conflict) return pr.base_branch ? `Resolve merge conflict with ${commitSubject(pr.base_branch)}` : "Resolve merge conflict";
+  const title = pr.title && commitSubject(pr.title);
+  const subject = title ? `Address PR feedback on ${title}` : "Address PR feedback";
+  return subject.length <= 72 ? subject : "Address PR feedback";
+}
+
 /**
  * The post-fix step for one finished fix agent: push its commits, then reply to each
  * item it reported on (conversation items share one comment). Items already
@@ -648,7 +667,7 @@ export async function postFix(
   let outcome: AgentFixOutcome = "no_changes";
   if (agent.worktree_path && agent.branch && pr.head_branch) {
     try {
-      await commitWorktreeAsync(agent.worktree_path, `Tack: finalize PR fix ${agent.id}`);
+      await commitWorktreeAsync(agent.worktree_path, prFixCommitSubject(items, pr));
     } catch (err) {
       log(`${tag}: safety-net commit failed: ${(err as Error).message}`);
     }

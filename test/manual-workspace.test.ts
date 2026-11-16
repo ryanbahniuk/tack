@@ -146,7 +146,7 @@ describe("supervisor tools on manual workspaces", () => {
     expect(open.mock.calls[1]![0].body).toBe("x");
     expect(git(["status", "--porcelain"], m.worktree_path!)).toBe("");
     expect(git(["show", "--name-only", "--format=%s", "HEAD"], m.worktree_path!).split("\n"))
-      .toEqual([`Tack: commit manual edits in ${m.id}`, "", "new.txt", "shared.txt"]);
+      .toEqual(["Hand edits", "", "new.txt", "shared.txt"]);
     const diff = readFileSync(getAgent(m.id)!.diff_ref!, "utf8");
     expect(diff).toContain("+human edit");
     expect(diff).toContain("+brand new");
