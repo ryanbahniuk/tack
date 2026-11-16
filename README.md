@@ -509,60 +509,121 @@ personas: [
 ],
 ```
 
-`name` must be unique, and `description` holds the reviewer's instructions. `model`
-is optional (a key or a list) and defaults to `roles.agent`. Reviews prefer a model
-different from the author's when one is available.
+PRs open as drafts by default (`draftPrs: true`), even when `open_pr` requests a
+ready PR. Set `draftPrs: false` to honor the tool's `draft` argument. With
+`prWatch.enabled` and `prWatch.autoReady` (both default true), the watcher promotes
+a draft once it is mergeable, no fix is busy, all feedback is handled with explicit
+replies, and CI on the current head is settled with no failures. Clean PRs qualify
+without a fix run; zero checks counts as green. Failed check fetches defer promotion.
+Tack promotes each PR only once, respecting a human's later move back to draft.
+Set `prWatch.autoReady: false` to keep readiness manual.
 
-### PR watch and PR settings
+PR-watch handles review feedback, merge conflicts and failing CI checks on the PR
+head. CI fixes wait for the suite to settle and include bounded failed-job logs for
+GitHub Actions. Agents reproduce failures locally and fix PR code/tests; unrelated
+flaky or infrastructure failures are reported without changes. Set `prWatch.fixCi: false`
+to disable CI fixes (enabled by default); draft readiness still checks CI.
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `prWatch.enabled` | `true` | `false` means a watcher never starts. |
-| `prWatch.intervalSeconds` | `300` | Poll cadence for the watcher and the dashboard's PR refresh (min 60). |
-| `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
-| `prWatch.autoPush` | `true` | Push fix commits (never force). |
-| `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
-| `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
-| `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
-| `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |
-| `autoOpenPrs` | `true` | See [Before your first session](#before-your-first-session). |
-| `draftPrs` | `true` | Force drafts. |
+PR-watch answers inline review feedback inside its review thread. Replies to
+conversation comments and review summaries are combined into one top-level comment
+per fix run, linking and quoting each original and citing pushed fixes.
+CI replies join that batch as links to failing checks without quoting logs. Human authors
+are mentioned at most once; bots are never mentioned. Set `prWatch.reply: false` to
+disable replies.
 
-### `readAllowlist`, `supervisorMcpServers`, `jira`
+### Edit an agent's worktree
 
-- `readAllowlist: ["~/Code/shared-docs"]` gives the supervisor extra read-only
-  directories.
-- `supervisorMcpServers` entries take `{ name, command, args?, env? }`. These
-  servers are mounted for the supervisor only; agents don't get them.
-- `jira` takes `{ mcpServer, siteUrl, cloudId? }`. `mcpServer` names one of
-  `supervisorMcpServers`, and `siteUrl` builds `<siteUrl>/browse/<KEY>` links.
+Run `tack session edit <session> [agent]` to open a worktree in `$VISUAL`,
+then `$EDITOR`, falling back to `vim` (or `vi` when vim isn't installed). Omit the
+agent id when only one worktree exists. Pending or running agents require `--force`;
+`--print-path` prints just the path for use with other tools. After editing, Tack
+reports the branch and Git status with a push hint when needed. It never commits or
+pushes automatically.
 
-See [Recommended Chime setup](#recommended-chime-setup) for a working example.
+### Manual workspaces
 
----
+Run `tack session edit <session> --new [project]` to get a clean worktree of your
+own for the session — a fresh `tack/<session>/<id>` branch forked from the
+up-to-date remote default branch, separate from every agent — and land in your
+editor rooted at it. Omit the project when it's unambiguous (the only configured
+project, or the only one the session's agents use); otherwise Tack lists the
+candidates. `--new --print-path` creates the workspace and prints its path without
+opening an editor. Reopen it later like any worktree: `tack session edit <session> <id>`.
 
-## Troubleshooting
+A manual workspace is a row with kind `manual`: it never runs, resumes or continues
+as an agent conversation, and costs nothing. The supervisor sees it in
+`check_agents`, includes it in `check_conflicts`, and opens it as a PR with `open_pr`
+(committing your leftover edits) when you ask, or at wrap-up when it holds changes.
 
-| Symptom | Fix |
-| --- | --- |
-| No plan approval prompt appears | Type `/approve` in the supervisor chat, or run `tack session approve <session>`. |
-| Agent fails with `model_not_found`, or doctor warns that a model isn't offered | `tack models sync` (re-pins roles to models your login offers). |
-| Agents fail because `codex` isn't installed | Install and log in to codex, or `tack roles set agent opus-5`. |
-| Version drift warning | `tack runtimes doctor` to see it; `tack runtimes sync` to adopt the installed version, or `tack runtimes install <runtime>` to restore the pin. |
-| `mismatch` / run stops on version | That runtime has `versionPolicy: "strict"`. Sync, install the pin or relax the policy. |
-| Auth failures mid-run | `tack runtimes doctor` shows auth state; run `claude` (log in) or `codex login`. |
-| PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
-| PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
-| Session seems stuck or its supervisor exited | `tack session resume <session>`. |
-| Session or agents died after the laptop slept or the network dropped | `tack session reconnect <session>` (or `--all`), or dashboard `w`. |
-| `stale` badge after updating Tack | `tack session refresh <session>` (or `--all`), or dashboard `r`. Add `--force` if it's mid-turn or a plan is pending. |
-| `jira unavailable` in the dashboard | Check that the `supervisorMcpServers` entry runs (`uvx` on PATH) and its OAuth cache is seeded. |
-| `J` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
-| `Config has errors` | `tack config edit`; the message names the failing key. |
-| Detached and lost the supervisor | `tack session list`, then `tack session resume <session>`. |
-| Editor won't open | Set `$VISUAL` or `$EDITOR`. |
+In `tack dashboard`, press `v` to open the agents picker, then `e` to edit the
+highlighted agent's worktree, or `n` to create a manual workspace (choosing a
+project first when several qualify; the session's projects are listed first).
+Editing a pending or running agent requires `y` confirmation; manual workspaces
+open directly. The picker shows worktree paths so you can see which tree will open.
 
----
+`tack dashboard` defaults to a split view on terminals at least 140 columns wide:
+work on the left, **Insights** on the right. Press `s` to cycle split → list-only →
+full-screen Insights. Narrow terminals start with the list; `s` still opens Insights.
+Press `[` / `]` to move through 7d, 30d, 90d, 1y, and all history (default: 30d).
+The header shows the current layout, range, and live/working session counts.
+Working supervisors show a cyan spinner and elapsed turn time in their session row;
+a pending plan prompt shows `◆ needs input` instead. Existing session keys still work
+in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J` (open the session's tickets), `t`, `P`, `c`, `C`, `r`, `w`, `x`, `a`, `d`, `z`, `q`.
+Press `t` for every linked Jira ticket across the sessions shown (open work first,
+then done), with each ticket's session and its state; `enter/o` opens the ticket,
+`g` jumps to its session, `esc/q` goes back. `P` polls Jira now instead of waiting
+for the 2-minute refresh (from the list or the tickets view).
+Press `w` (wake) on a session that stopped working after the laptop slept or lost
+its connection: after `y`, Tack restarts its supervisor (even mid-turn or with a plan
+pending, which is re-presented), relaunches agents whose runner died or that failed
+with a connection error, restarts a dead PR watcher, and parks the supervisor in
+tmux while the dashboard stays open; `enter` attaches. Without tmux the supervisor
+stays stopped until you resume it.
+Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`).
+After a valid change, Tack reloads config and refreshes stale active sessions, parking
+supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume
+or `r`; invalid config keeps the previous dashboard config and leaves sessions running.
+Press `a` to archive/unarchive and `z` to show archived sessions. Archiving is
+immediate; unarchiving asks for confirmation and resumes only the agents archive
+interrupted. Agents with a runtime session handle continue their conversation;
+others start with their original prompt in the same worktree. A plain `x`/`stop`
+does not mark agents for restoration. Unarchive leaves the supervisor for you to
+rejoin with `enter/o` or `tack session resume <session>`.
+
+Insights includes archived sessions regardless of the list's `z` filter. It shows
+sessions, agents, PRs opened/merged, tickets linked/done, tokens, cost, changes against the
+previous equal-length period, top repos, and a contribution heatmap. Full-screen
+Insights adds a per-repo table, sorted by agent count. Daily/weekly/monthly buckets
+adapt to range and width; dates use local time. PR creation means first linked to
+a session, and ticket completion is approximated by its last status refresh.
+Costs include supervisor and agent spend; repo costs include agents only.
+A Models table shows sessions, agents (including PR-fix agents), tokens and cost
+per stored model handle; missing models appear as "unknown". Tokens include input,
+output, cache reads and cache writes for supervisors and agents. Usage and cost
+follow each row's creation date. Historical supervisor tokens remain zero; new
+headless usage overwrites with the runtime's latest run figure, like cost, while
+interactive transcript recovery replaces both with cumulative figures. Tokens
+and cost do not count toward the contributions heatmap. The table appears in
+split and full-screen views when space permits.
+Time charts use block heights (▁▂▃▄▅▆▇█, · for zero), shared scales for paired
+series, full-word labels, totals and peaks when space allows, and dated axes.
+Short series stretch across the chart. Heatmap shades (░▒▓█) have weekday/date
+labels and a separate intensity legend; blank cells are outside the range.
+Aligned KPIs show signed changes vs the previous period without relying on color.
+Charts refresh every five seconds when their data changes; an idle dashboard does
+not repaint.
+
+Run `tack --help` (or `tack <command> --help`) for the full command list.
+
+With tmux installed, interactive supervisors stay live when you detach with
+`prefix d`; use `tack session resume <session>` to reattach. Press `prefix N`
+(capital N) to park the current supervisor and open a new Tack session with the
+normal create lifecycle. Press `prefix B` (capital B) to park it and report a bug
+in Tack itself in a new session, with a bounded digest of the source session.
+Enter an optional description inline, or use
+`tack session create --tack-bug-from <sessionId> -m "what went wrong"` from any terminal.
+Bug reports always open interactively, including with `-b`. When nested inside your
+own tmux, press the prefix twice before `d`, `N`, or `B`. The status bar shows the keys for your current attach context.
 
 ## Development
 

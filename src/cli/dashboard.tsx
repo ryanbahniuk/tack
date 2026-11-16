@@ -34,7 +34,7 @@ import { agentArtifactPath, readArtifact } from "../artifacts/store";
 import { refreshSessionPrs } from "../projects/prs";
 import { isWatchablePr, spawnPrWatcher, triggerPrWatch } from "../prwatch/watch";
 import { isAlive } from "../process/self";
-import { closeJiraClient, refreshSessionJiraTickets, resolveTicketUrl } from "../projects/jira";
+import { closeJiraClient, refreshSessionJiraTickets, resolveTicketUrl, type JiraRefreshResult } from "../projects/jira";
 import { ensureConfigExists } from "../config/ensure";
 import { currentConfigVersion } from "../process/version";
 import { loadConfig } from "../config/load";
@@ -176,7 +176,7 @@ type Confirm =
   | { action: "unarchive"; id: string; count: number }
   | { action: "reconnect"; id: string; count: number; planPending: boolean };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J tickets · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -295,10 +295,14 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // float as they start needing input) and deletions never move the highlight onto
   // the wrong session under the human's cursor.
   const [cursorId, setCursorId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"list" | "agents" | "amendments">("list");
+  const [mode, setMode] = useState<"list" | "agents" | "amendments" | "tickets">("list");
   const [pickerId, setPickerId] = useState<string | null>(null);
   const [agentCursor, setAgentCursor] = useState(0);
   const [amendmentCursor, setAmendmentCursor] = useState(0);
+  /** Tickets-view selection, pinned to a (session, ticket) id like `cursorId` so a
+   * status change that re-sorts the list keeps the highlight; `index` is the
+   * fallback when that ticket disappears (unlinked), clamping to a neighbor. */
+  const [ticketSel, setTicketSel] = useState<{ id: string | null; index: number }>({ id: null, index: 0 });
   /** Persona chooser for the selected session. */
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
@@ -386,19 +390,37 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // Only a configured `jira` block can be "unavailable"; without one the feature is
   // simply off and stays silent. Like PRs, never touches `setRows`.
   const refreshingJira = useRef(false);
+  /** One Jira poll, shared by the 2-minute tick and the on-demand `P` so both sit
+   * behind the same `refreshingJira` guard and can never overlap. The background
+   * tick stays silent; on demand it reports progress/results in the notice line and
+   * re-snapshots so new statuses show immediately instead of on the next 1s poll. */
+  const pollJira = (cfg: TackConfig, ids: string[], onDemand: boolean) => {
+    if (refreshingJira.current) {
+      if (onDemand) setNotice("Jira poll already in progress…");
+      return;
+    }
+    refreshingJira.current = true;
+    if (onDemand) setNotice("polling Jira…");
+    refreshSessionJiraTickets(cfg, ids)
+      .then((res) => {
+        setJiraUnavailable(Boolean(cfg.jira) && res.unavailable);
+        if (onDemand) setNotice(describeJiraPoll(cfg, res));
+      })
+      .catch((err) => {
+        if (onDemand) setNotice(`Jira poll failed: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        refreshingJira.current = false;
+        if (onDemand) refresh();
+      });
+  };
+  const startJiraPoll = () => {
+    if (!config) return setNotice("config is unavailable");
+    pollJira(config, rows.map((v) => v.session.id), true);
+  };
   useEffect(() => {
     if (!config) return;
-    const run = () => {
-      if (refreshingJira.current) return;
-      refreshingJira.current = true;
-      const ids = rowsRef.current.map((v) => v.session.id);
-      refreshSessionJiraTickets(config, ids)
-        .then((res) => setJiraUnavailable(Boolean(config.jira) && res.unavailable))
-        .catch(() => {})
-        .finally(() => {
-          refreshingJira.current = false;
-        });
-    };
+    const run = () => pollJira(config, rowsRef.current.map((v) => v.session.id), false);
     run();
     const t = setInterval(run, 120_000);
     return () => {
@@ -484,6 +506,34 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (key.downArrow || input === "j")
         return setAmendmentCursor((c) => Math.min(c + 1, Math.max(0, pending.length - 1)));
       if (key.upArrow || input === "k") return setAmendmentCursor((c) => Math.max(c - 1, 0));
+      return;
+    }
+
+    // Cross-session tickets view: read-only, like the rest of the Jira surface. `q`
+    // backs out here rather than quitting (ctrl+c above still quits).
+    if (mode === "tickets") {
+      const entries = ticketEntries(rows);
+      const index = ticketCursorIndex(entries, ticketSel);
+      const entry = entries[index];
+      const move = (next: number) => {
+        const target = entries[Math.max(0, Math.min(next, entries.length - 1))];
+        if (target) setTicketSel({ id: ticketEntryId(target), index: Math.max(0, Math.min(next, entries.length - 1)) });
+      };
+      if (input === "q" || key.escape) return setMode("list");
+      if (key.downArrow || input === "j") return move(index + 1);
+      if (key.upArrow || input === "k") return move(index - 1);
+      if (input === "P") return startJiraPoll();
+      if (!entry) return;
+      if (key.return || input === "o") {
+        const url = resolveTicketUrl(config, entry.ticket);
+        if (!url) return setNotice(`can't open ${entry.ticket.key}: no Jira site is configured — add a \`jira\` block (siteUrl) to your Tack config`);
+        openUrl(url);
+        return setNotice(`opened ${entry.ticket.key} in browser`);
+      }
+      if (input === "g") {
+        setCursorId(entry.view.session.id);
+        return setMode("list");
+      }
       return;
     }
 
@@ -573,6 +623,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         return RANGES[Math.max(0, Math.min(RANGES.length - 1, index))]!;
       });
     }
+    // Cross-session Jira: independent of the selected session, so they work with an
+    // empty list and in the full-screen insights layout too.
+    if (input === "t") {
+      setTicketSel({ id: null, index: 0 });
+      return setMode("tickets");
+    }
+    if (input === "P") return startJiraPoll();
     if (input === "q") return exit();
     if (input === "C") {
       onLaunch({ kind: "config" });
@@ -706,6 +763,19 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         view={pickerView}
         cursor={Math.min(amendmentCursor, Math.max(0, pickerView.amendments.length - 1))}
         notice={notice}
+      />
+    );
+  }
+
+  if (mode === "tickets") {
+    const entries = ticketEntries(rows);
+    return (
+      <TicketsPanel
+        entries={entries}
+        cursor={ticketCursorIndex(entries, ticketSel)}
+        notice={notice}
+        jiraUnavailable={jiraUnavailable}
+        size={size}
       />
     );
   }
@@ -964,6 +1034,112 @@ function AmendmentsPanel({ view, cursor, notice }: { view: View; cursor: number;
   );
 }
 
+/** One (session, ticket) pair in the cross-session tickets view. A key linked to
+ * several sessions gets one entry per session, since each is separate work. */
+export interface TicketEntry {
+  view: View;
+  ticket: SessionJiraTicketRow;
+}
+
+/** Stable identity for a tickets-view entry across snapshots. */
+function ticketEntryId(e: TicketEntry): string {
+  return `${e.view.session.id}:${e.ticket.id}`;
+}
+
+/** Open work first — in progress before to do — then done; `Array.prototype.sort`
+ * is stable, so each group keeps the dashboard's session order from `rows`. */
+function ticketSortWeight(category: string | null): number {
+  if (category === "indeterminate") return 0;
+  if (category === "done") return 2;
+  return 1;
+}
+
+export function ticketEntries(rows: readonly View[]): TicketEntry[] {
+  return rows
+    .flatMap((view) => view.tickets.map((ticket) => ({ view, ticket })))
+    .sort((a, b) => ticketSortWeight(a.ticket.status_category) - ticketSortWeight(b.ticket.status_category));
+}
+
+/** The pinned entry when it still exists, else the remembered index clamped. */
+function ticketCursorIndex(entries: readonly TicketEntry[], sel: { id: string | null; index: number }): number {
+  const pinned = sel.id ? entries.findIndex((e) => ticketEntryId(e) === sel.id) : -1;
+  return pinned >= 0 ? pinned : Math.max(0, Math.min(sel.index, entries.length - 1));
+}
+
+/** The notice for an on-demand Jira poll. A missing `jira` block reads as "not
+ * configured" rather than "unavailable", which would send the human hunting for
+ * an auth problem that doesn't exist. Skips list a few keys, then a count. */
+export function describeJiraPoll(config: TackConfig, res: JiraRefreshResult): string {
+  if (res.unavailable) {
+    return config.jira
+      ? "Jira unavailable — check the jira config / Atlassian MCP auth"
+      : "Jira isn't configured — add a `jira` block to your Tack config";
+  }
+  const skippedKeys = new Set(res.skipped.map((s) => s.key));
+  const refreshed = new Set(res.tickets.map((t) => t.key).filter((k) => !skippedKeys.has(k))).size;
+  let text = `Jira: refreshed ${refreshed} ticket(s)`;
+  if (res.skipped.length > 0) {
+    const shown = res.skipped.slice(0, 3).map((s) => `${s.key}: ${s.reason}`);
+    const more = res.skipped.length - shown.length;
+    text += ` · ${res.skipped.length} skipped (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`;
+  }
+  return text;
+}
+
+/** Compact session state for a tickets-view row, in the main list's colors. */
+function sessionBadge(v: View): React.ReactElement {
+  if (v.needsInput) return <Text color="yellow">◆ needs input</Text>;
+  if (v.working) return <Text color="cyan">working</Text>;
+  if (v.live) return <Text color="green">● live</Text>;
+  return <Text color="gray">○ <Text dimColor>{v.session.status}</Text></Text>;
+}
+
+const TICKETS_HINT = "j/k move · enter/o open ticket · g go to session · P poll Jira · esc/q back";
+
+/** Every linked Jira ticket across the sessions on screen (follows `z`), one row per
+ * (session, ticket). Rows truncate to one line each and window around the cursor
+ * inside the same body budget as the main list, so the panel fits the terminal. */
+function TicketsPanel({ entries, cursor, notice, jiraUnavailable, size }: {
+  entries: TicketEntry[]; cursor: number; notice: string; jiraUnavailable: boolean;
+  size: { columns: number; rows: number };
+}) {
+  const sessions = new Set(entries.map((e) => e.view.session.id)).size;
+  const done = entries.filter((e) => e.ticket.status_category === "done").length;
+  const footer = [notice, jiraUnavailable ? "jira unavailable — ticket status not updating" : "", TICKETS_HINT].filter(Boolean);
+  const budget = dashboardBodyHeight(size.rows, size.columns, footer);
+  const window = windowSessionLines(entries.map(() => 1), cursor, budget);
+  return (
+    <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
+      <Text bold wrap="truncate">
+        Jira tickets · {entries.length} ticket{entries.length === 1 ? "" : "s"} across {sessions} session{sessions === 1 ? "" : "s"}
+        {" · "}<Text color={done > 0 ? "green" : undefined} dimColor={done === 0}>{done} done</Text>
+      </Text>
+      <Box flexDirection="column" height={budget} flexShrink={0} overflowY="hidden">
+        {entries.length === 0 && <Text dimColor wrap="truncate">No Jira tickets linked to any session.</Text>}
+        {window.above > 0 && <Text dimColor wrap="truncate">↑ {window.above} more</Text>}
+        {entries.slice(window.start, window.end).map((e, offset) => {
+          const i = window.start + offset;
+          const { glyph, color } = ticketStatusDisplay(e.ticket.status_category);
+          return (
+            <Text key={ticketEntryId(e)} wrap="truncate">
+              <Text color={i === cursor ? "cyan" : undefined}>{i === cursor ? "❯ " : "  "}</Text>
+              <Text bold>{e.ticket.key}</Text>{" "}
+              <Text color={color}>{glyph} {e.ticket.status ?? "?"}</Text>
+              {e.ticket.title ? <Text dimColor>{"  "}{oneLine(e.ticket.title, 60)}</Text> : null}
+              {"  "}<Text>{e.view.session.id}</Text>{" "}
+              {sessionBadge(e.view)}
+            </Text>
+          );
+        })}
+        {window.below > 0 && <Text dimColor wrap="truncate">↓ {window.below} more</Text>}
+      </Box>
+      <Box marginTop={1} flexDirection="column" flexShrink={0}>
+        {footer.flatMap((line) => wrapFooter(line, size.columns)).map((line, i) => <Text key={i} wrap="truncate" dimColor>{line}</Text>)}
+      </Box>
+    </Box>
+  );
+}
+
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /** Compact duration of the supervisor's current turn, refreshed by spinner ticks. */
@@ -1054,20 +1230,21 @@ function prRollup(prs: SessionPrRow[]): React.ReactElement {
 
 /** Glyph + color for a ticket, keyed on Jira's stable status *category* rather than
  *  the per-project workflow name ("In Review", "QA", …), so every project's tickets
- *  read the same way: to do = gray ○, in progress = yellow ●, done = magenta ✔. */
+ *  read the same way: to do = gray ○, in progress = yellow ●, done = green ✔
+ *  (green, not PR-merged magenta, so "ticket done" and "PR merged" stay distinct). */
 function ticketStatusDisplay(category: string | null): { glyph: string; color: string } {
-  if (category === "done") return { glyph: "✔", color: "magenta" };
+  if (category === "done") return { glyph: "✔", color: "green" };
   if (category === "indeterminate") return { glyph: "●", color: "yellow" };
   if (category === "new") return { glyph: "○", color: "gray" };
   return { glyph: "·", color: "gray" };
 }
 
 /** Compact per-session ticket summary for the collapsed line, mirroring `prRollup`:
- *  all done is the magenta badge, some done a yellow fraction, none a dim count. */
+ *  all done is the green badge, some done a yellow fraction, none a dim count. */
 function ticketRollup(tickets: SessionJiraTicketRow[]): React.ReactElement {
   const done = tickets.filter((t) => t.status_category === "done").length;
   const total = tickets.length;
-  if (done === total) return <Text color="magenta">✔ {done} done</Text>;
+  if (done === total) return <Text color="green">✔ {done} done</Text>;
   if (done > 0) return <Text color="yellow">{`${done}/${total} done`}</Text>;
   return <Text dimColor>{`${total} ticket${total === 1 ? "" : "s"}`}</Text>;
 }
