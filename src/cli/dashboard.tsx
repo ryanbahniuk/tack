@@ -22,6 +22,7 @@ import {
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshSession } from "../session/refresh";
+import { RECONNECT_MESSAGE, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
@@ -172,9 +173,10 @@ type Launch =
 type Confirm =
   | { action: "delete" | "stop" | "refresh"; id: string }
   | { action: "edit"; agentId: string; path: string }
-  | { action: "unarchive"; id: string; count: number };
+  | { action: "unarchive"; id: string; count: number }
+  | { action: "reconnect"; id: string; count: number; planPending: boolean };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J tickets · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -434,6 +436,19 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
             } else setNotice(`${id}: ${result.refreshed ? "watcher refreshed" : "already current"}`);
           }).catch(err => setNotice(`refresh failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
           return;
+        } else if (confirm.action === "reconnect") {
+          // Same busy-flag hand-off as refresh: stopping the old TUI can take a
+          // couple of seconds, and the replacement launches after Ink unmounts.
+          const id = confirm.id;
+          setConfirm(null);
+          if (!config) { setNotice("Configuration unavailable"); return; }
+          setSessionRefreshing(true);
+          setNotice(`reconnecting ${id}…`);
+          void reconnectSession(id, config).then(() => {
+            onLaunch({ kind: "resume", id, message: RECONNECT_MESSAGE });
+            exit();
+          }).catch(err => setNotice(`reconnect failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
+          return;
         } else if (confirm.action === "delete") {
           deleteSession(confirm.id);
           setNotice(`deleted ${confirm.id}`);
@@ -635,6 +650,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
     } else if (input === "r") {
       setConfirm({ action: "refresh", id: selected.session.id });
+    } else if (input === "w") {
+      // "wake": recover a session the laptop's sleep or a network drop broke.
+      const s = selected.session;
+      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
+      setConfirm({ action: "reconnect", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
+        planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
     } else if (input === "a") {
@@ -660,6 +681,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
     : confirm.action === "refresh"
       ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
+    : confirm.action === "reconnect"
+      ? `Reconnect ${confirm.id}? Restarts the supervisor and revives ${confirm.count} dropped agent(s).${confirm.planPending ? " Pending plan will be re-presented." : ""} (y/N)`
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
