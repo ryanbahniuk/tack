@@ -133,6 +133,20 @@ describe("CI collection", () => {
     });
   });
 
+  test("treats gh's no-checks report as an empty, green suite", async () => {
+    for (const msg of ["no checks reported on the 'feature' branch", "no required checks reported on the 'feature' branch"]) {
+      await withChecksGh(`console.error(${JSON.stringify(msg)}); process.exit(1);`, async root => {
+        expect(await fetchPrChecks(root, 7)).toEqual([]);
+      });
+    }
+  });
+
+  test("rejects empty stdout with any other gh error", async () => {
+    await withChecksGh('console.error("HTTP 401: Bad credentials"); process.exit(1);', async root => {
+      await expect(fetchPrChecks(root, 7)).rejects.toThrow();
+    });
+  });
+
   test("falls back to paginated GraphQL rollup for older gh", async () => {
     await withChecksGh(`
 const args = process.argv.slice(2);

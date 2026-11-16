@@ -37,7 +37,7 @@ for (const columns of [140, 160]) {
   test(`split dashboard has a full-height guttered divider within ${columns} columns`, async () => {
     const list = spyOn(repositories, "listSessions").mockReturnValue([]);
     const output = new PassThrough();
-    Object.assign(output, { columns, rows: 30, isTTY: false });
+    Object.assign(output, { columns, rows: 40, isTTY: false });
     const input = new PassThrough();
     Object.assign(input, { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
     let frame = "";
@@ -55,13 +55,21 @@ for (const columns of [140, 160]) {
     try {
       await app.waitUntilRenderFlush();
       const lines = checkWidth();
-      expect(lines[0]).toContain("split");
+      expect(lines[0]).toContain("Tack · 30d");
+      expect(lines[0]).toContain("│");
+      expect(lines[0]).toContain("Insights · 30d · all sessions");
+      expect(lines.length).toBeLessThanOrEqual(40);
+      const listWidth = Math.floor(columns * 0.55);
+      const header = lines.slice(0, 2).map(line => line.slice(0, listWidth)).join("");
+      expect(header).toContain("0 live");
+      expect(header).toContain("0 working");
+      expect(header).toContain("0 need input");
+      expect(header).toContain("$0.0000 in flight");
       const footerStart = lines.indexOf(notice);
       expect(footerStart).toBeGreaterThan(1);
-      const budget = dashboardBodyHeight(30, columns, lines.slice(footerStart));
-      const paneRows = lines.slice(1, footerStart - 1);
-      expect(paneRows).toHaveLength(budget);
-      const listWidth = Math.floor(columns * 0.55);
+      const budget = dashboardBodyHeight(40, columns, lines.slice(footerStart));
+      const paneRows = lines.slice(0, footerStart - 1);
+      expect(paneRows).toHaveLength(budget + 1);
       // Ink trims trailing spaces on rows below the last Insights panel.
       for (const row of paneRows) expect(row.padEnd(columns).slice(listWidth, listWidth + 3)).toBe(" │ ");
       expect(lines[footerStart - 1]).toBe("");
@@ -117,7 +125,7 @@ test("short dashboard fits split, list and insights frames while navigating over
   try {
     await app.waitUntilRenderFlush();
     const first = checkFrame();
-    expect(first).toContain("split");
+    expect(first.split("\n")[0]).toContain("│");
     expect(first).toContain(`❯ ○ ${sessions[0]!.id}`);
     expect(first).toContain("↓ 44 more");
     expect(first).toContain("Insights");
@@ -128,7 +136,7 @@ test("short dashboard fits split, list and insights frames while navigating over
     expect(middle).toContain("↓");
     expect(await press("s")).toContain("list-only");
     expect(await press("s")).toContain("Insights");
-    expect(await press("s")).toContain("split");
+    expect((await press("s")).split("\n")[0]).toContain("│");
     expect(await press("d")).toContain("Delete");
     await press("n");
     frame = "";
