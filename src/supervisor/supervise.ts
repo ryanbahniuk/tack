@@ -287,6 +287,7 @@ export async function superviseInteractive(opts: {
     readOnly: true,
     disallowShell: true,
     addDirs,
+    trustedDirs: [snapshots],
     writableDirs: [artifactsDir],
     writeGuard: selfCommand(["__guard-write", artifactsDir]),
     resume,

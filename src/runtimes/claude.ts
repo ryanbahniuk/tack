@@ -304,7 +304,8 @@ export class ClaudeRuntime implements Runtime {
    *  - Workspace trust. Claude shows a "trust this folder?" dialog the first time it
    *    runs interactively in an unknown directory, so we set the same per-project
    *    flag the dialog would write (`~/.claude.json` ->
-   *    `projects[cwd].hasTrustDialogAccepted`).
+   *    `projects[cwd].hasTrustDialogAccepted`), and do the same for explicitly
+   *    trusted Tack-owned add-dir paths.
    *  - MCP auto-allow (read-only only). We write the mounted servers' allow rules to
    *    `<cwd>/.claude/settings.local.json` — exactly what a human picking "Yes, and
    *    don't ask again for … commands in <cwd>" on an MCP prompt would persist. This
@@ -334,7 +335,7 @@ export class ClaudeRuntime implements Runtime {
         writeFileSync(join(commands, `${name}.md`), ["---", `description: Tack ${name}`, "---", "", marker, "$ARGUMENTS", ""].join("\n"));
       }
     }
-    recordWorkspaceTrust(opts.cwd);
+    recordWorkspaceTrust([opts.cwd, ...(opts.trustedDirs ?? [])]);
     if (opts.readOnly) mergeLocalAllowRules(opts.cwd, supervisorAllowRules(opts));
   }
 
@@ -430,9 +431,9 @@ export function supervisorAllowRules(opts: RunOptions): string[] {
   return [...new Set((opts.mcpServers ?? []).map((s) => `mcp__${s.name}`))];
 }
 
-/** Sets `~/.claude.json` -> `projects[cwd].hasTrustDialogAccepted` (see
- * `prepareInteractive`). Leaves a corrupt/non-object file alone. */
-function recordWorkspaceTrust(cwd: string): void {
+/** Records trust for each directory (see `prepareInteractive`). Leaves a
+ * corrupt/non-object file alone. */
+function recordWorkspaceTrust(dirs: string[]): void {
   const file = join(homedir(), ".claude.json");
   let config: any = {};
   if (existsSync(file)) {
@@ -445,10 +446,14 @@ function recordWorkspaceTrust(cwd: string): void {
   }
   if (typeof config !== "object" || config === null || Array.isArray(config)) return;
   const projects = (config.projects ??= {});
-  const entry = (projects[cwd] ??= {});
-  if (entry.hasTrustDialogAccepted === true) return;
-  entry.hasTrustDialogAccepted = true;
-  writeFileSync(file, JSON.stringify(config, null, 2));
+  let changed = false;
+  for (const dir of dirs) {
+    const entry = (projects[dir] ??= {});
+    if (entry.hasTrustDialogAccepted === true) continue;
+    entry.hasTrustDialogAccepted = true;
+    changed = true;
+  }
+  if (changed) writeFileSync(file, JSON.stringify(config, null, 2));
 }
 
 /**
