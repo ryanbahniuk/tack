@@ -36,14 +36,14 @@ export default ({
     summary: "sonnet-5",
   },
 
-  // Personas have a unique name and a description: when to use the reviewer,
-  // and the instructions it follows. Optional model accepts a key or non-empty
+  // Personas have a unique name, description (review instructions), and whenToUse
+  // (when to select or skip the reviewer). Optional model accepts a key or non-empty
   // list; omitted uses roles.agent. Reviews prefer a different model than the
   // author when a candidate is available, otherwise use the same model.
   // personas: [
-  //   { name: "adversarial", description: "Strict adversarial reviewer. Assume the change is wrong; find concrete correctness and security failures.", model: "opus-5" },
-  //   { name: "implementation", description: "Review implementation correctness, edge cases and test coverage with an independent perspective.", model: ["opus-5", "gpt-6.1-sol"] },
-  //   { name: "design-standards", description: "Review user-facing changes against the project's design standards, accessibility and interaction conventions." },
+  //   { name: "adversarial", description: "Strict adversarial reviewer. Assume the change is wrong; find concrete correctness and security failures.", whenToUse: "Use for security-sensitive or complex changes. Skip for docs-only changes.", model: "opus-5" },
+  //   { name: "implementation", description: "Review implementation correctness, edge cases and test coverage with an independent perspective.", whenToUse: "Use for implementation changes. Skip for docs-only changes.", model: ["opus-5", "gpt-6.1-sol"] },
+  //   { name: "design-standards", description: "Review user-facing changes against the project's design standards, accessibility and interaction conventions.", whenToUse: "Use for user-facing changes. Skip for backend-only changes." },
   // ],
 
   // Pin the CLI runtimes. \`bin\` points at a specific executable (defaults to the

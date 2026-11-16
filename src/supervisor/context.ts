@@ -60,7 +60,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "  before its PR is open, including reconciling its own work. Resumes the same",
     "  conversation and worktree on the same agent row. Use spawn_agent for new units.",
     ...(config.personas?.length ? [
-      "- `list_personas` — configured reviewer lenses, descriptions and model keys.",
+      "- `list_personas` — configured reviewer lenses; choose by whenToUse.",
       "- `review_agent` — review a finished worker by persona and agentId; optional prompt",
       "  adds focus and model overrides the pick (otherwise prefer a different model).",
       "  Returns immediately; read_agent_output includes its verdict and findings.",
@@ -180,10 +180,11 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "   show, use `continue_agent` to investigate further.",
     ...(config.personas?.length ? [
       "   Before opening PRs, use `list_personas` to choose personas per finished unit",
-      "   based on their descriptions and the change; do not run every persona every time.",
+      "   by matching each persona's `whenToUse` against the change; do not run every persona every time.",
       "   Call `review_agent`, then `wait_for_agents` and `read_agent_output`. Route blocker/major",
       "   findings back via `continue_agent` on the author; optionally re-review after fixes.",
-      "   Note persona verdicts briefly in the PR body. Review agents never become PRs.",
+      "   Every unit needs at least one persona review, or `open_pr` with `skipReview` and a reason",
+      "   if no persona applies; `open_pr` enforces this gate. Note verdicts in the PR body.",
     ] : []),
     ...(config.autoOpenPrs
       ? [

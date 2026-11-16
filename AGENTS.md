@@ -73,12 +73,12 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 
 ## Common extensions
 
-- **Add a persona:** add `{ name, description, model? }` to `personas` in the user's
+- **Add a persona:** add `{ name, description, whenToUse, model? }` to `personas` in the user's
   `config.ts`. The unique name identifies the reviewer; the description tells the
   supervisor when to use it and gives the reviewer its instructions. Optional
   `model` accepts a key or non-empty list; omitted uses `roles.agent`. Reviews
   prefer a candidate different from the author's model, falling back to all
-  candidates. The supervisor chooses relevant personas per unit before PRs.
+  candidates. The supervisor chooses personas by whenToUse per unit. open_pr requires a finished review with a report, or skipReview with a reason when none applies.
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
   provider, name, version, runtime, id, optional effort/pricing) and assign roles to
