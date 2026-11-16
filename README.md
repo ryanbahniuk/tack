@@ -195,7 +195,7 @@ tack session stop <session>        # stop a session and its agents
 tack session archive <session>     # stop + hide, remembering interrupted agents
 tack session unarchive <session>   # restore + resume interrupted agents
 tack session resume <session>      # rejoin the supervisor
-tack session reconnect <session>   # after sleep/network loss: restart supervisor, revive dropped agents (--all parks in tmux)
+tack session reconnect <session>   # after sleep/network loss: restart supervisor detached in tmux, revive dropped agents (--all for every session)
 tack session delete <session>      # kill pids, purge worktrees + artifacts, cascade DB rows
 ```
 
@@ -262,7 +262,9 @@ in the list: `j/k`, `enter/o`, `v`, `m`, `O`, `p` (poll PRs), `J`, `c`, `C`, `r`
 Press `w` (wake) on a session that stopped working after the laptop slept or lost
 its connection: after `y`, Tack restarts its supervisor (even mid-turn or with a plan
 pending, which is re-presented), relaunches agents whose runner died or that failed
-with a connection error, restarts a dead PR watcher, and rejoins the supervisor.
+with a connection error, restarts a dead PR watcher, and parks the supervisor in
+tmux while the dashboard stays open; `enter` attaches. Without tmux the supervisor
+stays stopped until you resume it.
 Press `C` in any layout to edit the Tack config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`).
 After a valid change, Tack reloads config and refreshes stale active sessions, parking
 supervisors in tmux (without tmux, resume starts them). Busy sessions wait for resume
