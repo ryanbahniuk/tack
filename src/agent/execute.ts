@@ -252,7 +252,8 @@ export async function* runAgent(
  * `pr_fix` agent forks off its PR's current remote head (looked up via
  * `session_pr_id`), so its commits land on top of what reviewers see and can be
  * pushed onto the PR branch as a fast-forward. Both reuse an existing worktree on
- * resume/retry.
+ * resume/retry, and a continuation (a lineage fork or a requeued row, including a
+ * reused `pr_fix` row) always runs in the conversation's own worktree.
  */
 function agentWorktree(agent: AgentRow, repoPath: string, project: string, config: TackConfig, onPhase: (label: string) => void): Worktree {
   // Never replace a disappeared lineage cwd with a cold checkout: the runtime
@@ -266,8 +267,13 @@ function agentWorktree(agent: AgentRow, repoPath: string, project: string, confi
     onPhase("reusing worktree");
     return { repo: repoPath, path: agent.worktree_path, branch: agent.branch, base: agent.diff_base };
   }
-  if (agent.continuation_prompt_ref && agent.worktree_path && agent.branch)
-    return (onPhase("reusing worktree"), existingWorktree(repoPath, agent.worktree_path, agent.branch));
+  if (agent.continuation_prompt_ref && agent.worktree_path && agent.branch) {
+    onPhase("reusing worktree");
+    const existing = existingWorktree(repoPath, agent.worktree_path, agent.branch);
+    // A requeued pr_fix row gets a fresh `diff_base` (the fast-forwarded PR head) per
+    // run, so its diff is only that run's work; workers keep their cumulative base.
+    return agent.kind === "pr_fix" && agent.diff_base ? { ...existing, base: agent.diff_base } : existing;
+  }
   if (agent.kind === "review") {
     const reviewed = agent.reviews_agent_id ? getAgent(agent.reviews_agent_id) : null;
     if (!agent.reviews_agent_id && agent.session_pr_id) {

@@ -19,10 +19,10 @@ import * as configLoad from "../src/config/load";
 import { migrate } from "../src/db/migrate";
 import {
   approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getDb, listSessionPrs,
-  listPrFixAgents, setSessionPrStatus, markAgentPostFixed, setAgentCost, setAgentResumeRef, setAgentStatus, setAgentUsage, setAgentWorktree, upsertSessionPr,
+  listPrFixAgents, listPrFixRuns, listAgentPrFeedback, listUnassignedPrFeedback, insertPrFeedback, assignPrFeedback, markPrFeedbackHandled, setSessionPrStatus, markAgentPostFixed, setAgentCost, setAgentResumeRef, setAgentStatus, setAgentUsage, setAgentWorktree, upsertSessionPr,
 } from "../src/db";
 import { readArtifact } from "../src/artifacts/store";
-import { prContinuationDecision, prLineageHead, spawnPrFixAgent } from "../src/prwatch/watch";
+import { prContinuationDecision, prFixBusy, prFixLineageLabel, prLineageHead, spawnPrFixAgent } from "../src/prwatch/watch";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
 
@@ -308,3 +308,149 @@ for (const state of ["merged", "closed"]) {
     expect(launch).not.toHaveBeenCalled();
   });
 }
+
+// ---------------------------------------------------------------------------
+// Reusing a PR's fix agent row across fix runs
+// ---------------------------------------------------------------------------
+
+const fixOpts = { origin: "auto", conflict: false, baseBranch: "main", title: "PR" } as const;
+
+/** A PR whose first fix run (a new row continuing the author) finished and was
+ * post-fixed with `outcome`, leaving a resumable conversation behind. */
+async function firstFix(outcome: "pushed" | "no_changes" | "failed" | "push_rejected" = "pushed") {
+  const f = fixture();
+  setSessionPrStatus(f.pr.id, { state: "open" });
+  const ff = spyOn(worktrees, "fastForwardPrWorktree").mockResolvedValue({ base: "base-1" }); mocks.push(ff);
+  const launch = spyOn(detached, "spawnAgentRunner").mockReturnValue(123); mocks.push(launch);
+  const first = await spawnPrFixAgent(f.session, f.pr, f.project, f.config, fixOpts);
+  expect(first).toMatchObject({ lineage: "continued", continued: f.a.id });
+  setAgentStatus(first.agent.id, outcome === "failed" ? "failed" : "done");
+  setAgentResumeRef(first.agent.id, "fix-conversation");
+  setAgentCost(first.agent.id, 2, "pricing");
+  markAgentPostFixed(first.agent.id, outcome, outcome === "pushed" ? "sha-1" : undefined);
+  return { ...f, fix: getAgent(first.agent.id)!, ff, launch, pr: listSessionPrs(f.session.id)[0]! };
+}
+const feedback = (sourceId: string) => ({
+  sourceId, kind: "issue_comment" as const, author: "alice", body: `please ${sourceId}`, url: "https://example.com/c", isBot: false,
+});
+
+test("later fixes requeue the same pr_fix row and resume its own conversation with a per-run diff", async () => {
+  const { session, project, config, fix, ff, launch, pr } = await firstFix();
+  ff.mockResolvedValue({ base: "base-2" });
+  const second = await spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] });
+  expect(second).toMatchObject({ lineage: "reused", continued: fix.id, items: 1 });
+  expect(second.fallbackReason).toBeUndefined();
+  expect(prFixLineageLabel(second)).toBe(`reused ${fix.id}`);
+  expect(listPrFixAgents(pr.id).map(a => a.id)).toEqual([fix.id]);
+  expect(second.agent).toMatchObject({
+    id: fix.id, status: "pending", post_fixed_at: null, fix_outcome: null, fix_pushed_sha: null,
+    fix_origin: "auto", diff_base: "base-2", finished_at: null, continuation_started_at: null,
+    error: null, resume_ref: "fix-conversation", cost: 2, model: "test",
+  });
+  expect(readArtifact(second.agent.continuation_prompt_ref)).toContain("IC_2");
+  expect(listAgentPrFeedback(fix.id).map(f => f.source_id)).toEqual(["IC_2"]);
+  expect(launch).toHaveBeenLastCalledWith(session.id, fix.id, expect.anything());
+  expect(prFixBusy(pr.id)).toBe(true);
+
+  const seen: RunOptions[] = []; mockRuntime(seen, [
+    { type: "session", ref: "fix-conversation-2" }, { type: "cost", usd: 1, source: "pricing" }, { type: "done", ok: true },
+  ]);
+  const diff = spyOn(worktrees, "worktreeDiff").mockReturnValue("only run 2"); mocks.push(diff);
+  for await (const _ of runAgent(fix.id, config)) {}
+  expect(seen[0]).toMatchObject({ resume: true, fork: true, sessionRef: "fix-conversation", cwd: "/tmp" });
+  expect(seen[0]!.prompt).toContain("IC_2");
+  expect(diff.mock.calls[0]![1]).toBe("base-2");
+  expect(getAgent(fix.id)).toMatchObject({ status: "done", cost: 3, resume_ref: "fix-conversation-2", diff_base: "base-2" });
+  expect(readArtifact(join(fix.prompt_ref!, "..", "transcript.md"))).toContain("resumed");
+
+  // Post-fix touches only this run's item and finishes this run's history entry.
+  config.prWatch.reply = false;
+  const { postFix } = await import("../src/prwatch/watch");
+  await postFix({ ...getAgent(fix.id)!, worktree_path: null }, pr, project, config, () => {});
+  expect(listPrFixRuns(fix.id).map(r => r.outcome)).toEqual(["pushed", "no_changes"]);
+  expect(listPrFixRuns(fix.id)[0]!.pushed_sha).toBe("sha-1");
+
+  // And a third run reuses it again, resuming the latest conversation.
+  ff.mockResolvedValue({ base: "base-3" });
+  const third = await spawnPrFixAgent(session, pr, project, config, { ...fixOpts, origin: "supervisor" });
+  expect(third).toMatchObject({ lineage: "reused", agent: { id: fix.id, resume_ref: "fix-conversation-2", diff_base: "base-3", fix_origin: "supervisor" } });
+  expect(listPrFixAgents(pr.id)).toHaveLength(1);
+  expect(listPrFixRuns(fix.id).map(r => r.origin)).toEqual(["auto", "auto", "supervisor"]);
+});
+
+for (const reason of ["idle window exceeded", "fresh requested", "runtime mismatch", "previous fix failed", "previous fix push_rejected", "reuse disabled"] as const) {
+  test(`fix reuse falls back to a new row: ${reason}`, async () => {
+    const outcome = reason === "previous fix failed" ? "failed" : reason === "previous fix push_rejected" ? "push_rejected" : "pushed";
+    const { session, project, config, fix, a, pr } = await firstFix(outcome);
+    if (reason === "idle window exceeded") getDb().run("UPDATE agents SET finished_at = '2000-01-01T00:00:00Z' WHERE id = ?", [fix.id]);
+    if (reason === "reuse disabled") config.agentReuse.enabled = false;
+    const before = getAgent(fix.id)!;
+    const result = await spawnPrFixAgent(session, pr, project, config, {
+      ...fixOpts, forceFresh: reason === "fresh requested", model: reason === "runtime mismatch" ? other : undefined,
+    });
+    expect(result.agent.id).not.toBe(fix.id);
+    expect(result.reuseFallbackReason).toBe(reason);
+    expect(listPrFixAgents(pr.id).map(r => r.id)).toEqual([fix.id, result.agent.id]);
+    expect(getAgent(fix.id)).toEqual(before);
+    expect(listPrFixRuns(fix.id)).toHaveLength(1);
+    expect(listPrFixRuns(result.agent.id)).toHaveLength(1);
+    // A failed/rejected fix isn't a lineage head, so the new row continues the author.
+    if (outcome !== "pushed") expect(result).toMatchObject({ lineage: "continued", continued: a.id });
+    else expect(result).toMatchObject({ lineage: "fresh", continued: null, fallbackReason: reason });
+    expect(prFixLineageLabel(result)).toContain(`not reused: ${reason}`);
+  });
+}
+
+test("a reuse whose fast-forward fails restores the old row exactly, then falls back to a new row", async () => {
+  const { session, project, config, fix, ff, pr } = await firstFix();
+  // An earlier run's handled item stays on the old row untouched.
+  const earlier = insertPrFeedback({ sessionPrId: pr.id, sourceId: "IC_1", sourceKind: "issue_comment" });
+  assignPrFeedback([earlier.id], fix.id); markPrFeedbackHandled(earlier.id, { replyUrl: "https://example.com/r" });
+  const before = getAgent(fix.id)!;
+  let release!: (v: { reason: string }) => void;
+  ff.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+  const pending = spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] });
+  // The claim happens before the fetch: the old row is busy, and a racer is refused.
+  await Promise.resolve();
+  expect(getAgent(fix.id)).toMatchObject({ status: "pending", pid: process.pid });
+  await expect(spawnPrFixAgent(session, pr, project, config, fixOpts)).rejects.toThrow("already running");
+  release({ reason: "non-fast-forwardable head" });
+  const result = await pending;
+  expect(ff).toHaveBeenCalledTimes(2); // first fix + this reuse; the fallback doesn't refetch the same head
+  expect(getAgent(fix.id)).toEqual(before);
+  expect(listPrFixRuns(fix.id).map(r => r.outcome)).toEqual(["pushed"]);
+  expect(listAgentPrFeedback(fix.id).map(f => f.source_id)).toEqual(["IC_1"]);
+  expect(result).toMatchObject({
+    lineage: "fresh", continued: null, fallbackReason: "non-fast-forwardable head",
+    reuseFallbackReason: "non-fast-forwardable head", items: 1,
+  });
+  expect(result.agent.id).not.toBe(fix.id);
+  expect(listAgentPrFeedback(result.agent.id).map(f => f.source_id)).toEqual(["IC_2"]);
+});
+
+test("a reused row that fails to launch is restored too", async () => {
+  const { session, project, config, fix, launch, pr } = await firstFix();
+  const before = getAgent(fix.id)!;
+  launch.mockImplementation(() => { throw new Error("spawn failed"); });
+  await expect(spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] })).rejects.toThrow("spawn failed");
+  expect(getAgent(fix.id)).toEqual(before);
+  expect(listPrFixRuns(fix.id)).toHaveLength(1);
+  expect(listUnassignedPrFeedback(pr.id).map(f => f.source_id)).toEqual(["IC_2"]);
+});
+
+test("check_prs lists each fix agent's run history", async () => {
+  const { session, project, config, fix, pr } = await firstFix();
+  await spawnPrFixAgent(session, pr, project, config, fixOpts);
+  mocks.push(spyOn(configLoad, "loadConfig").mockResolvedValue(config));
+  mocks.push(spyOn(McpServer.prototype, "connect").mockResolvedValue());
+  const register = spyOn(McpServer.prototype, "registerTool"); mocks.push(register);
+  await runSupervisorServer(session.id);
+  const handler = register.mock.calls.find(c => c[0] === "check_prs")![2] as unknown as
+    (args: { refresh: boolean }) => Promise<{ content: Array<{ text: string }> }>;
+  const out = JSON.parse((await handler({ refresh: false })).content[0]!.text);
+  expect(out.prs[0].fixAgents).toHaveLength(1);
+  expect(out.prs[0].fixAgents[0]).toMatchObject({
+    id: fix.id, status: "pending",
+    runs: { count: 2, recent: [{ origin: "auto", outcome: "pushed", pushedSha: "sha-1" }, { origin: "auto", outcome: null, finishedAt: null }] },
+  });
+});

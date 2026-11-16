@@ -354,9 +354,12 @@ chat, use `/review <persona> [focus…]` and `/pr-fix [on|off]`.
   are reported without changes. `maxFixRunsPerDay` caps automatic runs per PR per
   rolling 24h; failed runs count, and supervisor `fix_pr` runs are exempt. Bot
   PR-summary comments are ignored.
-- **Agent reuse.** With `agentReuse.enabled`, a fix continues the PR's last agent
-  conversation in its existing worktree when that agent finished within
-  `maxIdleHours` on the same runtime. Otherwise a fresh agent starts.
+- **Agent reuse.** With `agentReuse.enabled`, later fixes on a PR reuse its existing
+  fix agent — same agent id, same conversation and worktree — when its last run
+  succeeded, finished within `maxIdleHours` on the same runtime, and its worktree
+  fast-forwards to the PR head. Otherwise a new fix agent continues the PR's last
+  successful conversation (the fix agent's or the PR author's) when it qualifies,
+  or starts fresh. The daily cap counts runs, so reuse doesn't get around it.
 - **Replies.** Inline review comments get a reply in their own thread. Replies to
   conversation comments and review summaries are batched into one top-level comment
   per fix run, which quotes and links each original and cites the pushed fixes. CI

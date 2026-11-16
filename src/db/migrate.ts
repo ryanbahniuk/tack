@@ -342,6 +342,34 @@ const migrations: Migration[] = [
       ALTER TABLE session_prs ADD COLUMN body_ref TEXT;
     `,
   },
+  {
+    version: 19,
+    name: "pr_fix_runs",
+    // A PR's `pr_fix` agent row is requeued for later fix runs, so one row no longer
+    // means one run. `pr_fix_runs` is the per-run history: one row per fix spawn
+    // (new or reused agent), finished when post-fix latches. The daily anti-loop cap
+    // counts these, not agent rows, so reuse can't dodge it; origin NULL is legacy
+    // and counts as automatic. Backfill one run per existing fix agent, with a
+    // deterministic id so a re-applied migration (tests rewind `_migrations`) is a
+    // no-op. `session_pr_id` mirrors the agent's and is nullable for odd legacy rows.
+    sql: `
+      CREATE TABLE IF NOT EXISTS pr_fix_runs (
+        id            TEXT PRIMARY KEY,
+        agent_id      TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        session_pr_id TEXT,
+        origin        TEXT,                 -- auto | supervisor | NULL (legacy = auto)
+        created_at    TEXT NOT NULL,
+        finished_at   TEXT,                 -- post-fix latch time; NULL while in flight
+        outcome       TEXT,                 -- AgentFixOutcome; NULL until post-fix / legacy
+        pushed_sha    TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pr_fix_runs_pr ON pr_fix_runs(session_pr_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_pr_fix_runs_agent ON pr_fix_runs(agent_id);
+      INSERT OR IGNORE INTO pr_fix_runs (id, agent_id, session_pr_id, origin, created_at, finished_at, outcome, pushed_sha)
+        SELECT 'fr_' || id, id, session_pr_id, fix_origin, created_at, post_fixed_at, fix_outcome, fix_pushed_sha
+          FROM agents WHERE kind = 'pr_fix';
+    `,
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */

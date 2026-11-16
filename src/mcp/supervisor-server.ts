@@ -17,6 +17,7 @@ import {
   listPendingAmendments,
   listPrFeedback,
   listPrFixAgents,
+  listPrFixRuns,
   listSessionPrs,
   prFeedbackSourceIds,
   setAgentRefs,
@@ -56,6 +57,7 @@ import {
   isWatchablePr,
   pollPrStatus,
   prFixBusy,
+  prFixLineageLabel,
   prFixCapReached,
   spawnPrFixAgent,
   spawnPrWatcher,
@@ -564,8 +566,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Update an existing session PR: use this for any change to an open PR, including follow-ups the " +
         "human asked for (put them in `prompt`), a conflict that persists, or a failed fix run (pass `model` " +
-        "to choose another model). Continues the eligible PR lineage automatically (returns continued/fallbackReason); " +
-        "fresh: true forces a new conversation. The PR watcher pushes " +
+        "to choose another model). Reuses the PR's existing fix agent when its last run succeeded and is still " +
+        "resumable (same agent id, lineage: \"reused\"); otherwise starts a new fix agent that continues the " +
+        "eligible PR lineage (\"continued\") or starts fresh (\"fresh\", with fallbackReason). " +
+        "fresh: true forces a new agent and conversation. The PR watcher pushes " +
         "its commits non-force onto the same PR branch and replies to review feedback when it finishes. " +
         "Do not use spawn_agent + open_pr to change an existing PR: that creates a second PR. The agent " +
         "automatically gets a merge step if GitHub reports a conflict and any pending review feedback or failing CI checks. " +
@@ -640,7 +644,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         }
       }
 
-      const { agent, items, continued, fallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
+      const spawned = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
         conflict,
         baseBranch: status.baseRefName,
@@ -659,12 +663,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       }
       const after = "Use wait_for_agents on it, then check_prs to see the result.";
       return text({
-        agentId: agent.id,
+        agentId: spawned.agent.id,
         pr: pr.number,
         conflict,
-        feedbackItems: items,
-        continued,
-        fallbackReason,
+        feedbackItems: spawned.items,
+        lineage: spawned.lineage,
+        lineageNote: prFixLineageLabel(spawned),
+        continued: spawned.continued,
+        fallbackReason: spawned.fallbackReason,
+        reuseFallbackReason: spawned.reuseFallbackReason,
         model: m.name,
         autoFixNote: !getSession(sessionId)?.pr_fix_enabled ? "PR auto-fix is off for this session; this explicit fix is allowed." : undefined,
         note: !config.prWatch.enabled
@@ -691,7 +698,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Snapshot of this session's pull requests as the PR watcher sees them: state, mergeability, " +
         "review feedback and failing CI checks (pending, and handled with the decision + reply link), and the pr_fix agents Tack " +
-        "spawned to address it. Tack handles PR feedback, merge conflicts and failing CI automatically — use this to report " +
+        "spawned to address it, each with its run history (a PR's fix agent is reused across fix runs). Tack handles PR feedback, merge conflicts and failing CI automatically — use this to report " +
         "on it. Read-only by default; refresh updates PR statuses immediately and wakes or starts the watcher " +
         "only if PRs remain open. Feedback handling happens asynchronously in the watcher. For any change " +
         "to an open PR (human follow-ups, a persistent conflict, a failed run), call fix_pr to update the same PR branch.",
@@ -738,6 +745,17 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
               postFixed: Boolean(a.post_fixed_at),
               outcome: a.fix_outcome,
               pushedSha: a.fix_pushed_sha,
+              // A fix agent is reused across runs; its per-run history, newest last.
+              runs: (() => {
+                const runs = listPrFixRuns(a.id);
+                return {
+                  count: runs.length,
+                  recent: runs.slice(-5).map((r) => ({
+                    origin: r.origin, startedAt: r.created_at, finishedAt: r.finished_at,
+                    outcome: r.outcome, pushedSha: r.pushed_sha,
+                  })),
+                };
+              })(),
             })),
           };
         }),
