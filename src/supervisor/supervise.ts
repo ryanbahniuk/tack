@@ -197,6 +197,15 @@ export function awaitPlanHookArgs(sessionId: string): string[] {
   return ["__await-plan", sessionId];
 }
 
+/** Arguments for the silent hooks that mark / clear a native question
+ * (`AskUserQuestion`) as awaiting the human's answer. */
+export function awaitQuestionHookArgs(sessionId: string): string[] {
+  return ["__await-input", sessionId, "question"];
+}
+export function answeredQuestionHookArgs(sessionId: string): string[] {
+  return ["__await-input", sessionId, "question", "--clear"];
+}
+
 /**
  * Runs the supervisor as an attended, interactive session: launches the pinned
  * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
@@ -291,6 +300,9 @@ export async function superviseInteractive(opts: {
     ],
     planApprovalTool: awaitHook ? SUPERVISOR_PLAN_APPROVAL_TOOL : undefined,
     onPlanPresented: awaitHook ? { command: awaitHook.command, args: awaitHook.args } : undefined,
+    // Claude only (like the plan hook): flag native questions as needing input.
+    onQuestionAsked: usesPlanHook ? selfCommand(awaitQuestionHookArgs(session.id)) : undefined,
+    onQuestionAnswered: usesPlanHook ? selfCommand(answeredQuestionHookArgs(session.id)) : undefined,
     onUserPrompt: selfCommand(["__approve-prompt", session.id]),
     onTurnEnd: selfCommand(["__turn-end", session.id]),
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even

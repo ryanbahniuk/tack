@@ -38,6 +38,12 @@ describe("sessionWorking", () => {
 });
 
 describe("sessionNeedsInput", () => {
+  test("an open question needs input and isn't working, even mid-turn", () => {
+    const asking = { ...session, pid: process.pid, supervisor_turn_started_at: after, awaiting_input_at: after, awaiting_reason: "question" };
+    expect(sessionNeedsInput(asking, [])).toBe(true);
+    expect(sessionWorking(asking)).toBe(false);
+  });
+
   test("a plan awaiting approval needs input even with a live agent", () => {
     expect(sessionNeedsInput({ ...session, awaiting_input_at: after }, [
       agent("running", null, process.pid),
