@@ -11,6 +11,7 @@ import type {
   Runtime,
 } from "./types";
 import { streamJson } from "./proc";
+import { REVIEW_MARKER, PR_FIX_MARKER } from "../supervisor/command-prompt";
 import { APPROVE_PROMPT_MARKER } from "../supervisor/approve-prompt";
 
 /**
@@ -315,6 +316,9 @@ export class ClaudeRuntime implements Runtime {
         "The human has approved your plan via /approve. Proceed to spawn agents per the plan.",
         "",
       ].join("\n"));
+      for (const [name, marker] of [["review", REVIEW_MARKER], ["pr-fix", PR_FIX_MARKER]]) {
+        writeFileSync(join(commands, `${name}.md`), ["---", `description: Tack ${name}`, "---", "", marker, "$ARGUMENTS", ""].join("\n"));
+      }
     }
     recordWorkspaceTrust(opts.cwd);
     if (opts.readOnly) mergeLocalAllowRules(opts.cwd, supervisorAllowRules(opts));

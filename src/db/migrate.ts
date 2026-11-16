@@ -326,6 +326,7 @@ const migrations: Migration[] = [
     // A human returning a promoted PR to draft must not trigger another promotion.
     sql: `ALTER TABLE session_prs ADD COLUMN ready_promoted_at TEXT;`,
   },
+  { version: 17, name: "session_pr_fix_enabled", sql: `ALTER TABLE sessions ADD COLUMN pr_fix_enabled INTEGER NOT NULL DEFAULT 1;` },
 ];
 
 /** Applies any pending migrations in a single transaction. */

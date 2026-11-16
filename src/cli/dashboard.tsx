@@ -1,3 +1,5 @@
+import { startPersonaReview } from "../session/review";
+import { setPrFix } from "../session/pr-fix";
 import React, { useEffect, useRef, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
@@ -107,7 +109,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -168,7 +170,7 @@ type Confirm =
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · F auto-fix · J tickets · c new · C config · r refresh · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -292,6 +294,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [agentCursor, setAgentCursor] = useState(0);
   const [amendmentCursor, setAmendmentCursor] = useState(0);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
+  const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; agentId: string } | null>(null);
   const [projectPick, setProjectPick] = useState<{ options: string[]; cursor: number } | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
@@ -458,6 +461,19 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     // Agent picker: output and editing both hand the terminal to a child process.
     if (mode === "agents") {
       const agents = pickerView?.agents ?? [];
+      if (personaPick && pickerView) {
+        if (input === "q" || key.escape) { setPersonaPick(null); setNotice("cancelled"); return; }
+        if (key.downArrow || input === "j") return setPersonaPick({ ...personaPick, cursor: Math.min(personaPick.cursor + 1, personaPick.options.length - 1) });
+        if (key.upArrow || input === "k") return setPersonaPick({ ...personaPick, cursor: Math.max(personaPick.cursor - 1, 0) });
+        if (key.return && config) {
+          try {
+            const review = startPersonaReview(config, pickerView.session.id, { agentId: personaPick.agentId, persona: personaPick.options[personaPick.cursor]! });
+            setNotice(`started review ${review.agentId}`); refresh();
+          } catch (err) { setNotice(`review failed: ${(err as Error).message}`); }
+          setPersonaPick(null);
+        }
+        return;
+      }
       // Project chooser for a new manual workspace swallows input until picked/cancelled.
       if (projectPick && pickerView) {
         if (input === "q" || key.escape) { setProjectPick(null); setNotice("cancelled"); return; }
@@ -475,6 +491,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       // Leaving the picker (including its session vanishing mid-choice) drops any open
       // chooser so the next `v` never reopens a stale one for another session.
       if (input === "q" || key.escape || !pickerView) { setProjectPick(null); return setMode("list"); }
+      if (input === "R") {
+        const a = agents[Math.min(agentCursor, agents.length - 1)];
+        if (!a || a.kind || a.status !== "done") return setNotice("select a finished normal worker to review");
+        if (!config) return setNotice("config is unavailable");
+        if (!config.personas.length) return setNotice("no personas configured");
+        return setPersonaPick({ options: config.personas.map(p => p.name), cursor: 0, agentId: a.id });
+      }
       if (input === "n") {
         if (!config) return setNotice("config is unavailable");
         const options = manualProjectCandidates(config.projects.map((p) => p.name), agents);
@@ -573,6 +596,11 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       }
       for (const pr of selected.prs) openUrl(pr.url);
       setNotice(`opened ${selected.prs.length} PR${selected.prs.length === 1 ? "" : "s"} in browser`);
+    } else if (input === "F") {
+      if (!config) return setNotice("config is unavailable");
+      const id = selected.session.id;
+      const enabled = !selected.session.pr_fix_enabled;
+      void setPrFix(id, enabled, config).then(() => setNotice(`PR auto-fix ${enabled ? "on" : "off"} for ${id}`)).catch(err => setNotice(`PR auto-fix failed: ${(err as Error).message}`)).finally(refresh);
     } else if (input === "p") {
       if (!config) return setNotice("config is unavailable");
       const id = selected.session.id;
@@ -625,7 +653,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
 
   if (mode === "agents" && pickerView) {
-    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} projectPick={projectPick} />;
+    return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} projectPick={projectPick} personaPick={personaPick} />;
   }
 
   if (mode === "amendments" && pickerView) {
@@ -681,6 +709,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
         ) : null}
         {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+        {!v.session.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}
         {v.stale ? <Text color="yellow"> stale</Text> : null}
         {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
@@ -799,10 +828,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
 /** The agent picker shows worktree paths alongside output so the human can inspect or
  * edit, and starts manual workspaces (`n`), choosing a project when several qualify. */
-function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
+function AgentsPanel({ view, cursor, notice, confirmText, projectPick, personaPick }: {
   view: View; cursor: number; notice: string; confirmText: string | null;
   projectPick: { options: string[]; cursor: number } | null;
+  personaPick: { options: string[]; cursor: number; agentId: string } | null;
 }) {
+  if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.agentId} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
   if (projectPick) {
     const own = new Set(view.agents.map((a) => a.project_name));
     return (
@@ -854,7 +885,7 @@ function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
       <Box marginTop={1} flexDirection="column">
         {notice ? <Text dimColor>{notice}</Text> : null}
         {confirmText ? <Text color="yellow">{confirmText}</Text> : null}
-        <Text dimColor>j/k move · enter/v view output · e edit worktree · n new manual workspace · esc/q back</Text>
+        <Text dimColor>j/k move · enter/v view output · e edit worktree · R review · n new manual workspace · esc/q back</Text>
       </Box>
     </Box>
   );

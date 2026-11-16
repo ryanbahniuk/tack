@@ -45,6 +45,8 @@ src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix ag
 src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/manual.ts    manual workspaces (kind "manual"): project resolution, creation, live diff
+src/session/review.ts    human-requested persona review startup
+src/session/pr-fix.ts    per-session auto-fix toggle
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
 src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
@@ -73,14 +75,9 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 
 ## Common extensions
 
-- **Add a persona:** add `{ name, description, whenToUse, model? }` to `personas`
-  in the user's `config.ts`. The unique name identifies the reviewer; `description`
-  gives the reviewer its instructions, and `whenToUse` tells the supervisor when to
-  pick or skip it. Optional `model` accepts a key or non-empty list; omitted uses
-  `roles.agent`. Reviews prefer a candidate different from the author's model,
-  falling back to all candidates. The supervisor chooses personas by `whenToUse`
-  per unit. `open_pr` requires normal workers to have a finished review with a
-  report, or `skipReview` with a reason when none applies.
+- **Add a persona:** add `{ name, description, model? }` to `personas` in the user's
+  `config.ts`. Reviews run only when the human explicitly requests one. Optional
+  models default to `roles.agent`; reviews prefer a model different from the author.
 
 - **Add a model:** add an entry to `models` in the user's `config.ts` (key,
   provider, name, version, runtime, id, optional effort/pricing) and assign roles to
@@ -119,7 +116,8 @@ feedback, explicit handled decisions/replies for non-CI items, and settled green
 current-head CI. Drafts fetch checks even with `fixCi: false`; fetch failures block
 promotion and zero checks is green. The durable `session_prs.ready_promoted_at`
 latch respects a human's later return to draft. Keep readiness and CI ingestion
-on the same pending/failing predicates; promotion failures retry next tick.
+on the same pending/failing predicates; promotion failures retry next tick. Per-session
+`pr_fix_enabled` controls automatic fix spawning independently of promotion.
 
 ## Testing & gotchas
 

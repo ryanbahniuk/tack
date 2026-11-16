@@ -398,6 +398,8 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   }
   if (!conflict && fresh.length === 0 && released.length === 0) return;
 
+  if (!getSession(session.id)?.pr_fix_enabled) return log(`${tag}: PR auto-fix is off for this session`);
+
   const cap = prFixCapReached(pr.id, config);
   if (cap.reached) {
     return log(

@@ -73,18 +73,18 @@ describe("supervisor context: publishable pages", () => {
 
 describe("persona contexts", () => {
   test("supervisor review guidance appears only when configured", () => {
-    expect(context(true)).not.toContain("persona");
+    expect(context(true)).toContain("Never start a persona review");
     expect(written).not.toContain("whenToUse");
     expect(written).not.toContain("skipReview");
     buildSupervisorContext("ses_test", { projects: [], autoOpenPrs: true,
       personas: [{ name: "strict", description: "Strict review", whenToUse: "Use for code; skip docs", model: [] }] } as unknown as TackConfig);
     expect(written).toContain("list_personas");
     expect(written).toContain("review_agent");
-    expect(written).toContain("whenToUse");
-    expect(written).toContain("skipReview");
+    expect(written).not.toContain("whenToUse");
+    expect(written).not.toContain("skipReview");
     expect(written).toContain("blocker/major");
-    expect(written).toContain("Note verdicts in the PR body");
-    expect(written).toContain("Review agents never become PRs.");
+    expect(written).toContain("note the verdict in the PR body");
+
   });
 
   test("review context preserves persona instructions and reports without commits", async () => {

@@ -49,8 +49,9 @@ test("personas default empty and normalize strings, lists and omitted models", a
   expect(() => resolvePersona(c, "typo")).toThrow('Known: strict, impl, design');
 });
 
-test("missing whenToUse identifies the persona", async () => {
-  await expect(config([{ name: "missing-rule", description: "Review" }])).rejects.toThrow("personas.missing-rule.whenToUse is required");
+test("legacy whenToUse is ignored", async () => {
+  const c = await config([{ name: "legacy", description: "Review", whenToUse: "old rule" }, { name: "new", description: "Review" }]);
+  expect(c.personas[0]).not.toHaveProperty("whenToUse");
 });
 
 test("persona validation identifies duplicate names and unknown model keys", async () => {
@@ -137,7 +138,7 @@ test("review tools validate targets, choose models, honor overrides and expose r
   const offered = spyOn(availability, "checkModelOffered").mockReturnValue({ ok: true }); mocks.push(offered);
   const call = await toolsFor(() => runSupervisorServer(session.id));
   expect(await call("list_personas")).toEqual(c.personas);
-  expect((await call("list_personas"))[0].whenToUse).toBe("Use for code; skip for docs");
+  expect((await call("list_personas"))[0].whenToUse).toBeUndefined();
   const args = { agentId: author.id, persona: "strict" };
   await expect(call("review_agent", args)).rejects.toThrow("Plan not approved");
   approveSessionPlan(session.id);
@@ -176,7 +177,7 @@ test("review tools validate targets, choose models, honor overrides and expose r
   expect(continued.review_ref).toBe(getAgent(review.agentId)!.review_ref);
 });
 
-test("open_pr enforces persona reviews and records skips", async () => {
+test("open_pr does not require persona reviews", async () => {
   const prs = await import("../src/projects/prs");
   const worktree = await import("../src/worktree/worktree");
   const watch = await import("../src/prwatch/watch");
@@ -194,19 +195,7 @@ test("open_pr enforces persona reviews and records skips", async () => {
   mocks.push(spyOn(configLoad, "loadConfig").mockResolvedValue(c));
   const call = await toolsFor(() => runSupervisorServer(session.id));
   const args = { agentId: author.id, title: "Change", body: "Details" };
-  await expect(call("open_pr", args)).rejects.toThrow("no finished persona review");
-  await expect(call("open_pr", { ...args, skipReview: "  " })).rejects.toThrow("no finished persona review");
-  expect(commit).not.toHaveBeenCalled();
-  const review = createAgent({ sessionId: session.id, projectName: "app", kind: "review", reviewsAgentId: author.id });
-  setAgentStatus(review.id, "done");
-  await expect(call("open_pr", args)).rejects.toThrow("no finished persona review");
-  setAgentReviewRef(review.id, "/report");
   await call("open_pr", args);
-  expect(open.mock.calls.at(-1)![0].body).toBe("Details");
-  setAgentStatus(review.id, "running");
-  await call("open_pr", { ...args, skipReview: " docs only " });
-  expect(open.mock.calls.at(-1)![0].body).toBe("Details\n\n_Persona review skipped: docs only_");
-  c.personas = [];
-  await call("open_pr", args);
+  expect(commit).toHaveBeenCalled();
   expect(open.mock.calls.at(-1)![0].body).toBe("Details");
 });
