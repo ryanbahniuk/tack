@@ -123,7 +123,7 @@ export async function requestPlanApproval(
   try {
     if (!client.getClientCapabilities()?.elicitation) return nonApproval(unavailable, false);
     const result = await client.elicitInput({
-      message: `Plan for approval:\n\n${summary}`,
+      message: `Review the plan above — submit blank to approve, or say what to change.\n\n${summary}`,
       requestedSchema: {
         type: "object",
         properties: {
