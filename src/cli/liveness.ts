@@ -9,8 +9,8 @@ export function sessionLive(s: SessionRow): boolean {
 
 /**
  * UserPromptSubmit sets the turn flag; Stop / idle_prompt clear it. Liveness
- * guards against a crashed supervisor leaving it set, and a pending plan prompt
- * needs input rather than counting as working.
+ * guards against a crashed supervisor leaving it set, and a pending plan prompt or
+ * open question needs input rather than counting as working.
  */
 export function sessionWorking(s: SessionRow): boolean {
   return sessionLive(s) && !!s.supervisor_turn_started_at && !s.awaiting_input_at;
@@ -23,7 +23,7 @@ export function agentLive(a: AgentRow): boolean {
 
 /**
  * Whether a session needs the human's attention — either the supervisor is blocked
- * on a decision (a plan awaiting approval, etc.) or there's completed agent work the
+ * on a decision (a plan awaiting approval, a question it asked, etc.) or there's completed agent work the
  * human hasn't looked at yet. Both signals are ephemeral/re-armable: the awaiting
  * flag toggles per plan iteration, and unread work clears once the human views the
  * session (`stampSessionSeen`). `finished_at`/`last_seen_at` are ISO-UTC, so a plain

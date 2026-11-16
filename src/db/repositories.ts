@@ -345,6 +345,33 @@ export function setSessionAwaitingInput(id: string, reason: string): void {
     .run(now, reason, now, id);
 }
 
+/**
+ * Like `setSessionAwaitingInput`, but never overwrites a flag already set for a
+ * different reason. The "question" signal (AskUserQuestion / a turn ending in a
+ * question) uses this so it can't clobber a pending "plan" approval, whose
+ * lifecycle is owned by the plan-approval path.
+ */
+export function setSessionAwaitingInputIfFree(id: string, reason: string): void {
+  const now = nowIso();
+  getDb()
+    .prepare(
+      `UPDATE sessions SET awaiting_input_at = ?, awaiting_reason = ?, updated_at = ?
+       WHERE id = ? AND (awaiting_input_at IS NULL OR awaiting_reason = ?)`,
+    )
+    .run(now, reason, now, id, reason);
+}
+
+/** Clears the awaiting flag only when it was set for `reason`, so e.g. answering a
+ * question never dismisses a pending plan approval. */
+export function clearSessionAwaitingInputFor(id: string, reason: string): void {
+  getDb()
+    .prepare(
+      `UPDATE sessions SET awaiting_input_at = NULL, awaiting_reason = NULL, updated_at = ?
+       WHERE id = ? AND awaiting_reason = ?`,
+    )
+    .run(nowIso(), id, reason);
+}
+
 /** Clears the "waiting on a human" flag once the supervisor proceeds. */
 export function clearSessionAwaitingInput(id: string): void {
   getDb()

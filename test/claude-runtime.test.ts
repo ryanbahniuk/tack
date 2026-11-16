@@ -260,3 +260,45 @@ test("turn callbacks preserve permission hooks and wire prompt-submit, Stop and 
   expect(settingsOf().hooks.Stop).toBeUndefined();
   expect(settingsOf().hooks.Notification).toBeUndefined();
 });
+
+describe("ClaudeRuntime.interactiveCommand question hooks", () => {
+  const gates = {
+    approvalTools: [OPEN_PR],
+    planApprovalTool: PLAN_APPROVAL,
+    onPlanPresented: { command: "tack", args: ["__await-plan", "ses_x"] },
+    onUserPrompt: { command: "tack", args: ["__approve-prompt", "ses_x"] },
+    onTurnEnd: { command: "tack", args: ["__turn-end", "ses_x"] },
+  };
+  const question = {
+    onQuestionAsked: { command: "/path with spaces/tack", args: ["__await-input", "ses_x", "question"] },
+    onQuestionAnswered: { command: "/path with spaces/tack", args: ["__await-input", "ses_x", "question", "--clear"] },
+  };
+
+  test("adds silent AskUserQuestion Pre/PostToolUse hooks without clobbering others", () => {
+    const base = settingsOf(gates);
+    const settings = settingsOf({ ...gates, ...question });
+    const pre = settings.hooks.PreToolUse as HookEntry[];
+    const ask = pre.filter((e) => e.matcher === "AskUserQuestion");
+    expect(ask).toHaveLength(1);
+    expect(ask[0]!.hooks).toEqual([{
+      type: "command",
+      command: "'/path with spaces/tack' '__await-input' 'ses_x' 'question'",
+    }]);
+    // Every existing gate is intact, in order, and the auto-allow still excludes open_pr.
+    expect(pre.filter((e) => e.matcher !== "AskUserQuestion")).toEqual(base.hooks.PreToolUse);
+    expect(allowEntry(pre).matcher).not.toContain("AskUserQuestion");
+    expect(settings.hooks.PostToolUse).toEqual([{
+      matcher: "AskUserQuestion",
+      hooks: [{ type: "command", command: "'/path with spaces/tack' '__await-input' 'ses_x' 'question' '--clear'" }],
+    }]);
+    for (const key of ["UserPromptSubmit", "Stop", "Notification"])
+      expect(settings.hooks[key]).toEqual(base.hooks[key]);
+    expect(settings.permissions).toEqual(base.permissions);
+  });
+
+  test("omits the question hooks when not requested", () => {
+    const settings = settingsOf(gates);
+    expect((settings.hooks.PreToolUse as HookEntry[]).some((e) => e.matcher === "AskUserQuestion")).toBe(false);
+    expect(settings.hooks.PostToolUse).toBeUndefined();
+  });
+});
