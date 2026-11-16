@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { followAgent } from "../src/cli/follow";
 import { startRemoteReview } from "../src/session/review";
 import { setPrFix } from "../src/session/pr-fix";
 import { parseSupervisorCommand } from "../src/supervisor/command-prompt";
@@ -313,6 +314,12 @@ const doctor = defineCommand({
       }
     }
   },
+});
+
+const sessionFollow = defineCommand({
+  meta: { name: "follow", description: "Follow an agent's live transcript" },
+  args: { agentId: { type: "positional", description: "Agent id", required: true } },
+  async run({ args }) { await followAgent(args.agentId); },
 });
 
 // `default: "list"` makes bare `tack runtimes` run the list subcommand without
@@ -1460,7 +1467,7 @@ const session = defineCommand({
     alias: "sessions",
     description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
