@@ -93,6 +93,12 @@ export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__reque
 // Give humans time to review a plan without hitting the SDK's short default timeout.
 const PLAN_ELICITATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
+export function planApprovalMessage(summary: string): string {
+  const prompt = "Review the plan above — submit blank to approve, or say what to change.";
+  const goal = summary.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  return goal ? `${prompt}\n\n${goal}` : prompt;
+}
+
 /**
  * Only the human client's accepted elicitation can open an unapproved gate: the
  * response comes from the human, not the model. The form asks a single optional
@@ -124,7 +130,7 @@ export async function requestPlanApproval(
   try {
     if (!client.getClientCapabilities()?.elicitation) return nonApproval(unavailable, false);
     const result = await client.elicitInput({
-      message: `Review the plan above — submit blank to approve, or say what to change.\n\n${summary}`,
+      message: planApprovalMessage(summary),
       requestedSchema: {
         type: "object",
         properties: {

@@ -347,9 +347,9 @@ Adapter specifics, hidden behind the interface:
   without clobbering existing or corrupt files), and wires a PreToolUse hook
   on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
   — marking the session as awaiting input. The supervisor writes the summary in chat
-  before calling the tool; because the elicitation UI truncates long messages, the
-  dialog leads with a one-line prompt to review the plan above. The auto-allowed tool
-  handler presents an MCP elicitation form containing the summary and one optional
+  before calling the tool; the dialog shows a prompt line and only the summary's
+  first line (the goal), with the full plan in chat. The auto-allowed tool
+  handler presents an MCP elicitation form with one optional
   "What would you change?" field. Submitting it blank approves and opens the `spawn_agent` gate;
   non-empty feedback returns keep-planning with that feedback for revision and
   another approval request, while cancellation asks the supervisor to clarify
@@ -439,8 +439,8 @@ stdout/stderr to the log, and yields parsed JSON lines.
    it refuses until the session's `plan_approved_at` is set. An attended claude
    session flips that gate when the human accepts the plan: the supervisor writes a
    short summary in chat before calling `request_plan_approval` with it. Because the
-   elicitation UI truncates long messages, the dialog leads with a one-line prompt to
-   review the plan above. A hook marks it awaiting input,
+   dialog shows a prompt line and only the summary's first line (the goal); the full
+   plan is in chat. A hook marks it awaiting input,
    and the handler elicits "What would you change?" — a blank submission approves,
    feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,

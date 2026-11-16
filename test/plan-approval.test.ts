@@ -1,7 +1,7 @@
 import { afterEach, expect, test, mock } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { approveSessionPlan, createSession, deleteSession, getSession, setSessionAwaitingInput } from "../src/db";
-import { requestPlanApproval } from "../src/mcp/supervisor-server";
+import { planApprovalMessage, requestPlanApproval } from "../src/mcp/supervisor-server";
 import { awaitPlanHookArgs } from "../src/supervisor/supervise";
 
 const sessions: string[] = [];
@@ -21,6 +21,15 @@ function client(result: unknown, capable = true) {
     getClientCapabilities: () => capable ? { elicitation: {} } : {},
   } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
 }
+
+test("plan approval message shows only the goal", () => {
+  const prompt = "Review the plan above — submit blank to approve, or say what to change.";
+  const message = planApprovalMessage("Goal sentence\n- tack: do X\n- penny: do Y");
+  expect(message).toBe(`${prompt}\n\nGoal sentence`);
+  expect(message.split("\n").length).toBeLessThanOrEqual(3);
+  expect(planApprovalMessage("\n  \n  Goal sentence  \n- tack: do X")).toBe(`${prompt}\n\nGoal sentence`);
+  expect(planApprovalMessage(" \n\t\n ")).toBe(prompt);
+});
 
 test("accepted approval presents the form and approves", async () => {
   const id = fixture();
