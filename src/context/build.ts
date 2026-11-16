@@ -95,6 +95,13 @@ export function buildAgentContext(parts: AgentContextParts): string {
     ].join("\n"),
   );
 
+  const commitGuidance = [
+    "Follow the repo's commit conventions (CLAUDE.md / AGENTS.md and recent `git log`) if any.",
+    "Otherwise use an imperative, specific subject (at most 72 characters) describing the",
+    "change, with an optional body explaining why. Never mention agent IDs, Tack, the",
+    "supervisor, or WIP/finalize in commit messages.",
+  ];
+
   sections.push(
     review
       ? "## Finishing up\n\nDo not commit, push, or open a PR. Call `report_review` exactly once before finishing."
@@ -108,6 +115,7 @@ export function buildAgentContext(parts: AgentContextParts): string {
           "item. Do NOT push and do NOT call `gh` or the GitHub API — Tack pushes your",
           "commits to the PR (non-force) and posts your replies. Leave the working tree",
           "clean; anything uncommitted risks being left out.",
+          ...commitGuidance,
         ].join("\n")
       : [
           "## Finishing up",
@@ -117,6 +125,7 @@ export function buildAgentContext(parts: AgentContextParts): string {
           "NOT push — the supervisor reviews every agent's work and opens the PRs itself.",
           "Anything you leave uncommitted risks being left out, so make sure your working",
           "tree is clean before you finish.",
+          ...commitGuidance,
         ].join("\n"),
   );
 

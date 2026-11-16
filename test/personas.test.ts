@@ -194,9 +194,9 @@ test("open_pr does not require persona reviews", async () => {
   mocks.push(spyOn(watch, "spawnPrWatcher").mockReturnValue(null));
   mocks.push(spyOn(configLoad, "loadConfig").mockResolvedValue(c));
   const call = await toolsFor(() => runSupervisorServer(session.id));
-  const args = { agentId: author.id, title: "Change", body: "Details" };
+  const args = { agentId: author.id, title: "  Change\nbehavior  ", body: "Details" };
   await call("open_pr", args);
-  expect(commit).toHaveBeenCalled();
+  expect(commit).toHaveBeenCalledWith("/tmp", "Change behavior");
   expect(open.mock.calls.at(-1)![0].body).toBe("Details");
 });
 
