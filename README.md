@@ -1,23 +1,14 @@
 # Tack
 
-Tack is a supervisor for coding agents. You describe a problem, and a persistent
-planning agent (the **supervisor**) investigates your repos, proposes a plan, and,
-once you approve it, delegates units of work to **agents**. Agents are Claude Code
-(`claude`) or Codex (`codex`) runs, each in its own isolated git worktree, and
-each unit of work becomes one reviewable PR. Tack shares a contract between agents,
-tracks cost, watches the PRs it opens and gives you one live dashboard.
+Tack is a coding agent multiplexer. It allows you to easily manage multiple processes across different coding agents. You describe a problem, and a persistent planning agent (the **supervisor**) investigates your repos, proposes a plan, and, once you approve it, delegates units of work to **agents**. Agents are run via one of many runtimes (e.g. Claude Code, Codex, etc) and Tack shares all context of your problem between them.
 
-> *"Migrate every service off the deprecated auth client and open a PR per repo."*
+Through its integrations with GitHub and JIRA, Tack will track your work end to end. It will even auto-fix your GitHub PRs once CI or code review results come in. Tack reimplements none of the agent loop. It shells out to each runtimes and inherits whatever they ship. See [SPEC.md](./SPEC.md) for the architecture and [AGENTS.md](./AGENTS.md) for the contributor guide.
 
-Tack reimplements none of the agent loop. It shells out to the runtimes' headless
-CLIs and inherits whatever they ship. See [SPEC.md](./SPEC.md) for the architecture
-and [AGENTS.md](./AGENTS.md) for the contributor guide.
+Tack is built on top of tmux and vim to give a terminal native environment.
 
 ---
 
 ## Quickstart
-
-Copy and paste from top to bottom. It ends with your first session.
 
 ### 1. Prerequisites
 
@@ -48,9 +39,7 @@ cd ~ && tack init
 ```
 
 This writes a starter config to `~/.tack/config.ts` (set `TACK_HOME` to use another
-state root). Running `tack init` inside a git repo also registers that repo as a
-project, so run it from `~` here (step 2 leaves you inside the tack clone); you add
-projects in step 6.
+state root).
 
 ### 4. Install the runtimes
 
@@ -58,11 +47,7 @@ projects in step 6.
 tack runtimes install
 ```
 
-This installs the latest Claude Code and Codex CLIs with bun and syncs Tack's
-models with them. It needs the config from step 3 (`tack init`).
-
-> **No Codex?** Run `tack runtimes install claude`, then `tack roles set agent opus-5`
-> so agents run on Claude.
+This installs the latest Claude Code and Codex CLIs and syncs Tack's models with them. It needs the config from step 3 (`tack init`).
 
 ### 5. Log in
 
@@ -83,8 +68,7 @@ tack projects add ~/Code/my-app   # add a repo by path
 tack projects add --all           # or every git repo in the current directory
 ```
 
-Re-running `tack init` inside a repo also registers it. The summary model writes
-each project's description for you.
+Re-running `tack init` inside a repo also registers it. The summary model writes each project's description for you.
 
 ### 7. Check your setup
 
@@ -93,9 +77,6 @@ tack runtimes doctor   # binaries, version pins, auth and role models in one che
 ```
 
 ### 8. Your first session
-
-Skim [Before your first session](#before-your-first-session) first: sessions spend
-real money and open PRs.
 
 Open the dashboard, then press `c` to create a new session:
 
@@ -107,36 +88,19 @@ Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does t
 
 **What to expect:**
 
-1. Pressing `c` puts you in the supervisor's own interactive chat (Claude Code or
-   Codex). Describe the problem. (With the CLI, you can pass it up front with `-m`.)
-2. The supervisor reads Tack-owned snapshots of the relevant repos and proposes a
-   plan. An **approval prompt** appears. If it doesn't, type `/approve` in the chat
-   or run `tack session approve <session>`.
-3. Agents spawn in their own worktrees. Detach with `prefix d` (with tmux) or exit
-   the chat to get back to the dashboard. Agents show up in its Session → Agent → PR
-   tree with cost and liveness. Press `enter` or `o` on a session to rejoin its
-   supervisor.
-4. When the work is done, the supervisor commits, pushes and opens **draft PRs**,
-   one per unit of work, and PR watch takes over from there.
+1. Pressing `c` puts you in the supervisor's own interactive chat (Claude Code or Codex). Describe the problem you are trying to solve.
+2. The supervisor reads Tack-owned snapshots of the relevant repos and proposes a plan. An **approval prompt** appears. If it doesn't, type `/approve` in the chat or run `tack session approve <session>`.
+3. Agents spawn in their own worktrees. Detach with `prefix d` or exit the chat to get back to the dashboard. Agents show up in its Session → Agent → PR tree with cost and liveness. Press `enter` or `o` on a session to rejoin its supervisor.
+4. When the work is done, the supervisor commits, pushes and opens **draft PRs**, one per unit of work, and a PR watch process takes over from there.
 
 ---
 
 ## Before your first session
 
-- **This spends real money.** Every supervisor and agent run is billed to your
-  runtime logins. You can see per-session cost in `tack dashboard` and
-  `tack session list`.
-- **Your own checkouts are never touched.** The supervisor investigates Tack-owned
-  snapshot worktrees of each project's latest default branch, and each agent works
-  in its own worktree on a `tack/<session>/<agent>` branch. Tack also never writes
-  to a repo's `CLAUDE.md` or `AGENTS.md`.
-- **PRs open without asking, by default.** With `autoOpenPrs: true`, the supervisor
-  commits, pushes and opens draft PRs on its own. Set `autoOpenPrs: false` and it
-  asks first, then confirms each PR before opening it.
-- **PR watch acts on its own.** For every open PR it fixes review comments (bots
-  included), failing CI and merge conflicts, pushes (never force) and replies on
-  GitHub. Once a draft is addressed and green, it marks the PR ready. To turn this
-  off, use these settings:
+- **This spends real money.** Every supervisor and agent run is billed to your runtime logins. You can see per-session cost in `tack dashboard` and `tack session list`.
+- **Your own checkouts are never touched.** The supervisor investigates Tack-owned snapshot worktrees of each project's latest default branch, and each agent works in its own worktree.
+- **PRs open without asking, by default.** With `autoOpenPrs: true`, the supervisor commits, pushes and opens draft PRs on its own. Set `autoOpenPrs: false` and it asks first, then confirms each PR before opening it.
+- **PR watch acts on its own.** For every open PR it fixes review comments (bots included), failing CI and merge conflicts, pushes and replies on GitHub. Once a draft is addressed and green, it marks the PR ready to review. To turn this off, use these settings:
   - `prWatch.enabled: false`: no watcher at all.
   - `prWatch.fixCi: false`, `prWatch.reply: false`, `prWatch.autoPush: false` or
     `prWatch.autoReady: false`: turn off individual behaviours.
@@ -146,10 +110,7 @@ Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does t
 
 ## Recommended Chime setup
 
-The supervisor runs with `--strict-mcp-config`, so it **does not inherit your
-global Claude plugins or MCP servers**. To let it read Jira and Confluence (for
-example, to open a ticket named in your problem), mount the Atlassian MCP server
-in `~/.tack/config.ts`. This needs `uvx` (`brew install uv`).
+The supervisor runs with `--strict-mcp-config`, so it **does not inherit your global Claude plugins or MCP servers**. To let it read Jira and Confluence (for example, to open a ticket named in your problem), mount the Atlassian MCP server in `~/.tack/config.ts`. This needs `uvx` (`brew install uv`).
 
 ```ts
 supervisorMcpServers: [
@@ -165,19 +126,9 @@ supervisorMcpServers: [
 jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 ```
 
-- **Auth:** Tack passes no tokens. The server inherits your environment and reuses
-  the OAuth cache that the `chime-atlassian` plugin keeps at
-  `~/.cache/chime-atlassian-mcp/`. Seed that cache once from an interactive client
-  (the plugin, or an interactive Tack supervisor, which can answer the OAuth prompt).
-  After that, headless runs reuse it. Never put tokens in `config.ts`.
-- **Permissions:** a mounted server's tools are auto-allowed under the supervisor's
-  read-only posture, including any write tools the server exposes. Only mount
-  servers you're comfortable with it calling.
-- **Tickets:** with `jira` set, the supervisor links the tickets a session works
-  on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now,
-  `J` opens a session's tickets, `t` lists every session's tickets, archived included) and
-  `tack session show` lists them. `cloudId` is optional and falls back to the
-  server's `CONFLUENCE_CLOUD_ID`.
+- **Auth:** Tack passes no tokens. The server inherits your environment and reuses the OAuth cache that the `chime-atlassian` plugin keeps at `~/.cache/chime-atlassian-mcp/`. Seed that cache once from an interactive client (the plugin, or an interactive Tack supervisor, which can answer the OAuth prompt). After that, headless runs reuse it. Never put tokens in `config.ts`.
+- **Permissions:** a mounted server's tools are auto-allowed under the supervisor's read-only posture, including any write tools the server exposes. Only mount servers you're comfortable with it calling.
+- **Tickets:** with `jira` set, the supervisor links the tickets a session works on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now, `J` opens a session's tickets, `t` lists every session's tickets, archived included) and `tack session show` lists them. `cloudId` is optional and falls back to the server's `CONFLUENCE_CLOUD_ID`.
 
 ---
 
@@ -191,9 +142,7 @@ The dashboard is the primary way to drive Tack.
 tack dashboard
 ```
 
-The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR
-and ticket status. On terminals at least 140 columns wide it opens in split view,
-with work on the left and **Insights** on the right.
+The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR and ticket status. On terminals at least 140 columns wide it opens in split view, with work on the left and **Insights** on the right.
 
 | Key | Action |
 | --- | --- |
@@ -220,34 +169,19 @@ with work on the left and **Insights** on the right.
 | `[` / `]` | Insights range: 7d · 30d (default) · 90d · 1y · all |
 | `q` | Quit |
 
-Working supervisors show a spinner and elapsed turn time, a pending plan shows
-`◆ needs input`, and sessions running older Tack code are marked `stale`.
+Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale`.
 
 <details>
 <summary>Insights details</summary>
 
-Insights covers archived sessions regardless of the `z` filter. It shows sessions,
-agents, PRs opened and merged, tickets linked and done, tokens and cost, each with
-the change against the previous equal-length period. It also shows top repos, a
-contribution heatmap and a Models table (sessions, agents including PR-fix agents,
-tokens and cost per model; missing models appear as "unknown"). Full-screen
-Insights adds a per-repo table sorted by agent count.
+Insights covers archived sessions regardless of the `z` filter. It shows sessions, agents, PRs opened and merged, tickets linked and done, tokens and cost, each with the change against the previous equal-length period. It also shows top repos, a contribution heatmap and a Models table (sessions, agents including PR-fix agents, tokens and cost per model; missing models appear as "unknown"). Full-screen Insights adds a per-repo table sorted by agent count.
 
-- Buckets (daily, weekly or monthly) adapt to the range and terminal width, and
-  dates use local time.
-- "PR opened" means the PR was first linked to a session. "Ticket done" is
-  approximated by its last status refresh.
+- Buckets (daily, weekly or monthly) adapt to the range and terminal width, and dates use local time.
+- "PR opened" means the PR was first linked to a session. "Ticket done" is approximated by its last status refresh.
 - Costs include supervisor and agent spend; repo costs include agents only.
-- Tokens include input, output, cache reads and cache writes, and follow each row's
-  creation date. Historical supervisor tokens stay zero. New headless usage
-  overwrites with the runtime's latest-run figure; interactive transcript recovery
-  replaces both with cumulative figures. Tokens and cost don't count toward the
-  heatmap.
-- Charts use block heights (`▁▂▃▄▅▆▇█`, `·` for zero) with shared scales for paired
-  series. Heatmap shades (`░▒▓█`) have their own legend, and blank cells fall
-  outside the range. KPIs show signed changes without relying on colour.
-- Charts refresh every five seconds when their data changes. An idle dashboard
-  doesn't repaint.
+- Tokens include input, output, cache reads and cache writes, and follow each row's creation date. Historical supervisor tokens stay zero. New headless usage overwrites with the runtime's latest-run figure; interactive transcript recovery replaces both with cumulative figures. Tokens and cost don't count toward the heatmap.
+- Charts use block heights (`▁▂▃▄▅▆▇█`, `·` for zero) with shared scales for paired series. Heatmap shades (`░▒▓█`) have their own legend, and blank cells fall outside the range. KPIs show signed changes without relying on colour.
+- Charts refresh every five seconds when their data changes. An idle dashboard doesn't repaint.
 
 </details>
 
