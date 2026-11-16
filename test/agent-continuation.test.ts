@@ -204,7 +204,7 @@ test("v13 upgrades existing agents and applies idempotently; reuse config defaul
   const db = new Database(":memory:");
   try {
     migrate(db);
-    db.exec("ALTER TABLE agents DROP COLUMN continues_agent_id; ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at; ALTER TABLE agents DROP COLUMN diff_base; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; ALTER TABLE sessions DROP COLUMN pr_fix_enabled; DELETE FROM _migrations WHERE version >= 13;");
+    db.exec("ALTER TABLE agents DROP COLUMN continues_agent_id; ALTER TABLE agents DROP COLUMN continuation_prompt_ref; ALTER TABLE agents DROP COLUMN continuation_started_at; ALTER TABLE agents DROP COLUMN diff_base; ALTER TABLE sessions DROP COLUMN supervisor_config_version; ALTER TABLE sessions DROP COLUMN pr_watch_config_version; ALTER TABLE agents DROP COLUMN persona; ALTER TABLE agents DROP COLUMN reviews_agent_id; ALTER TABLE agents DROP COLUMN review_ref; ALTER TABLE session_prs DROP COLUMN ready_promoted_at; ALTER TABLE sessions DROP COLUMN pr_fix_enabled; ALTER TABLE sessions DROP COLUMN summary_ref; ALTER TABLE sessions DROP COLUMN summary_at; ALTER TABLE session_prs DROP COLUMN body_ref; DELETE FROM _migrations WHERE version >= 13;");
     migrate(db); migrate(db);
     expect((db.query("PRAGMA table_info(agents)").all() as { name: string }[]).map(c => c.name))
       .toContain("continues_agent_id");

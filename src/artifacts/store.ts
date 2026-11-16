@@ -88,6 +88,16 @@ export function writePrFeedbackArtifact(
   return write(join(ARTIFACTS_DIR, sessionId, "pr-feedback", sessionPrId, `${safe}.${kind}.md`), body);
 }
 
+/** Writes the session's composed summary (see `src/session/summary.ts`) and returns its ref path. */
+export function writeSessionSummary(sessionId: string, body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, "summary.md"), body);
+}
+
+/** Writes the description body a session PR was opened with and returns its ref path. */
+export function writeSessionPrBody(sessionId: string, sessionPrId: string, body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, "prs", `${sessionPrId}.body.md`), body);
+}
+
 /**
  * Materializes a session-scoped context file to be handed to a runtime BY PATH
  * (`--append-system-prompt-file` / codex base-instructions). Kept separate from

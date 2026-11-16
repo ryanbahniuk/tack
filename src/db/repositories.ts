@@ -55,6 +55,10 @@ export interface SessionRow {
   supervisor_code_version: string | null;
   pr_watch_code_version: string | null;
   supervisor_turn_started_at: string | null;
+  /** The composed session-summary markdown (see `src/session/summary.ts`); null = none written yet. */
+  summary_ref: string | null;
+  /** When `summary_ref` was last (re)written. */
+  summary_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -167,6 +171,8 @@ export interface SessionPrRow {
   head_sha: string | null;
   /** When the PR watcher last polled this PR successfully. */
   checked_at: string | null;
+  /** The PR description passed to `open_pr`; null for PRs opened before it was kept. */
+  body_ref: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -240,6 +246,26 @@ export function listSessions(includeArchived = false): SessionRow[] {
     ? `SELECT * FROM sessions ORDER BY created_at DESC`
     : `SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC`;
   return getDb().prepare(sql).all() as SessionRow[];
+}
+
+/** Records the session's freshly (re)written summary artifact and stamps `summary_at`. */
+export function setSessionSummary(id: string, ref: string): void {
+  getDb().prepare(`UPDATE sessions SET summary_ref = ?, summary_at = ? WHERE id = ?`).run(ref, nowIso(), id);
+}
+
+/**
+ * Every session other than `excludeId` (archived included) that has at least one
+ * PR, most recent first — the candidate set for `search_past_sessions`. Sessions
+ * without a PR never produced reviewable work, so they're not worth learning from.
+ */
+export function listSessionsWithPrs(excludeId?: string | null): SessionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM sessions s
+        WHERE s.id != ? AND EXISTS (SELECT 1 FROM session_prs p WHERE p.session_id = s.id)
+        ORDER BY s.created_at DESC, s.id DESC`,
+    )
+    .all(excludeId ?? "") as SessionRow[];
 }
 
 export function setSessionPrFixEnabled(id: string, enabled: boolean): void {
@@ -747,6 +773,11 @@ export function setSessionPrStatus(
       now,
       id,
     );
+}
+
+/** Records where the PR's description body (as passed to `open_pr`) lives on disk. */
+export function setSessionPrBodyRef(id: string, ref: string): void {
+  getDb().prepare(`UPDATE session_prs SET body_ref = ? WHERE id = ?`).run(ref, id);
 }
 
 /** Latches the first successful automatic promotion, preserving it across polls. */
