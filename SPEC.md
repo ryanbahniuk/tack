@@ -346,9 +346,11 @@ Adapter specifics, hidden behind the interface:
   merged and deduped into the Tack-owned cwd's `.claude/settings.local.json`
   without clobbering existing or corrupt files), and wires a PreToolUse hook
   on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
-  — marking the session as awaiting input and returning an `ask` decision so the
-  human sees a single "Proceed with implementation?" prompt. The tool's handler,
-  which opens the session's `spawn_agent` gate, only runs if they accept (see §9).
+  — marking the session as awaiting input. The auto-allowed tool handler presents an
+  MCP elicitation form containing the summary, Approve and Keep planning choices,
+  and optional feedback. Approval opens the `spawn_agent` gate; keep planning returns
+  feedback for revision and another approval request, while cancellation asks the
+  supervisor to clarify changes in chat. Both leave the plan unapproved.
   If the prompt never appears, the human can type `/approve` in the session or run
   `tack session approve <session>` themselves, then return to the session. Tack
   refreshes `.claude/commands/approve.md` on every attended Claude launch (including
@@ -357,9 +359,8 @@ Adapter specifics, hidden behind the interface:
   Both escape hatches preserve the first approval timestamp and clear the
   awaiting-input flag; neither adds a supervisor-callable approval path. A plain
   chat "yes" is never approval.
-  Both the plan-approval tool and, with `autoOpenPrs: false`, `open_pr` are
-  excluded from the allow hook and backed by `permissions.ask` rules, which
-  outrank server-wide allow rules. Their ask hooks supply the prompt wording.
+  With `autoOpenPrs: false`, `open_pr` is excluded from the allow hook and backed
+  by a `permissions.ask` rule; its ask hook supplies the prompt wording.
   Attended runs create `<TACK_HOME>/supervisor/<sessionId>/artifacts` for
   human-requested publishable page sources only (never plans, notes, contracts or
   code). `writableDirs` and a caller-built `writeGuard` command let Claude replace
@@ -432,9 +433,9 @@ stdout/stderr to the log, and yields parsed JSON lines.
    gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
    it refuses until the session's `plan_approved_at` is set. An attended claude
    session flips that gate when the human accepts the plan: the supervisor calls
-   `request_plan_approval` with a short summary, a PreToolUse `ask` hook prompts
-   "Proceed with implementation?", and the tool's handler (which only runs on
-   acceptance) approves the plan; background runs (no human) and codex interactive sessions
+   `request_plan_approval` with a short summary. A hook marks it awaiting input,
+   and the handler elicits approval or a request to keep planning with feedback;
+   cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
    a **detached** `tack __run-agent <agentId>` runner.

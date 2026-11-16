@@ -32,7 +32,6 @@ import {
   SUPERVISOR_APPROVAL_PROMPT,
   SUPERVISOR_APPROVAL_TOOLS,
   SUPERVISOR_MCP_NAME,
-  SUPERVISOR_PLAN_APPROVAL_PROMPT,
   SUPERVISOR_PLAN_APPROVAL_TOOL,
 } from "../mcp/supervisor-server";
 import { supervisorPromptPath } from "./prompt";
@@ -193,6 +192,11 @@ async function* runSupervisor(opts: {
   return getSession(session.id)!;
 }
 
+/** Arguments for the silent hook that marks a presented plan as awaiting input. */
+export function awaitPlanHookArgs(sessionId: string): string[] {
+  return ["__await-plan", sessionId];
+}
+
 /**
  * Runs the supervisor as an attended, interactive session: launches the pinned
  * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
@@ -237,18 +241,12 @@ export async function superviseInteractive(opts: {
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
 
-  // The plan-approval gate on `spawn_agent` is flipped by the `request_plan_approval`
-  // tool, whose call claude gates behind a PreToolUse `ask` hook — so its handler
-  // only runs once the human accepts. Codex has no such hook — instead it keeps
-  // approvals interactive (a human okays each tool call natively), so gating there
-  // would just deadlock. So: claude wires the hook and starts gated; other runtimes
-  // open the gate up front (the tool then just reports approved) and rely on their
-  // own in-loop approvals.
+  // Attended Claude sessions start gated and obtain human approval through
+  // elicitation. Other runtimes start approved and use their own interaction.
   const usesPlanHook = model.runtime === "claude";
-  // The await-plan hook both records the awaiting-input state AND emits the plan's
-  // "Proceed with implementation?" prompt (its wording passed here).
+  // Mark the session awaiting input before the handler presents its form.
   const awaitHook = usesPlanHook
-    ? selfCommand(["__await-plan", session.id, SUPERVISOR_PLAN_APPROVAL_PROMPT])
+    ? selfCommand(awaitPlanHookArgs(session.id))
     : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
 

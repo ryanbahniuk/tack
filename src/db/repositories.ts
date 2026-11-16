@@ -285,9 +285,9 @@ export function setSessionUsage(
 /**
  * Marks a session's plan as approved (idempotent — the first approval time wins),
  * opening the `spawn_agent` gate. Called by the `request_plan_approval` tool's
- * handler (which only runs once the human accepts the plan prompt), the human-run
+ * handler after the human accepts the elicitation, the human-run
  * `tack session approve` escape hatch, and up front
- * for background and codex sessions (which have no such hook). */
+ * for background and codex sessions. */
 export function approveSessionPlan(id: string): void {
   // Approval always means the human resolved the plan decision, so clear the
   // ephemeral awaiting flag in the same write (the plan gate itself stays latched).

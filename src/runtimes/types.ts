@@ -88,11 +88,8 @@ export interface RunOptions {
    * A command to run when the supervisor presents a plan for approval. The claude
    * adapter wires it as a PreToolUse hook on `planApprovalTool` (both must be set),
    * so it fires when the plan is put in front of the human, before they decide.
-   * Tack uses it to mark the session as awaiting input AND to return an `ask`
-   * permission decision with our own wording, so the human sees a single
-   * "Proceed with implementation?" prompt. The tool's handler — which flips the
-   * session's plan-approval gate that `spawn_agent` checks — only runs if they
-   * accept. Only the attended read-only supervisor sets this.
+   * Tack uses it to mark the session as awaiting input; the tool handler elicits
+   * the human decision and clears the marker. Only the attended supervisor sets it.
    */
   onPlanPresented?: { command: string; args: string[] };
   /**
