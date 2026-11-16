@@ -39,7 +39,7 @@ src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (
 src/agent/               execute.ts (prepare/run + activity/error), continue.ts (pre-PR continuation), detached.ts (background runner, dependency self-gate + retry)
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection), write-guard.ts (publishable-page write scope)
 src/context/build.ts     per-agent context file
-src/worktree/            session-scoped worktrees, supervisor snapshots (syncSnapshot) + PR branch nomenclature
+src/worktree/            session-scoped worktrees, background base cache, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply, promote drafts), prompt.ts
 src/session/lifecycle.ts stop / archive / delete
@@ -93,8 +93,8 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   fills codex pricing from models.dev). A runtime opts into live discovery by
   implementing `Runtime.listModels`. The same listing gates spawns:
   `checkModelOffered` (`src/runtimes/availability.ts`, cached per runtime per
-  process) refuses `spawn_agent`, fails `runAgent` early, and makes `tack runtimes
-  doctor` warn when a model isn't offered. An unknown listing never blocks.
+  process) refuses `spawn_agent`, and makes `tack runtimes
+  doctor` warn when a model isn't offered. Long-lived launchers hand their runtime/model preflight to detached runners; missing or mismatched handoffs fall back to the runner check. An unknown listing never blocks.
 - **Add a runtime (e.g. Bedrock):** add the kind to `RuntimeKind`
   (`src/config/schema.ts`), implement `Runtime` in `src/runtimes/`, wire it in
   `selectRuntime` (`src/runtimes/index.ts`), handle its `bin`/version in

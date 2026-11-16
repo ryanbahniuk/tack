@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { decodePreflight } from "../src/agent/preflight";
 import { followAgent } from "../src/cli/follow";
 import { startRemoteReview } from "../src/session/review";
 import { setPrFix } from "../src/session/pr-fix";
@@ -1567,7 +1568,7 @@ if (hidden === "__mcp") {
 } else if (hidden === "__run-agent") {
   const [, , , agentId] = process.argv;
   const config = await loadConfig();
-  await runAgentToCompletion(agentId!, config, { resume: process.argv[4] === "--resume" });
+  await runAgentToCompletion(agentId!, config, { resume: process.argv[4] === "--resume", preflight: decodePreflight(process.env.TACK_RUNNER_PREFLIGHT) });
 } else if (hidden === "__run-supervisor") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();

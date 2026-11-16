@@ -23,6 +23,7 @@ export const LOGS_DIR = join(TACK_HOME, "logs");
 export const CONTEXT_DIR = join(TACK_HOME, "context");
 /** Large agent artifacts (prompts, outputs, diffs) referenced from the DB. */
 export const ARTIFACTS_DIR = join(TACK_HOME, "artifacts");
+export const BASE_CACHE_DIR = join(TACK_HOME, "cache", "base");
 /** Git worktrees, scoped per session then per project. */
 export const WORKTREES_DIR = join(TACK_HOME, "worktrees");
 /** Detached, read-only snapshot worktrees the supervisor investigates, scoped per

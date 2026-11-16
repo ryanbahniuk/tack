@@ -1,3 +1,5 @@
+import { computePreflight } from "../agent/preflight";
+import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { commitSubject } from "../worktree/commit-message";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -168,6 +170,7 @@ export async function requestPlanApproval(
  */
 export async function runSupervisorServer(sessionId: string): Promise<void> {
   const config = await loadConfig();
+  const stopBaseCache = startBaseCacheRefresher(config);
   const server = new McpServer({ name: "tack-supervisor", version: "1.0.0" });
 
   const requireSession = () => {
@@ -352,6 +355,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const offered = checkModelOffered(config, m, { role: model ? undefined : "agent" });
       if (offered.ok === false) throw new Error(`Refusing to spawn: ${offered.message}`);
 
+      const preflight = computePreflight(config, m, model ? undefined : "agent");
       const siblings = listAgents(session.id);
       // Validate declared dependencies point at real agents in this session.
       const unknownDeps = (dependsOn ?? []).filter((id) => !siblings.some((s) => s.id === id));
@@ -374,7 +378,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         : [];
 
       const agent = prepareAgent({ session, project: proj, model: m, prompt, touches, dependsOn });
-      spawnAgentRunner(session.id, agent.id);
+      spawnAgentRunner(session.id, agent.id, { preflight });
       return text({
         agentId: agent.id,
         project,
@@ -411,7 +415,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
     async ({ agentId, prompt, model }) => {
       const agent = prepareContinuation(sessionId, agentId, prompt, config, model);
-      spawnAgentRunner(sessionId, agent.id);
+      let preflight;
+      try { preflight = computePreflight(config, resolveModel(config, agent.model!)); } catch { /* runner reports the failure */ }
+      spawnAgentRunner(sessionId, agent.id, { preflight });
       return text({ agentId: agent.id, model: agent.model, runtime: agent.runtime });
     },
   );
@@ -927,7 +933,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
   );
 
-  await server.connect(new StdioServerTransport());
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  const previousClose = transport.onclose;
+  transport.onclose = () => { stopBaseCache(); previousClose?.(); };
 }
 
 function text(value: unknown) {
