@@ -74,6 +74,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     })),
     prWatch: parsed.prWatch,
     baseCache: parsed.baseCache,
+    dashboard: parsed.dashboard,
     agentReuse: parsed.agentReuse,
     autoOpenPrs: parsed.autoOpenPrs,
     draftPrs: parsed.draftPrs,

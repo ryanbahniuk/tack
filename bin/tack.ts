@@ -1481,6 +1481,7 @@ const sessionEdit = defineCommand({
     // value; with it set, this positional names the project instead of an agent.
     agent: { type: "positional", description: "Agent id (required when several worktrees exist); with --new, the project", required: false },
     new: { type: "boolean", description: "Create a clean manual workspace (its own worktree) for a project and edit it" },
+    pr: { type: "string", description: "Open a manual workspace tracking this session PR number (with --new)" },
     force: { type: "boolean", description: "Allow editing a pending or running agent's worktree" },
     "print-path": { type: "boolean", description: "Print just the worktree path without opening an editor" },
   },
@@ -1490,7 +1491,10 @@ const sessionEdit = defineCommand({
     let target: ReturnType<typeof resolveEditTarget>;
     if (args.new) {
       const config = await loadConfig();
-      const resolved = resolveManualProject(config.projects.map(p => p.name), listAgents(id), args.agent);
+      const matches = args.pr ? listSessionPrs(id).filter(p => p.number === Number(args.pr) && (p.state === "open" || p.state === "draft")) : [];
+      if (args.pr && (matches.length !== 1 || args.agent)) { console.error(pc.red("Specify one unambiguous open session PR number without a project.")); return process.exit(1); }
+      const pr = matches[0];
+      const resolved = resolveManualProject(config.projects.map(p => p.name), listAgents(id), pr?.project_name ?? args.agent);
       if (!resolved.ok) {
         console.error(pc.red(resolved.message));
         if (resolved.candidates.length) console.error(`Projects: ${resolved.candidates.join(", ")}`);
@@ -1498,7 +1502,7 @@ const sessionEdit = defineCommand({
       }
       let created;
       try {
-        created = createManualWorkspace(config, id, resolved.project);
+        created = createManualWorkspace(config, id, resolved.project, pr);
       } catch (err) {
         console.error(pc.red(`Could not create a manual workspace: ${(err as Error).message}`));
         return process.exit(1);
@@ -1507,6 +1511,7 @@ const sessionEdit = defineCommand({
       console.error(pc.dim(`Created manual workspace ${created.id} for ${resolved.project} on ${created.branch}`));
       target = { ok: true, agent: created, path: created.worktree_path! };
     } else {
+      if (args.pr) { console.error(pc.red("--pr requires --new")); return process.exit(1); }
       target = resolveEditTarget(listAgents(id), args.agent, existsSync, { force: args.force });
     }
     if (!target.ok) {

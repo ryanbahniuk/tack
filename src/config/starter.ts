@@ -99,6 +99,7 @@ export default ({
   // \`maxFixRunsPerDay\` caps automatic (watcher) fix runs per PR per rolling 24h;
   // supervisor fix_pr runs are exempt. All fields optional.
   // Continue eligible PR conversations in their existing worktree.
+  dashboard: { shellAfterEdit: true },
   agentReuse: { enabled: true, maxIdleHours: 24 },
 
   prWatch: {

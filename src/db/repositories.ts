@@ -475,14 +475,15 @@ export function createManualAgent(input: {
   worktreePath: string;
   branch: string;
   diffBase: string;
+  sessionPrId?: string;
 }): AgentRow {
   const now = nowIso();
   getDb()
     .prepare(
-      `INSERT INTO agents (id, session_id, project_name, status, kind, worktree_path, branch, diff_base, created_at, updated_at)
-       VALUES (?, ?, ?, 'done', 'manual', ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, session_id, project_name, status, kind, worktree_path, branch, diff_base, session_pr_id, created_at, updated_at)
+       VALUES (?, ?, ?, 'done', 'manual', ?, ?, ?, ?, ?, ?)`,
     )
-    .run(input.id, input.sessionId, input.projectName, input.worktreePath, input.branch, input.diffBase, now, now);
+    .run(input.id, input.sessionId, input.projectName, input.worktreePath, input.branch, input.diffBase, input.sessionPrId ?? null, now, now);
   return getAgent(input.id)!;
 }
 

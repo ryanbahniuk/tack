@@ -1,3 +1,4 @@
+import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { startRemoteReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
@@ -15,6 +16,7 @@ import {
   listPendingAmendmentsBySession,
   listSessionJiraTicketsBySession,
   listSessionPrs,
+  getAgent,
   listSessionPrsBySession,
   listSessions,
   type AgentRow,
@@ -187,7 +189,7 @@ type Launch =
   | { kind: "edit"; path: string; agentId: string }
   /** Create a manual workspace, then edit it exactly like `edit`. Created after Ink
    * tears down: the worktree fetch can take seconds and must not freeze the UI. */
-  | { kind: "manual"; sessionId: string; project: string }
+  | { kind: "manual"; sessionId: string; project: string; prId?: string }
   | { kind: "create" }
   | { kind: "config" }
   | { kind: "output"; ref: string; title: string }
@@ -447,7 +449,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   /** Persona chooser for the selected session. */
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
-  const [projectPick, setProjectPick] = useState<{ options: string[]; cursor: number } | null>(null);
+  const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [notice, setNotice] = useState(initialNotice);
@@ -754,9 +756,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           return setProjectPick({ ...projectPick, cursor: Math.min(projectPick.cursor + 1, projectPick.options.length - 1) });
         if (key.upArrow || input === "k") return setProjectPick({ ...projectPick, cursor: Math.max(projectPick.cursor - 1, 0) });
         if (key.return) {
-          const project = projectPick.options[projectPick.cursor]!;
+          const choice = projectPick.options[projectPick.cursor]!;
           setProjectPick(null);
-          onLaunch({ kind: "manual", sessionId: pickerView.session.id, project });
+          onLaunch({ kind: "manual", sessionId: pickerView.session.id, project: choice.project, prId: choice.prId });
           return exit();
         }
         return;
@@ -768,11 +770,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         if (!config) return setNotice("config is unavailable");
         const options = manualProjectCandidates(config.projects.map((p) => p.name), agents);
         if (options.length === 0) return setNotice("no projects configured");
-        if (options.length === 1) {
+        const prs = pickerView.prs.filter(pr => (pr.state === "open" || pr.state === "draft") && pr.head_branch && !!pr.project_name && options.includes(pr.project_name));
+        if (options.length === 1 && prs.length === 0) {
           onLaunch({ kind: "manual", sessionId: pickerView.session.id, project: options[0]! });
           return exit();
         }
-        return setProjectPick({ options, cursor: 0 });
+        return setProjectPick({ options: [...prs.map(pr => ({ label: `#${pr.number} ${pr.title} · ${pr.project_name}`, project: pr.project_name!, prId: pr.id })), ...options.map(project => ({ label: prs.length ? `fresh workspace · ${project}` : project, project }))], cursor: 0 });
       }
       if (key.downArrow || input === "j") return setAgentCursor((c) => Math.min(c + 1, Math.max(0, agents.length - 1)));
       if (key.upArrow || input === "k") return setAgentCursor((c) => Math.max(c - 1, 0));
@@ -1051,7 +1054,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
  * edit, and starts manual workspaces (`n`), choosing a project when several qualify. */
 function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
   view: View; cursor: number; notice: string; confirmText: string | null;
-  projectPick: { options: string[]; cursor: number } | null;
+  projectPick: { options: { label: string; project: string; prId?: string }[]; cursor: number } | null;
 }) {
   if (projectPick) {
     const own = new Set(view.agents.map((a) => a.project_name));
@@ -1061,10 +1064,10 @@ function AgentsPanel({ view, cursor, notice, confirmText, projectPick }: {
           New manual workspace in {view.session.id} <Text dimColor>choose a project</Text>
         </Text>
         {projectPick.options.map((p, i) => (
-          <Text key={p}>
+          <Text key={p.prId ?? p.project}>
             <Text color={i === projectPick.cursor ? "cyan" : undefined}>{i === projectPick.cursor ? "❯ " : "  "}</Text>
-            <Text bold>{p}</Text>
-            {own.has(p) ? <Text dimColor> (in this session)</Text> : null}
+            <Text bold>{p.label}</Text>
+            {own.has(p.project) && !p.prId ? <Text dimColor> (in this session)</Text> : null}
           </Text>
         ))}
         <Box marginTop={1}>
@@ -1395,7 +1398,7 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
 /** The dashboard's name for an agent row: "Agent", `manual` for a human workspace, or
  * `pr-fix #<n>` for a PR-watch fix agent so it's obvious which PR it's working on. */
 function agentLabel(a: AgentRow, prs: SessionPrRow[]): string {
-  if (a.kind === "manual") return "manual";
+  if (a.kind === "manual") { const pr = prs.find(p => p.id === a.session_pr_id); return pr ? `manual → #${pr.number}` : "manual"; }
   if (a.kind === "review") return `review:${a.persona ?? "?"}`;
   if (a.kind !== "pr_fix") return "Agent";
   const pr = prs.find((p) => p.id === a.session_pr_id);
@@ -1546,7 +1549,10 @@ export async function runDashboard(): Promise<void> {
       console.log(`Creating a manual workspace for ${launch.project}…`);
       try {
         if (!config) throw new Error("config is unavailable");
-        const created = createManualWorkspace(config, launch.sessionId, launch.project);
+        const prId = launch.prId;
+        const pr = prId ? listSessionPrs(launch.sessionId).find(p => p.id === prId) : undefined;
+        if (prId && !pr) throw new Error("The selected PR no longer exists");
+        const created = createManualWorkspace(config, launch.sessionId, launch.project, pr);
         launch = { kind: "edit", path: created.worktree_path!, agentId: created.id };
         pendingNotice = `manual workspace ${created.id} · ${collapseHome(created.worktree_path!)}`;
       } catch (err) {
@@ -1571,5 +1577,16 @@ export async function runDashboard(): Promise<void> {
       stderr: "inherit",
     });
     await proc.exited;
+    if (launch.kind === "edit") {
+      const agent = getAgent(launch.agentId);
+      if (agent) {
+        try { worktreeEditSummary(agent, listSessionPrs(agent.session_id), launch.path).forEach(line => console.log(line)); }
+        catch (err) { console.error(`Could not summarize the worktree: ${(err as Error).message}`); }
+      }
+      if (config?.dashboard.shellAfterEdit !== false) {
+        console.log(`Shell in ${collapseHome(launch.path)} — commit/push with git; exit to return to the dashboard`);
+        await Bun.spawn([process.env.SHELL || "/bin/sh"], { cwd: launch.path, stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited;
+      }
+    }
   }
 }

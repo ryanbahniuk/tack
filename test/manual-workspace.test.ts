@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { ConfigSchema, type Model, type TackConfig } from "../src/config/schema";
 import {
   approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getSession, listInterruptedAgents,
-  listSessionPrs, markAgentInterrupted, upsertSessionPr, type AgentRow,
+  listSessionPrs, listPrFixAgents, markAgentInterrupted, upsertSessionPr, type AgentRow,
 } from "../src/db";
 import {
   createManualWorkspace, manualProjectCandidates, manualWorkspaceDiff, resolveManualProject,
@@ -17,7 +17,7 @@ import { prepareContinuation } from "../src/agent/continue";
 import { runAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnAgentRunner } from "../src/agent/detached";
 import { sessionNeedsInput } from "../src/cli/liveness";
-import { prContinuationDecision } from "../src/prwatch/watch";
+import { prContinuationDecision, prLineageHead } from "../src/prwatch/watch";
 import { changedFiles, createWorktree } from "../src/worktree/worktree";
 import * as worktrees from "../src/worktree/worktree";
 import * as configLoad from "../src/config/load";
@@ -122,6 +122,55 @@ async function supervisorTools(sessionId: string, config: TackConfig) {
   };
   return { call, open };
 }
+
+describe("PR-linked manual workspaces", () => {
+  function fixture() {
+    const f = sessionFixture();
+    git(["push", "origin", "main:refs/heads/feature"], f.repo);
+    upsertSessionPr({ sessionId: f.session.id, projectName: "app", number: 123, url: "https://example.com/pull/123", state: "open", headBranch: "feature" });
+    return { ...f, pr: listSessionPrs(f.session.id)[0]! };
+  }
+  test("tracks and pushes to the PR branch, and reuses the workspace", () => {
+    const { repo, session, config, pr } = fixture();
+    const a = createManualWorkspace(config, session.id, "app", pr);
+    expect(createManualWorkspace(config, session.id, "app", pr).id).toBe(a.id);
+    expect(git(["branch", "--show-current"], a.worktree_path!)).toBe("feature");
+    expect(git(["rev-parse", "--abbrev-ref", "@{upstream}"], a.worktree_path!)).toBe("origin/feature");
+    writeFileSync(join(a.worktree_path!, "shared.txt"), "edit\n");
+    git(["commit", "-am", "edit"], a.worktree_path!);
+    git(["push"], a.worktree_path!);
+    expect(git(["rev-parse", "HEAD"], a.worktree_path!)).toBe(git(["rev-parse", "origin/feature"], repo));
+    const summary = worktreeEditSummary(a, [pr], a.worktree_path!).join("\n");
+    expect(summary).toContain("tracks PR #123");
+    expect(summary).toContain("Ahead 0, behind 0");
+    expect(summary).toContain("git push");
+    expect(summary).not.toContain("open a PR");
+    expect(listPrFixAgents(pr.id)).toEqual([]);
+    expect(prLineageHead(pr)).toBeNull();
+  });
+  test("recreates a stale branch with no unpushed commits", () => {
+    const { session, config, pr } = fixture();
+    const a = createManualWorkspace(config, session.id, "app", pr);
+    rmSync(a.worktree_path!, { recursive: true, force: true });
+    const replacement = createManualWorkspace(config, session.id, "app", pr);
+    expect(replacement.id).not.toBe(a.id);
+    expect(git(["rev-parse", "--abbrev-ref", "@{upstream}"], replacement.worktree_path!)).toBe("origin/feature");
+  });
+  test("refuses a stale branch with unpushed commits", () => {
+    const { session, config, pr } = fixture();
+    const a = createManualWorkspace(config, session.id, "app", pr);
+    writeFileSync(join(a.worktree_path!, "shared.txt"), "private\n");
+    git(["commit", "-am", "private"], a.worktree_path!);
+    rmSync(a.worktree_path!, { recursive: true, force: true });
+    expect(() => createManualWorkspace(config, session.id, "app", pr)).toThrow("unpushed commits");
+  });
+  test("open_pr refuses the linked row", async () => {
+    const { session, config, pr } = fixture();
+    const a = createManualWorkspace(config, session.id, "app", pr);
+    const { call } = await supervisorTools(session.id, config);
+    await expect(call("open_pr", { agentId: a.id, title: "x", body: "x" })).rejects.toThrow("linked to PR #123");
+  });
+});
 
 describe("supervisor tools on manual workspaces", () => {
   test("open_pr refuses a manual workspace with no changes", async () => {

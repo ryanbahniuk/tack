@@ -73,7 +73,7 @@ function assertRepoRoot(repo: string): void {
  * name under `refs/tack-base/` so the base survives the agent moving HEAD (commits,
  * rebases) and can be recovered on resume. */
 function baseRef(branch: string): string {
-  return `refs/tack-base/${branch.slice("tack/".length)}`;
+  return `refs/tack-base/${branch.startsWith("tack/") ? branch.slice("tack/".length) : `external/${branch}`}`;
 }
 
 /** Reads the recorded fork point for a branch, or null if it was never recorded. */
@@ -205,6 +205,28 @@ export function createPrWorktree(repo: string, sessionId: string, agentId: strin
   // a stray `git push`/`git pull` inside the worktree to act on the PR — the watcher
   // owns pushing.
   git(["worktree", "add", "--no-track", "-b", branch, path, base], repo);
+  git(["update-ref", baseRef(branch), base], repo);
+  return { repo, path, branch, base };
+}
+
+/** Check out a PR branch under its remote name so ordinary git push works. */
+export function createManualPrWorktree(repo: string, sessionId: string, agentId: string, branch: string): Worktree {
+  assertRepoRoot(repo);
+  git(["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo);
+  const remote = `refs/remotes/origin/${branch}`;
+  git(["worktree", "prune"], repo);
+  if (tryResolveCommit(repo, `refs/heads/${branch}`)) {
+    const checked = git(["worktree", "list", "--porcelain"], repo).split("\n").includes(`branch refs/heads/${branch}`);
+    if (checked) throw new Error(`Branch ${branch} is already checked out in another worktree`);
+    const ahead = git(["rev-list", "--count", `${remote}..refs/heads/${branch}`], repo);
+    if (Number(ahead) > 0) throw new Error(`Branch ${branch} has unpushed commits; recover them before creating a workspace`);
+    git(["branch", "-D", branch], repo);
+  }
+  const root = sessionWorktreesRoot(sessionId);
+  mkdirSync(root, { recursive: true });
+  const path = join(root, agentId);
+  const base = git(["rev-parse", remote], repo);
+  git(["worktree", "add", "--track", "-b", branch, path, remote], repo);
   git(["update-ref", baseRef(branch), base], repo);
   return { repo, path, branch, base };
 }
