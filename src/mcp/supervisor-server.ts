@@ -91,11 +91,13 @@ export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__reque
 const PLAN_ELICITATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Only an accepted elicitation with decision=approve can open an unapproved gate:
- * the response comes from the human client, not the model. An already-approved
- * session is safe to short-circuit because its gate was opened through an existing
- * human or pre-approval path. All other responses fail closed, while respecting
- * an approval made out of band during the prompt.
+ * Only the human client's accepted elicitation can open an unapproved gate: the
+ * response comes from the human, not the model. The form asks a single optional
+ * "What would you change?" — accepted blank (or missing) approves, accepted with
+ * feedback keeps planning. An already-approved session is safe to short-circuit
+ * because its gate was opened through an existing human or pre-approval path.
+ * Everything else (cancel, decline, no capability, errors) fails closed, while
+ * respecting an approval made out of band during the prompt.
  */
 export async function requestPlanApproval(
   client: Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">,
@@ -123,29 +125,21 @@ export async function requestPlanApproval(
       requestedSchema: {
         type: "object",
         properties: {
-          decision: {
-            type: "string",
-            title: "Decision",
-            oneOf: [
-              { const: "approve", title: "Approve — proceed with implementation" },
-              { const: "keep_planning", title: "Keep planning — revise the plan" },
-            ],
-          },
-          feedback: { type: "string", title: "What should change?" },
+          feedback: { type: "string", title: "What would you change?" },
         },
-        required: ["decision"],
       },
     }, { timeout: PLAN_ELICITATION_TIMEOUT_MS });
-    if (result.action === "accept" && result.content?.decision === "approve") {
-      approveSessionPlan(sessionId);
-      return approved;
-    }
-    if (result.action === "accept" && result.content?.decision === "keep_planning") {
+    if (result.action === "accept") {
+      const feedback = typeof result.content?.feedback === "string" ? result.content.feedback.trim() : "";
+      if (!feedback) {
+        approveSessionPlan(sessionId);
+        return approved;
+      }
       return nonApproval({
         approved: false,
         keepPlanning: true,
-        feedback: typeof result.content.feedback === "string" ? result.content.feedback : "",
-        note: "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, ask clarifying questions in chat if the feedback is empty, then call request_plan_approval again.",
+        feedback,
+        note: "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, then call request_plan_approval again.",
       }, true);
     }
     return nonApproval({
@@ -300,8 +294,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "request_plan_approval",
     {
       description:
-        "Present your plan in a form where the human can approve or keep planning with feedback. " +
-        "On keep planning, revise the plan and call this again; on cancellation, ask what to change. " +
+        "Present your plan in a form asking what the human would change. A blank submission approves; " +
+        "feedback means revise the plan and call this again; on cancellation, ask what to change. " +
         "`spawn_agent` is blocked until the plan is approved.",
       inputSchema: {
         summary: z
