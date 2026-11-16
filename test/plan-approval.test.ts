@@ -2,9 +2,12 @@ import { afterEach, expect, test, mock } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { approveSessionPlan, createSession, deleteSession, getSession, setSessionAwaitingInput } from "../src/db";
 import { requestPlanApproval } from "../src/mcp/supervisor-server";
+import { awaitPlanHookArgs } from "../src/supervisor/supervise";
 
 const sessions: string[] = [];
-afterEach(() => { for (const id of sessions.splice(0)) deleteSession(id); });
+afterEach(() => {
+  for (const id of sessions.splice(0)) deleteSession(id);
+});
 function fixture() {
   const session = createSession({});
   sessions.push(session.id);
@@ -13,42 +16,67 @@ function fixture() {
 }
 function client(result: unknown, capable = true) {
   const elicitInput = mock(async () => result);
-  return { elicitInput, getClientCapabilities: () => capable ? { elicitation: {} } : {} } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
+  return {
+    elicitInput,
+    getClientCapabilities: () => capable ? { elicitation: {} } : {},
+  } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
 }
 
-test("accepted approval presents the summary and approves", async () => {
+test("accepted approval presents the form and approves", async () => {
   const id = fixture();
   const c = client({ action: "accept", content: { decision: "approve" } });
   expect(await requestPlanApproval(c, id, "Build it")).toMatchObject({ approved: true });
-  expect(c.elicitInput).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("Build it") }));
+  expect(c.elicitInput).toHaveBeenCalledWith({
+    message: "Plan for approval:\n\nBuild it",
+    requestedSchema: {
+      type: "object",
+      properties: {
+        decision: {
+          type: "string", title: "Decision", oneOf: [
+            { const: "approve", title: "Approve — proceed with implementation" },
+            { const: "keep_planning", title: "Keep planning — revise the plan" },
+          ],
+        },
+        feedback: { type: "string", title: "What should change?" },
+      },
+      required: ["decision"],
+    },
+  }, { timeout: 24 * 60 * 60 * 1000 });
   expect(getSession(id)?.plan_approved_at).toBeTruthy();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
 test("keep planning returns feedback without approval", async () => {
   const id = fixture();
-  const result = await requestPlanApproval(client({ action: "accept", content: { decision: "keep_planning", feedback: "Change scope" } }), id, "Plan");
-  expect(result).toMatchObject({ approved: false, keepPlanning: true, feedback: "Change scope" });
+  const c = client({ action: "accept", content: { decision: "keep_planning", feedback: "Change scope" } });
+  expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({
+    approved: false, keepPlanning: true, feedback: "Change scope",
+  });
   expect(getSession(id)?.plan_approved_at).toBeNull();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
-for (const action of ["cancel", "decline"]) {
-  test(`${action} leaves the plan unapproved`, async () => {
+for (const result of [
+  { action: "cancel" },
+  { action: "decline" },
+  { action: "accept" },
+  { action: "accept", content: { decision: "unexpected" } },
+]) {
+  test(`${JSON.stringify(result)} leaves the plan unapproved`, async () => {
     const id = fixture();
-    expect(await requestPlanApproval(client({ action }), id, "Plan")).toMatchObject({ approved: false });
+    expect(await requestPlanApproval(client(result), id, "Plan")).toMatchObject({ approved: false });
     expect(getSession(id)?.plan_approved_at).toBeNull();
     expect(getSession(id)?.awaiting_input_at).toBeNull();
   });
 }
 
-test("missing capability and elicitation errors fail closed", async () => {
+test("missing capability and elicitation errors preserve the awaiting marker", async () => {
   for (const c of [client(null, false), client(Promise.reject(new Error("unavailable")))]) {
     const id = fixture();
     const result = await requestPlanApproval(c, id, "Plan");
-    expect(result).toMatchObject({ approved: false, note: expect.stringContaining("/approve") });
+    expect(result).toMatchObject({ approved: false, note: expect.stringContaining(`tack session approve ${id}`) });
     expect(getSession(id)?.plan_approved_at).toBeNull();
-    expect(getSession(id)?.awaiting_input_at).toBeNull();
+    expect(getSession(id)?.awaiting_input_at).toBeTruthy();
   }
 });
 
@@ -60,4 +88,24 @@ test("already approved skips elicitation", async () => {
   expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
   expect(c.elicitInput).not.toHaveBeenCalled();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
+});
+
+for (const outcome of ["keep_planning", "cancel", "error"]) {
+  test(`out-of-band approval wins over ${outcome}`, async () => {
+    const id = fixture();
+    const c = client(null);
+    c.elicitInput = mock(async () => {
+      approveSessionPlan(id);
+      if (outcome === "error") throw new Error("unavailable");
+      return outcome === "cancel"
+        ? { action: "cancel" as const }
+        : { action: "accept" as const, content: { decision: outcome } };
+    });
+    expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
+    expect(getSession(id)?.awaiting_input_at).toBeNull();
+  });
+}
+
+test("supervisor plan hook has no reason argument", () => {
+  expect(awaitPlanHookArgs("ses_x")).toEqual(["__await-plan", "ses_x"]);
 });

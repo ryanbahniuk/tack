@@ -192,6 +192,11 @@ async function* runSupervisor(opts: {
   return getSession(session.id)!;
 }
 
+/** Arguments for the silent hook that marks a presented plan as awaiting input. */
+export function awaitPlanHookArgs(sessionId: string): string[] {
+  return ["__await-plan", sessionId];
+}
+
 /**
  * Runs the supervisor as an attended, interactive session: launches the pinned
  * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
@@ -241,7 +246,7 @@ export async function superviseInteractive(opts: {
   const usesPlanHook = model.runtime === "claude";
   // Mark the session awaiting input before the handler presents its form.
   const awaitHook = usesPlanHook
-    ? selfCommand(["__await-plan", session.id])
+    ? selfCommand(awaitPlanHookArgs(session.id))
     : undefined;
   if (!usesPlanHook) approveSessionPlan(session.id);
 

@@ -1558,22 +1558,9 @@ if (hidden === "__mcp") {
     },
   }));
 } else if (hidden === "__await-plan") {
-  // Fired by the interactive supervisor's PreToolUse hook on `request_plan_approval`
-  // when a plan is presented. Mark the session as awaiting the elicitation
-  // decision. A reason argument can still emit an ask decision for other callers.
-  const [, , , sessionId, reason] = process.argv;
+  // Mark the session awaiting the human's elicitation decision, without a prompt.
+  const [, , , sessionId] = process.argv;
   setSessionAwaitingInput(sessionId!, "plan");
-  if (reason) {
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "ask",
-          permissionDecisionReason: reason,
-        },
-      }),
-    );
-  }
 } else {
   await runMain(main);
 }

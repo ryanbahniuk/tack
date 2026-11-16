@@ -84,7 +84,16 @@ export const SUPERVISOR_APPROVAL_PROMPT = "Open a PR for this?";
  */
 export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__request_plan_approval`;
 
-/** Only a human's accepted elicitation can approve an unapproved plan. */
+// Give humans time to review a plan without hitting the SDK's short default timeout.
+const PLAN_ELICITATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Only an accepted elicitation with decision=approve can open an unapproved gate:
+ * the response comes from the human client, not the model. An already-approved
+ * session is safe to short-circuit because its gate was opened through an existing
+ * human or pre-approval path. All other responses fail closed, while respecting
+ * an approval made out of band during the prompt.
+ */
 export async function requestPlanApproval(
   client: Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">,
   sessionId: string,
@@ -95,33 +104,53 @@ export async function requestPlanApproval(
     clearSessionAwaitingInput(sessionId);
     return approved;
   }
-  const unavailable = { approved: false, note: "Approval prompt unavailable — ask the human to type /approve (or run `tack session approve <id>`) to approve, or to describe changes in chat." };
+  const unavailable = {
+    approved: false,
+    note: `Approval prompt unavailable — ask the human to type /approve (or run \`tack session approve ${sessionId}\`) to approve, or to describe changes in chat.`,
+  };
+  const nonApproval = <T>(result: T, clearAwaiting: boolean): T | typeof approved => {
+    if (getSession(sessionId)?.plan_approved_at) return approved;
+    if (clearAwaiting) clearSessionAwaitingInput(sessionId);
+    return result;
+  };
   try {
-    if (!client.getClientCapabilities()?.elicitation) return unavailable;
+    if (!client.getClientCapabilities()?.elicitation) return nonApproval(unavailable, false);
     const result = await client.elicitInput({
       message: `Plan for approval:\n\n${summary}`,
       requestedSchema: {
         type: "object",
         properties: {
-          decision: { type: "string", enum: ["approve", "keep_planning"], enumNames: ["Approve — proceed with implementation", "Keep planning — revise the plan"] },
+          decision: {
+            type: "string",
+            title: "Decision",
+            oneOf: [
+              { const: "approve", title: "Approve — proceed with implementation" },
+              { const: "keep_planning", title: "Keep planning — revise the plan" },
+            ],
+          },
           feedback: { type: "string", title: "What should change?" },
         },
         required: ["decision"],
       },
-    });
+    }, { timeout: PLAN_ELICITATION_TIMEOUT_MS });
     if (result.action === "accept" && result.content?.decision === "approve") {
       approveSessionPlan(sessionId);
       return approved;
     }
     if (result.action === "accept" && result.content?.decision === "keep_planning") {
-      return { approved: false, keepPlanning: true, feedback: typeof result.content.feedback === "string" ? result.content.feedback : "", note: "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, ask clarifying questions in chat if the feedback is empty, then call request_plan_approval again." };
+      return nonApproval({
+        approved: false,
+        keepPlanning: true,
+        feedback: typeof result.content.feedback === "string" ? result.content.feedback : "",
+        note: "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, ask clarifying questions in chat if the feedback is empty, then call request_plan_approval again.",
+      }, true);
     }
-    return { approved: false, note: "Approval cancelled — ask the human in chat what to change, then call request_plan_approval again." };
+    return nonApproval({
+      approved: false,
+      note: "Approval cancelled — ask the human in chat what to change, then call request_plan_approval again.",
+    }, true);
   } catch {
-    return unavailable;
-  } finally {
-    // Approval clears the marker itself; clearing again is harmless on every path.
-    clearSessionAwaitingInput(sessionId);
+    return nonApproval(unavailable, false);
   }
 }
 
