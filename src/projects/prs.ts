@@ -364,12 +364,17 @@ export interface PrCheck {
   completedAt?: string | null;
 }
 
-/** Normal check outcomes exit 1 (failed) or 8 (pending); stdout is authoritative. */
+/**
+ * Normal check outcomes exit 1 (failed) or 8 (pending); stdout is authoritative.
+ * A PR with no checks also exits non-zero, with empty stdout and a "no (required)
+ * checks reported" stderr; that is a real empty suite (green), not a fetch error.
+ */
 export async function fetchPrChecks(repoPath: string, number: number): Promise<PrCheck[]> {
   const result = await run([
     "gh", "pr", "checks", String(number), "--json",
     "name,state,bucket,link,workflow,description,completedAt",
   ], repoPath);
+  if (result.stdout.trim() === "" && /no (required )?checks reported/i.test(result.stderr)) return [];
   if (!/unknown flag.*--json|unknown flag: json/i.test(result.stderr)) {
     return JSON.parse(result.stdout) as PrCheck[];
   }
