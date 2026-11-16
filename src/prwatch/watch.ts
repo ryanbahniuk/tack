@@ -9,12 +9,15 @@ import type { Model, Project, TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import {
   assignPrFeedback,
+  claimPrFixAgentForReuse,
   countPrFixRunsSince,
+  deletePrFixRun,
   getSession,
   getSessionPr,
   getAgent,
   getDb,
   insertPrFeedback,
+  insertPrFixRun,
   listAgentPrFeedback,
   listPrFeedback,
   listPrFixAgents,
@@ -25,22 +28,25 @@ import {
   markPrFeedbackHandled,
   prFeedbackSourceIds,
   releaseAgentPrFeedback,
+  restorePrFixAgent,
   setAgentError,
   setAgentStatus,
   setAgentPid,
   setSessionPrStatus,
   setSessionPrWatchPid,
+  unassignPrFeedback,
   setPrWatchCodeVersion,
   setPrWatchConfigVersion,
   type AgentRow,
   type AgentFixOutcome,
   type AgentStatus,
   type PrFeedbackRow,
+  type PrFixReuseSnapshot,
   type PrMergeable,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { readArtifact, writePrFeedbackArtifact } from "../artifacts/store";
+import { readArtifact, writeContinuationPrompt, writePrFeedbackArtifact } from "../artifacts/store";
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import {
@@ -65,7 +71,7 @@ import {
 import { commitWorktreeAsync, fastForwardPrWorktree, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
 import { currentCodeVersion, currentConfigVersion } from "../process/version";
-import { nowIso } from "../util/id";
+import { nowIso, uuid } from "../util/id";
 
 export { buildPrFixPrompt } from "./prompt";
 
@@ -410,7 +416,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
     );
   }
 
-  const { agent, items, continued, fallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
+  const { agent, items, lineage, continued, fallbackReason, reuseFallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
     origin: "auto",
     conflict,
     baseBranch: status.baseRefName,
@@ -419,7 +425,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   });
   const ciCount = fresh.filter((f) => f.kind === "ci_check").length +
     released.filter((f) => f.source_kind === "ci_check").length;
-  log(`${tag}: spawned fix agent ${agent.id} (${items} item(s), ${ciCount} CI item(s)${conflict ? ", merge conflict" : ""}); ${continued ? `continued ${continued}` : `fresh: ${fallbackReason}`}`);
+  log(`${tag}: ${lineage === "reused" ? "requeued" : "spawned"} fix agent ${agent.id} (${items} item(s), ${ciCount} CI item(s)${conflict ? ", merge conflict" : ""}); ${prFixLineageLabel({ agent, lineage, continued, fallbackReason, reuseFallbackReason })}`);
 }
 
 /**
@@ -470,49 +476,137 @@ export function prFixCapReached(sessionPrId: string, config: TackConfig): { reac
   return { reached: runs >= config.prWatch.maxFixRunsPerDay, runs };
 }
 
+/** Post-fix outcomes that mean nothing usable reached the PR: such a run never
+ * becomes a lineage head, and its row is never reused for the next run. */
+const UNUSABLE_FIX_OUTCOMES: ReadonlySet<string> = new Set(["failed", "stopped", "push_rejected"]);
+
 /** Failed fixes never become a lineage head, including successful runtime runs
  * whose push was rejected. Legacy successful rows have no post-fix outcome. */
 export function prLineageHead(pr: SessionPrRow): AgentRow | null {
   const author = pr.agent_id ? getAgent(pr.agent_id) : null;
   return listPrFixAgents(pr.id).reverse().find(a =>
-    a.status === "done" && !["failed", "stopped", "push_rejected"].includes(a.fix_outcome ?? "")
+    a.status === "done" && !UNUSABLE_FIX_OUTCOMES.has(a.fix_outcome ?? "")
   ) ?? (author?.kind === "manual" ? null : author);
 }
 
-export async function prContinuationDecision(pr: SessionPrRow, model: Model, config: TackConfig, fresh = false):
+/** The config/caller gate on carrying any conversation over (reuse or continue). */
+function conversationReuseGate(config: TackConfig, fresh: boolean): string | null {
+  if (config.agentReuse?.enabled === false) return "reuse disabled";
+  if (fresh) return "fresh requested";
+  return null;
+}
+
+/**
+ * Whether `a`'s conversation and worktree can carry the next fix run — the
+ * guarantees shared by reusing a `pr_fix` row in place and by continuing a lineage
+ * head in a new row: done, resumable, same runtime as the chosen model, recent
+ * enough (`agentReuse.maxIdleHours`), and its worktree still on disk. The caller
+ * still has to fast-forward that worktree onto the PR head. Null = eligible.
+ */
+function conversationIneligibility(a: AgentRow, pr: SessionPrRow, model: Model, config: TackConfig): string | null {
+  if (a.status !== "done") return "head is not done";
+  if (!a.resume_ref) return "missing resume_ref";
+  if (a.runtime !== model.runtime) return "runtime mismatch";
+  const finished = Date.parse(a.finished_at ?? "");
+  if (!Number.isFinite(finished) || Date.now() - finished > (config.agentReuse?.maxIdleHours ?? 24) * 3600_000)
+    return "idle window exceeded";
+  if (!a.worktree_path || !a.branch || !existsSync(a.worktree_path)) return "worktree missing";
+  if (!pr.head_branch) return "PR head branch missing";
+  return null;
+}
+
+/**
+ * The PR's latest `pr_fix` row, when the next run can requeue it in place instead
+ * of inserting a new row: post-fixed with a usable outcome and passing the same
+ * conversation checks as a lineage head (see `conversationIneligibility`). Pure DB
+ * and filesystem checks; `spawnPrFixAgent` claims the row, then fast-forwards.
+ */
+export function prFixReuseCandidate(pr: SessionPrRow, model: Model, config: TackConfig, fresh = false):
+  { agent: AgentRow } | { agent: null; reason: string } {
+  const no = (reason: string) => ({ agent: null, reason } as const);
+  const gate = conversationReuseGate(config, fresh);
+  if (gate) return no(gate);
+  const latest = listPrFixAgents(pr.id).at(-1);
+  if (!latest) return no("no previous fix agent");
+  if (latest.kind !== "pr_fix") return no("not a fix agent");
+  if (latest.status === "done" && !latest.post_fixed_at) return no("previous fix not post-fixed");
+  if (UNUSABLE_FIX_OUTCOMES.has(latest.fix_outcome ?? "")) return no(`previous fix ${latest.fix_outcome}`);
+  const why = conversationIneligibility(latest, pr, model, config);
+  if (why) return no(why);
+  return { agent: latest };
+}
+
+/**
+ * Whether a NEW fix row can continue the PR's lineage head (the author, or the
+ * latest usable fix) and from which fast-forwarded base. `known` carries a
+ * fast-forward the caller already attempted on that same head (a rolled-back
+ * reuse), so its result is reported instead of fetching again.
+ */
+export async function prContinuationDecision(pr: SessionPrRow, model: Model, config: TackConfig, fresh = false,
+  known?: { agentId: string; reason: string }):
   Promise<{ head: AgentRow; base: string } | { head: null; reason: string }> {
   const fallback = (reason: string) => ({ head: null, reason } as const);
-  if (config.agentReuse?.enabled === false) return fallback("reuse disabled");
-  if (fresh) return fallback("fresh requested");
+  const gate = conversationReuseGate(config, fresh);
+  if (gate) return fallback(gate);
   const head = prLineageHead(pr);
   if (!head) return fallback(pr.agent_id && getAgent(pr.agent_id)?.kind === "manual" ? "manual workspace has no conversation" : "no lineage head");
   // A PR opened from a human's manual workspace has no conversation to resume.
   if (head.kind === "manual") return fallback("manual workspace has no conversation");
-  if (head.status !== "done") return fallback("head is not done");
-  if (!head.resume_ref) return fallback("missing resume_ref");
-  if (head.runtime !== model.runtime) return fallback("runtime mismatch");
-  const finished = Date.parse(head.finished_at ?? "");
-  if (!Number.isFinite(finished) || Date.now() - finished > (config.agentReuse?.maxIdleHours ?? 24) * 3600_000)
-    return fallback("idle window exceeded");
-  if (!head.worktree_path || !head.branch || !existsSync(head.worktree_path)) return fallback("worktree missing");
-  if (!pr.head_branch) return fallback("PR head branch missing");
-  const result = await fastForwardPrWorktree(head.worktree_path, pr.head_branch);
+  const why = conversationIneligibility(head, pr, model, config);
+  if (why) return fallback(why);
+  if (known?.agentId === head.id) return fallback(known.reason);
+  const result = await fastForwardPrWorktree(head.worktree_path!, pr.head_branch!);
   if ("reason" in result) return fallback(result.reason);
   return { head, base: result.base };
 }
 
+/** How a fix run got its conversation: its own row requeued, a new row forking a
+ * lineage head, or a new row starting cold. */
+export type PrFixLineage = "reused" | "continued" | "fresh";
+
+/** One-line account of a spawn's lineage for logs and tool results:
+ * "reused agt_x", "continued agt_y in new row agt_z (not reused: …)", "fresh: …". */
+export function prFixLineageLabel(r: {
+  agent: Pick<AgentRow, "id">; lineage: PrFixLineage; continued: string | null;
+  fallbackReason?: string; reuseFallbackReason?: string;
+}): string {
+  const why = r.reuseFallbackReason ? ` (not reused: ${r.reuseFallbackReason})` : "";
+  if (r.lineage === "reused") return `reused ${r.agent.id}`;
+  if (r.lineage === "continued") return `continued ${r.continued} in new row ${r.agent.id}${why}`;
+  return `fresh: ${r.fallbackReason ?? "no lineage"}${why}`;
+}
+
 /**
- * Starts one `pr_fix` agent on a PR: the shared tail of the watcher's tick and the
+ * Starts one fix run on a PR: the shared tail of the watcher's tick and the
  * supervisor's `fix_pr`. Records any `fresh` feedback (bodies to disk), hands the
- * agent every unassigned item on the PR (new ones plus any released back to
- * pending), builds its prompt, and launches it detached — continuing the eligible
- * lineage or forking fresh off the PR head. The watcher's
- * post-fix step later pushes and replies for it regardless of who spawned it.
+ * run every unassigned item on the PR (new ones plus any released back to
+ * pending), builds its prompt, and launches it detached. The watcher's post-fix
+ * step later pushes and replies for it regardless of who spawned it.
+ *
+ * Where the run lives, in order of preference:
+ *  1. **Reused** — the PR's latest `pr_fix` row, requeued in place when
+ *     `prFixReuseCandidate` allows it and its worktree fast-forwards onto the PR
+ *     head. It resumes its own `resume_ref` with the prompt as a continuation turn;
+ *     cost and tokens keep accumulating on the row.
+ *  2. **Continued** — a new `pr_fix` row forking the lineage head's conversation
+ *     (`prContinuationDecision`).
+ *  3. **Fresh** — a new row on a cold worktree off the PR head.
+ * Every spawn records a `pr_fix_runs` row (the daily cap counts those).
+ *
+ * Concurrency: the busy slot is claimed atomically (one IMMEDIATE transaction)
+ * before any async git work, for a reused row as for a new one — the claim makes
+ * the row pending with this process's pid, so other launchers see the PR busy and
+ * watchers see a live preparer. If the reused row's fast-forward (or its launch)
+ * then fails, the row is restored to its exact prior terminal state, the feedback
+ * handed to it is released and its run deleted, and only then is a new row
+ * claimed — a failed reuse never leaves the old row pending/failed or loses its
+ * outcome.
  *
  * Callers poll first and own the automatic-cap guard; this also refuses stored
- * merged/closed PRs and claims the busy slot atomically before any async work.
- * `baseBranch`/`title` are the freshly polled values, falling back to the row's. Returns the agent and how many feedback
- * items it was given.
+ * merged/closed PRs. `baseBranch`/`title` are the freshly polled values, falling
+ * back to the row's. `continued` is the agent whose conversation carries on (the
+ * reused row itself when reused); `fallbackReason` says why a run started fresh and
+ * `reuseFallbackReason` why the previous fix row wasn't reused.
  */
 export async function spawnPrFixAgent(
   session: SessionRow,
@@ -529,30 +623,39 @@ export async function spawnPrFixAgent(
     guidance?: string;
     forceFresh?: boolean;
   },
-): Promise<{ agent: AgentRow; items: number; continued: string | null; fallbackReason?: string }> {
+): Promise<{
+  agent: AgentRow; items: number; continued: string | null; lineage: PrFixLineage;
+  fallbackReason?: string; reuseFallbackReason?: string;
+}> {
   if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
   const model = opts.model ?? modelForRole(config, "agent");
-  // Claim the PR before fetching: another process must not fast-forward this
-  // worktree while its new runner is already modifying it.
-  const { agent, rows } = getDb().transaction(() => {
+  const forceFresh = opts.forceFresh ?? false;
+  let feedbackRecorded = false;
+
+  /** One atomic claim of the PR's busy slot: guards, feedback, prompt, and either a
+   * requeued row (when `reuse` allows it) or a new one. */
+  const claim = (reuse: boolean) => getDb().transaction(() => {
     const current = getSessionPr(pr.id);
     if (current?.state === "merged" || current?.state === "closed") {
       throw new Error(`PR #${current.number} is ${current.state}; nothing to fix.`);
     }
     if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
-    for (const item of opts.fresh ?? []) {
-      insertPrFeedback({
-        sessionPrId: pr.id,
-        sourceId: item.sourceId,
-        sourceKind: item.kind,
-        author: item.author,
-        authorIsBot: item.isBot,
-        url: item.url,
-        path: item.path ?? null,
-        line: item.line ?? null,
-        inReplyTo: item.inReplyTo ?? null,
-        bodyRef: writePrFeedbackArtifact(session.id, pr.id, item.sourceId, "body", item.body),
-      });
+    if (!feedbackRecorded) {
+      for (const item of opts.fresh ?? []) {
+        insertPrFeedback({
+          sessionPrId: pr.id,
+          sourceId: item.sourceId,
+          sourceKind: item.kind,
+          author: item.author,
+          authorIsBot: item.isBot,
+          url: item.url,
+          path: item.path ?? null,
+          line: item.line ?? null,
+          inReplyTo: item.inReplyTo ?? null,
+          bodyRef: writePrFeedbackArtifact(session.id, pr.id, item.sourceId, "body", item.body),
+        });
+      }
+      feedbackRecorded = true;
     }
     const rows = listUnassignedPrFeedback(pr.id);
     const prompt = buildPrFixPrompt({
@@ -562,40 +665,94 @@ export async function spawnPrFixAgent(
       items: rows.map((r) => feedbackItem(r, pr)),
       guidance: opts.guidance,
     });
-    const agent = prepareAgent({
-      session,
-      project,
-      model,
-      prompt,
-      kind: "pr_fix",
-      sessionPrId: pr.id,
-      fixOrigin: opts.origin,
-    });
-    assignPrFeedback(
-      rows.map((r) => r.id),
-      agent.id,
-    );
+    const candidate = reuse ? prFixReuseCandidate(pr, model, config, forceFresh) : null;
+    let reused: { snapshot: PrFixReuseSnapshot; runId: string } | null = null;
+    let agentId: string;
+    if (candidate?.agent) {
+      const id = candidate.agent.id;
+      const ref = writeContinuationPrompt(session.id, id, uuid(), prompt);
+      const snapshot = claimPrFixAgentForReuse(id, { continuationPromptRef: ref, model: model.key, origin: opts.origin });
+      if (!snapshot) throw new Error("A PR fix is already running or awaiting post-fix.");
+      reused = { snapshot, runId: insertPrFixRun(id, pr.id, opts.origin).id };
+      agentId = id;
+    } else {
+      agentId = prepareAgent({
+        session,
+        project,
+        model,
+        prompt,
+        kind: "pr_fix",
+        sessionPrId: pr.id,
+        fixOrigin: opts.origin,
+      }).id;
+    }
+    assignPrFeedback(rows.map((r) => r.id), agentId);
     // The launcher owns this pending row during the bounded fetch. Watchers use
     // this pid to distinguish preparation from a dead detached runner.
-    setAgentPid(agent.id, process.pid);
-    return { agent, rows };
+    setAgentPid(agentId, process.pid);
+    return { agentId, rows, reused, notReused: candidate && !candidate.agent ? candidate.reason : undefined };
   }).immediate();
-  try {
-    const decision = await prContinuationDecision(pr, model, config, opts.forceFresh);
-    if (decision.head) {
-      getDb().prepare(`UPDATE agents SET continues_agent_id = ?, worktree_path = ?, branch = ?, resume_ref = ?, diff_base = ? WHERE id = ?`)
-        .run(decision.head.id, decision.head.worktree_path, decision.head.branch, decision.head.resume_ref, decision.base, agent.id);
-    }
+
+  const launch = () => {
     let preflight;
     try { preflight = computePreflight(config, model); } catch { /* runner reports the failure */ }
-    spawnAgentRunner(session.id, agent.id, { preflight });
+    spawnAgentRunner(session.id, first.agentId, { preflight });
+  };
+
+  // 1. Try to requeue the PR's latest fix row.
+  let first = claim(true);
+  let reuseFallbackReason = first.notReused;
+  let known: { agentId: string; reason: string } | undefined;
+  if (first.reused) {
+    const { snapshot, runId } = first.reused;
+    const rollback = () => getDb().transaction(() => {
+      restorePrFixAgent(snapshot);
+      unassignPrFeedback(first.rows.map((r) => r.id), snapshot.id);
+      deletePrFixRun(runId);
+    }).immediate();
+    const row = getAgent(snapshot.id)!;
+    let ff: { base: string } | { reason: string };
+    try {
+      ff = await fastForwardPrWorktree(row.worktree_path!, pr.head_branch!);
+    } catch (err) {
+      ff = { reason: (err as Error).message };
+    }
+    if ("base" in ff) {
+      try {
+        // This run's diff (and post-fix's "anything new?") starts at the PR head.
+        getDb().prepare(`UPDATE agents SET diff_base = ? WHERE id = ?`).run(ff.base, snapshot.id);
+        launch();
+      } catch (err) {
+        rollback();
+        throw err;
+      }
+      return { agent: getAgent(snapshot.id)!, items: first.rows.length, continued: snapshot.id, lineage: "reused" };
+    }
+    rollback();
+    reuseFallbackReason = ff.reason;
+    known = { agentId: snapshot.id, reason: ff.reason };
+    // 2. Reuse fell through: claim a new row (re-checking busy/state atomically).
+    first = claim(false);
+  }
+
+  // A new row: continue the lineage head's conversation or start fresh.
+  const agentId = first.agentId;
+  try {
+    const decision = await prContinuationDecision(pr, model, config, forceFresh, known);
+    if (decision.head) {
+      getDb().prepare(`UPDATE agents SET continues_agent_id = ?, worktree_path = ?, branch = ?, resume_ref = ?, diff_base = ? WHERE id = ?`)
+        .run(decision.head.id, decision.head.worktree_path, decision.head.branch, decision.head.resume_ref, decision.base, agentId);
+    }
+    launch();
     return {
-      agent: getAgent(agent.id)!, items: rows.length, continued: decision.head?.id ?? null,
+      agent: getAgent(agentId)!, items: first.rows.length, continued: decision.head?.id ?? null,
+      lineage: decision.head ? "continued" : "fresh",
       ...(decision.head ? {} : { fallbackReason: decision.reason }),
+      ...(reuseFallbackReason ? { reuseFallbackReason } : {}),
     };
   } catch (err) {
-    setAgentError(agent.id, (err as Error).message);
-    setAgentStatus(agent.id, "failed");
+    setAgentError(agentId, (err as Error).message);
+    setAgentStatus(agentId, "failed");
     throw err;
   }
 }
@@ -647,7 +804,9 @@ export async function postFix(
   log: Log,
 ): Promise<void> {
   const tag = `PR #${pr.number ?? "?"} fix ${agent.id}`;
-  const items = listAgentPrFeedback(agent.id);
+  // A reused fix row keeps its earlier runs' items, already handled (and replied
+  // to); only the unhandled ones belong to the run being post-fixed.
+  const items = listAgentPrFeedback(agent.id).filter((f) => !f.handled_at);
 
   // Stopped by the human (session stop): nothing reached the PR, so hand its items
   // back for a later run rather than declaring them handled.
@@ -660,10 +819,10 @@ export async function postFix(
   // Failed: mark its items failed (terminal — never retried automatically, so a
   // comment that reliably breaks the agent can't loop), keep the error legible.
   if (agent.status === "failed") {
-    for (const f of items) if (!f.handled_at) markPrFeedbackHandled(f.id, { decision: "failed" });
+    for (const f of items) markPrFeedbackHandled(f.id, { decision: "failed" });
     if (!agent.error) setAgentError(agent.id, "PR fix run failed");
     markAgentPostFixed(agent.id, "failed");
-    return log(`${tag}: failed; marked ${items.filter((f) => !f.handled_at).length} item(s) failed`);
+    return log(`${tag}: failed; marked ${items.length} item(s) failed`);
   }
 
   // Done: push first, so replies can cite the commit that reached the PR.

@@ -306,7 +306,12 @@ session_jira_tickets(id, session_id→sessions, agent_id, key, url, title, statu
 `review` | `manual` — see "Manual workspaces" below),
 `session_pr_id`, `post_fixed_at`, `fix_outcome`, `fix_pushed_sha`, and
 `continues_agent_id` (see §11 PR watch). Continuation prompt refs, start markers,
-and per-fix diff baselines survive detached retries and archive restore.
+and per-fix diff baselines survive detached retries and archive restore. Because a
+PR's `pr_fix` row is reused across fix runs, the agent's `post_fixed_at` /
+`fix_outcome` / `fix_pushed_sha` / `fix_origin` describe its **latest** run; the
+per-run history lives in `pr_fix_runs(id, agent_id→agents, session_pr_id, origin,
+created_at, finished_at, outcome, pushed_sha)` — one row per fix spawn, finished
+when post-fix latches (migration 19 backfilled one run per existing fix agent).
 
 Any column that could hold a blob (`prompt`, `output`, `diff`, context/amendment
 bodies) is a `*_ref` path, never inline text.
@@ -755,9 +760,10 @@ completed; otherwise gather **new** feedback — unresolved review-thread commen
 non-empty review bodies, conversation comments, bots included, minus anything
 already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
 if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn a
-`pr_fix` agent with origin `auto`, subject to `maxFixRunsPerDay` per PR per rolling
-24h (failed automatic runs and legacy NULL-origin rows count; supervisor `fix_pr`
-runs are exempt and do not count). The `open_pr` base-conflict hand-off also uses
+fix run with origin `auto`, subject to `maxFixRunsPerDay` per PR per rolling
+24h. The cap counts `pr_fix_runs`, not agent rows, so reusing one fix agent spends
+budget on every run (failed automatic runs and legacy NULL-origin runs count;
+supervisor `fix_pr` runs are exempt and do not count). The `open_pr` base-conflict hand-off also uses
 origin `auto` and enforces this cap.
 
 PRs opened through `open_pr` default to drafts: `draftPrs` (default true) forces
@@ -792,17 +798,45 @@ Conversation comments and reviews come from paginated GraphQL connections with
 `author { login __typename }`, retaining their existing node ids. Bot detection also
 uses a case-insensitive known-login fallback, stripping any `[bot]` suffix.
 
-The **fix agent** continues the newest successful PR-fix run with a non-failed
-post-fix outcome, falling back to the PR owner as lineage head. Reuse requires
-`agentReuse.enabled` (default true), no `fix_pr({ fresh: true })` override, a done
-head with a resume ref on the chosen runtime, completion within
-`agentReuse.maxIdleHours` (default 24), and an existing clean worktree that can be
-fetched and fast-forwarded to `origin/<head_branch>`. Otherwise it forks fresh
-off the PR's current remote head (`createPrWorktree`). The decision is returned as
-`continued` (head id or null) and `fallbackReason`, and logged by the watcher.
-Each fix still gets its own row and feedback/post-fix bookkeeping. A continuation
-stores `continues_agent_id`, reuses that head's cwd/branch and resume ref, and
-captures its diff against its own starting commit. Claude forks resumed sessions
+The **fix agent** lineage (`spawnPrFixAgent`) prefers, in order:
+
+1. **Reuse** — requeue the PR's latest `pr_fix` row in place, so the dashboard and
+   `check_prs` show one fix agent per PR. Like `prepareContinuation`, it writes a
+   new `continuation_prompt_ref` holding the fix prompt and sets the row pending
+   (`continuation_started_at`, `finished_at`, `error` cleared; `model` set), clears
+   the per-run `post_fixed_at` / `fix_outcome` / `fix_pushed_sha`, sets `fix_origin`
+   to this run's origin and `diff_base` to the fast-forwarded PR head (so the run's
+   diff and post-fix "anything new?" check cover only this run), and assigns the new
+   feedback to the same id. The runner resumes the row's own `resume_ref` in its own
+   worktree; cost and tokens accumulate on the row; the transcript gets a `resumed`
+   marker per run.
+2. **Continue** — a new `pr_fix` row forking the lineage head: the newest PR-fix run
+   with a successful (non-failed/stopped/rejected) post-fix outcome, falling back to
+   the PR owner. It stores `continues_agent_id`, reuses that head's cwd/branch and
+   resume ref, and captures its diff against its own starting commit.
+3. **Fresh** — a new row forked off the PR's current remote head (`createPrWorktree`).
+
+Reuse and continuation share one eligibility check: `agentReuse.enabled` (default
+true), no `fix_pr({ fresh: true })` override, a done row with a resume ref on the
+chosen model's runtime, finished within `agentReuse.maxIdleHours` (default 24), and
+an existing clean worktree that fetches and fast-forwards to `origin/<head_branch>`.
+Reuse additionally needs the latest row to be post-fixed with an outcome other than
+failed/stopped/push_rejected. The result carries `lineage` (`reused` | `continued` |
+`fresh`), `continued` (the conversation's agent id — the reused row itself — or
+null), `fallbackReason` (why fresh) and `reuseFallbackReason` (why the previous row
+wasn't reused); the watcher logs `reused <id>` / `continued <id> in new row <id>` /
+`fresh: <reason>`.
+
+The PR's busy slot is claimed in one IMMEDIATE transaction before any async git
+work — a reused row is made pending with the launcher's pid in that same claim, so
+concurrent launchers see the PR busy and watchers see a live preparer. If the reused
+row's fast-forward (or launch) fails, the row is restored to its exact prior
+terminal state (outcome, sha, latch, diff base, pid…), the feedback handed to it is
+released and its run record deleted, and only then is a new row claimed; the new row
+does not refetch the same head. A failed reuse never leaves the old row pending or
+failed. Post-fix only touches the unhandled items, so an earlier run's handled items
+on a reused row are never replied to twice; release and failure handling likewise
+affect only unhandled items. Claude forks resumed sessions
 when the CLI supports `--fork-session`; Codex resumes its thread directly. No
 native session store is copied or read for continuation. The fix agent is
 told to judge each item (fix what's relevant and justified, decline the rest),
@@ -845,8 +879,9 @@ legacy rows without an outcome keep their original display status. The PR's
 to an open PR: follow-ups the human asks for (passed as `prompt`), a conflict that
 persists, or a fix run that failed (e.g. its model wasn't offered to the login —
 `fix_pr` takes a `model` and runs `checkModelOffered` like `spawn_agent`). Guidance is rendered in the fix prompt as a `## Supervisor guidance`
-section just before `## Rules`. These runs share the `pr_fix` kind continuing the
-PR lineage or forking fresh off its head (`spawnPrFixAgent`, shared with the watcher), the one-at-a-time rule
+section just before `## Rules`. These runs share the `pr_fix` kind and lineage — reusing the PR's fix agent,
+continuing the lineage in a new row, or forking fresh off its head (`spawnPrFixAgent`,
+shared with the watcher) — the one-at-a-time rule
 (`prFixBusy`: refused while a fix is pending/running or finished but not yet
 post-fixed), and the same watcher post-fix push + replies — `fix_pr` polls the PR
 live, folds in any not-yet-ingested feedback, spawns the agent, and (re)starts the

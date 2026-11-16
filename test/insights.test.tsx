@@ -23,6 +23,8 @@ function fixture(): Database {
   agent.run("a", "alpha", 4, null, at(14), at(14));
   agent.run("b", "beta", 5, "pr_fix", at(13), at(13));
   agent.run("c", "alpha", 1, null, at(12), at(12));
+  // prFix counts fix runs (a reused fix agent has several), not agent rows.
+  db.query("INSERT INTO pr_fix_runs (id,agent_id,origin,created_at) VALUES ('r','b','auto',?)").run(at(13));
   const pr = db.query("INSERT INTO session_prs (id,session_id,project_name,url,state,created_at,updated_at,merged_at) VALUES (?,'old',?,?,'merged',?,?,?)");
   pr.run("p", "alpha", "u1", at(1), at(14), null);
   pr.run("q", "beta", "u2", at(12), at(14), at(13));
