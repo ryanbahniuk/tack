@@ -456,6 +456,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       if (a.session_id !== sessionId) throw new Error(`Agent ${agentId} isn't part of this session`);
       if (a.kind === "review") throw new Error("Review agents report findings and cannot open PRs.");
+      if (a.kind === "manual" && a.session_pr_id) {
+        const pr = listSessionPrs(sessionId).find(p => p.id === a!.session_pr_id);
+        throw new Error(`Already linked to PR #${pr?.number ?? "?"}; push from its worktree with git.`);
+      }
       if (!a.branch || !a.worktree_path)
         throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
       const proj = config.projects.find((p) => p.name === a!.project_name);
@@ -912,9 +916,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         status: a.status,
         ...(a.kind ? { kind: a.kind } : {}),
         cost: a.cost,
+        ...(a.kind === "manual" && a.session_pr_id ? { prNumber: listSessionPrs(a.session_id).find(p => p.id === a.session_pr_id)?.number } : {}),
         branch: a.branch,
         output: a.kind === "manual"
-          ? "(manual workspace — the human's hand edits; no agent output. Open it as a PR with open_pr when asked.)"
+          ? (a.session_pr_id ? "(manual workspace linked to a PR; push from its worktree with git.)" : "(manual workspace — the human's hand edits; no agent output. Open it as a PR with open_pr when asked.)")
           : output || "(no textual output captured)",
         ...(a.kind === "review" ? { review: a.review_ref ? JSON.parse(readArtifact(a.review_ref)) : null } : {}),
         diffPreview: diff ? diff.split("\n").slice(0, 200).join("\n") : "(no diff)",
@@ -1001,6 +1006,7 @@ function agentSummary(a: ReturnType<typeof listAgents>[number]) {
   return {
     id: a.id,
     ...(a.kind ? { kind: a.kind } : {}),
+    ...(a.kind === "manual" && a.session_pr_id ? { prNumber: listSessionPrs(a.session_id).find(p => p.id === a.session_pr_id)?.number } : {}),
     project: a.project_name,
     status: a.status,
     model: a.model,

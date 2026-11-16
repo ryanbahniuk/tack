@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { AgentRow, SessionPrRow } from "../db";
+import { listPrFixAgents, type AgentRow, type SessionPrRow } from "../db";
 
 type EditTarget =
   | { ok: true; agent: AgentRow; path: string }
@@ -41,7 +41,18 @@ export function worktreeEditSummary(agent: AgentRow, prs: SessionPrRow[], path: 
   const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trimEnd();
   const branch = git("branch", "--show-current") || agent.branch || "detached HEAD";
   const status = git("status", "--short");
-  const lines = [`Branch: ${branch}`, status || "no uncommitted changes"];
+  const linked = agent.kind === "manual" ? prs.find(pr => pr.id === agent.session_pr_id) : undefined;
+  const lines = [`Branch: ${branch}${linked ? ` (tracks PR #${linked.number})` : ""}`, status || "no uncommitted changes"];
+  if (linked) {
+    try {
+      const [behind, ahead] = git("rev-list", "--left-right", "--count", `origin/${linked.head_branch}...HEAD`).split(/\s+/);
+      lines.push(`Ahead ${ahead}, behind ${behind} vs origin/${linked.head_branch}`);
+    } catch { /* remote tracking ref unavailable */ }
+    lines.push("Commit your changes, then run git push.");
+    if (listPrFixAgents(linked.id).some(a => a.status === "pending" || a.status === "running" || (a.status === "done" && !a.post_fixed_at)))
+      lines.push("Warning: a PR fix is in flight; pushing now may cause its push to be rejected.");
+    return lines;
+  }
   const pr = prs.find(pr => pr.agent_id === agent.id && (pr.state === "open" || pr.state === "draft"));
   if (pr && (status || git("rev-parse", "HEAD") !== pr.head_sha)) {
     lines.push("These edits aren't on the PR yet.");

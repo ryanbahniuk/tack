@@ -473,9 +473,10 @@ export function prFixCapReached(sessionPrId: string, config: TackConfig): { reac
 /** Failed fixes never become a lineage head, including successful runtime runs
  * whose push was rejected. Legacy successful rows have no post-fix outcome. */
 export function prLineageHead(pr: SessionPrRow): AgentRow | null {
+  const author = pr.agent_id ? getAgent(pr.agent_id) : null;
   return listPrFixAgents(pr.id).reverse().find(a =>
     a.status === "done" && !["failed", "stopped", "push_rejected"].includes(a.fix_outcome ?? "")
-  ) ?? (pr.agent_id ? getAgent(pr.agent_id) : null);
+  ) ?? (author?.kind === "manual" ? null : author);
 }
 
 export async function prContinuationDecision(pr: SessionPrRow, model: Model, config: TackConfig, fresh = false):
@@ -484,7 +485,7 @@ export async function prContinuationDecision(pr: SessionPrRow, model: Model, con
   if (config.agentReuse?.enabled === false) return fallback("reuse disabled");
   if (fresh) return fallback("fresh requested");
   const head = prLineageHead(pr);
-  if (!head) return fallback("no lineage head");
+  if (!head) return fallback(pr.agent_id && getAgent(pr.agent_id)?.kind === "manual" ? "manual workspace has no conversation" : "no lineage head");
   // A PR opened from a human's manual workspace has no conversation to resume.
   if (head.kind === "manual") return fallback("manual workspace has no conversation");
   if (head.status !== "done") return fallback("head is not done");

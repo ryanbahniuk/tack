@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { TackConfig } from "../config/schema";
-import { createManualAgent, type AgentRow } from "../db";
-import { createWorktree, untrackedFiles, worktreeDiff } from "../worktree/worktree";
+import { createManualAgent, listAgents, type AgentRow, type SessionPrRow } from "../db";
+import { createWorktree, createManualPrWorktree, untrackedFiles, worktreeDiff } from "../worktree/worktree";
 import { shortId } from "../util/id";
 
 /**
@@ -61,12 +61,17 @@ export function resolveManualProject(
  * up-to-date remote default branch (fork point pinned), then its `manual` row. The
  * worktree comes first so a failed fetch/checkout leaves no orphan row behind.
  */
-export function createManualWorkspace(config: TackConfig, sessionId: string, projectName: string): AgentRow {
+export function createManualWorkspace(config: TackConfig, sessionId: string, projectName: string, pr?: SessionPrRow): AgentRow {
   const project = config.projects.find(p => p.name === projectName);
   if (!project) throw new Error(`Unknown project "${projectName}"`);
+  if (pr) {
+    if (pr.session_id !== sessionId || pr.project_name !== projectName || !pr.head_branch || !["open", "draft"].includes(pr.state ?? "")) throw new Error("PR is not an open session PR with a head branch");
+    const existing = listAgents(sessionId).find(a => a.kind === "manual" && a.session_pr_id === pr.id && a.worktree_path && existsSync(a.worktree_path));
+    if (existing) return existing;
+  }
   const id = shortId("agt");
-  const wt = createWorktree(project.path, sessionId, id);
-  return createManualAgent({ id, sessionId, projectName, worktreePath: wt.path, branch: wt.branch, diffBase: wt.base });
+  const wt = pr ? createManualPrWorktree(project.path, sessionId, id, pr.head_branch!) : createWorktree(project.path, sessionId, id);
+  return createManualAgent({ id, sessionId, projectName, worktreePath: wt.path, branch: wt.branch, diffBase: wt.base, sessionPrId: pr?.id });
 }
 
 /**

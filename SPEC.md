@@ -706,7 +706,7 @@ these hooks leave it null. A live headless runner is always treated as busy.
 `tack session edit <session> [agent]` (`src/session/edit.ts`) opens an existing
 worktree in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`), rooted at the tree;
 afterwards it prints the branch, Git status and, for an open PR, a push hint. It
-observes only — never commits or pushes. Dashboard `v` → `e` is the same path.
+observes only — never commits or pushes. Dashboard `v` → `e` prints the summary and opens a shell in the worktree; exit returns to the dashboard. Set `dashboard.shellAfterEdit: false` to skip the shell.
 
 `--new [project]` (dashboard: `v` → `n`) creates a **manual workspace**
 (`src/session/manual.ts`): a clean `tack/<session>/<id>` worktree from
@@ -715,7 +715,7 @@ observes only — never commits or pushes. Dashboard `v` → `e` is the same pat
 resume_ref/refs and zero cost. `finished_at` stays NULL so it never reads as unread
 agent work. Omitted projects resolve only when unambiguous (one configured project,
 or one project among the session's agents); the dashboard otherwise shows a chooser
-with the session's projects first.
+with the session's projects first. When open session PRs exist, the chooser also offers each PR; `--new --pr <number>` selects one from the CLI. A linked workspace checks out the PR head on a same-named local branch tracking origin, and reuses an existing live workspace. A stale branch with unpushed commits is preserved and refused. The summary shows its PR, ahead/behind counts, push hint, and any in-flight fix warning. Humans commit and push these branches with git; `open_pr` refuses linked rows.
 
 A manual row is the human's work, never a conversation: `runAgent`,
 `runAgentToCompletion`, `spawnAgentRunner`, archive/unarchive, `continue_agent` and
