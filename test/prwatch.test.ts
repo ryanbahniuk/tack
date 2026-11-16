@@ -39,7 +39,7 @@ import {
   upsertSessionPr,
   type AgentStatus,
 } from "../src/db";
-import { createWakeableSleep, postFix, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
+import { createWakeableSleep, postFix, prFixCommitSubject, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
 import { writePrFeedbackArtifact } from "../src/artifacts/store";
 import type { Project, RuntimeKind, TackConfig } from "../src/config/schema";
 
@@ -988,4 +988,16 @@ test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
   } finally {
     db.close();
   }
+});
+
+
+describe("PR fix commit subjects", () => {
+  test("describe review, CI, conflict and mixed work without agent IDs", () => {
+    const pr = { title: "Add widgets", mergeable: null, base_branch: "main" } as const;
+    expect(prFixCommitSubject([{ source_kind: "review_thread" }], pr)).toBe("Address review feedback on Add widgets");
+    expect(prFixCommitSubject([{ source_kind: "ci_check" }], pr)).toBe("Fix failing CI checks");
+    expect(prFixCommitSubject([], { ...pr, mergeable: "CONFLICTING" })).toBe("Resolve merge conflict with main");
+    expect(prFixCommitSubject([{ source_kind: "review" }, { source_kind: "ci_check" }], pr)).toBe("Address PR feedback");
+    expect(prFixCommitSubject([], { ...pr, title: null })).toBe("Address PR feedback");
+  });
 });

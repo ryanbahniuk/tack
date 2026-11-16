@@ -1,3 +1,4 @@
+import { commitSubject } from "../worktree/commit-message";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -421,13 +422,13 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             "authorization for you to commit, push, and open this PR, so no further confirmation is needed. "
           : "Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
             "explicitly approved opening PRs. ") +
-        "Commits anything the agent left uncommitted, merges the latest remote base, then pushes its worktree branch under the " +
+        "Commits leftover changes using the PR title as the commit subject, merges the latest remote base, then pushes its worktree branch under the " +
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
         "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. ",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
-        title: z.string().describe("PR title"),
+        title: z.string().trim().min(1).describe("PR title"),
         body: z.string().describe("PR description (markdown)"),
         slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
         base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
@@ -448,7 +449,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (a.kind === "manual") {
         // A manual workspace never "finishes", so nothing captured its diff: fold the
         // human's leftover edits into the branch, then capture what it now carries.
-        await commitWorktreeAsync(a.worktree_path, `Tack: commit manual edits in ${agentId}`);
+        await commitWorktreeAsync(a.worktree_path, commitSubject(title));
         const diff = manualWorkspaceDiff(a, proj.path);
         setAgentRefs(agentId, { diffRef: diff.trim() ? writeAgentArtifact(sessionId, agentId, "diff", diff) : null });
         a = getAgent(agentId)!;
@@ -461,7 +462,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const branch = a.branch!;
       // Safety net: fold any changes the agent left uncommitted into its branch so
       // nothing is dropped from the PR (a push only carries commits).
-      await commitWorktreeAsync(worktreePath, `Tack: finalize work for agent ${agentId}`);
+      await commitWorktreeAsync(worktreePath, commitSubject(title));
       const baseSync: Awaited<ReturnType<typeof syncBranchWithBase>> & {
         prFixAgentId?: string;
         prFixSkipped?: string;

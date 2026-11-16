@@ -332,7 +332,7 @@ export async function syncBranchWithBase(
   }
   // Merge the resolved SHA rather than a ref another concurrent fetch might move.
   const merge = await gitAsync([
-    "merge", "--no-edit", "-m", `Merge origin/${resolvedBase} into ${branch} (Tack: pre-PR sync)`, baseSha,
+    "merge", "--no-edit", "-m", `Merge remote-tracking branch 'origin/${resolvedBase}' into ${branch}`, baseSha,
   ], worktreePath);
   if (merge.code === 0) {
     const pin = await gitAsync(["update-ref", baseRef(branch), baseSha], repo);
