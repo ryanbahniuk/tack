@@ -72,6 +72,7 @@ describe("syncBranchWithBase", () => {
       status: "merged", base: "main", fetched: true, baseSha: upstream,
     });
     expect(git(["show", "-s", "--format=%P", "HEAD"], wt.path)).toBe(`${agent} ${upstream}`);
+    expect(git(["show", "-s", "--format=%s", "HEAD"], wt.path)).toBe(`Merge remote-tracking branch 'origin/main' into ${wt.branch}`);
     expect(await worktreeBase(wt.repo, wt.branch)).toBe(upstream);
     expect(changedFiles(wt.repo, wt.branch, wt.path)).toEqual(["agent.txt"]);
     const diff = worktreeDiff(wt);

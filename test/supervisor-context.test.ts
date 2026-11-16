@@ -102,3 +102,15 @@ describe("persona contexts", () => {
     expect(written).not.toContain("commit ALL");
   });
 });
+
+
+test("working agents receive commit message guidance", async () => {
+  const { buildAgentContext } = await import("../src/context/build");
+  for (const kind of ["agent", "pr_fix"] as const) {
+    buildAgentContext({ sessionId: "ses_test", agentId: "agent", projectName: "test", kind });
+    expect(written).toContain("recent `git log`");
+    expect(written).toContain("imperative, specific subject (at most 72 characters)");
+    expect(written).toContain("Never mention agent IDs, Tack, the");
+    expect(written).toContain("supervisor, or WIP/finalize");
+  }
+});
