@@ -10,6 +10,7 @@ export interface AgentContextParts {
   /** Specialized agents have different tools and finishing rules. */
   kind?: AgentKind | null;
   persona?: { name: string; description: string };
+  reviewedPr?: { number: number | null; url: string; headBranch: string; base: string };
   reviewedAgent?: { id: string; branch: string; base: string };
 }
 
@@ -53,8 +54,13 @@ export function buildAgentContext(parts: AgentContextParts): string {
     sections.push([
       `You are a reviewer playing persona \`${parts.persona?.name}\`.`,
       "You may read, run tests and experiment in your isolated worktree.",
-      `Review agent ${parts.reviewedAgent?.id}, branch \`${parts.reviewedAgent?.branch}\`, base \`${parts.reviewedAgent?.base}\`.`,
-      `See the work under review with: git diff ${parts.reviewedAgent?.base}`,
+      ...(parts.reviewedPr ? [
+        `Review PR #${parts.reviewedPr.number} (${parts.reviewedPr.url}), remote branch \`origin/${parts.reviewedPr.headBranch}\`, base \`${parts.reviewedPr.base}\`.`,
+        `See the work under review with: git diff ${parts.reviewedPr.base}`,
+      ] : [
+        `Review agent ${parts.reviewedAgent?.id}, branch \`${parts.reviewedAgent?.branch}\`, base \`${parts.reviewedAgent?.base}\`.`,
+        `See the work under review with: git diff ${parts.reviewedAgent?.base}`,
+      ]),
       "The shared contract defines the intended behavior.",
     ].join("\n"));
     sections.push("## Your persona\n\n" + parts.persona?.description);

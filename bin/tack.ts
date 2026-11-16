@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { startPersonaReview } from "../src/session/review";
+import { startRemoteReview } from "../src/session/review";
 import { setPrFix } from "../src/session/pr-fix";
 import { parseSupervisorCommand } from "../src/supervisor/command-prompt";
 import { writeGuardDecision } from "../src/supervisor/write-guard";
@@ -1409,16 +1409,16 @@ const sessionEdit = defineCommand({
 
 const sessionReview = defineCommand({
   meta: { name: "review", description: "Start a persona review" },
-  args: { session: { type: "positional" }, agent: { type: "positional" }, persona: { type: "positional", required: false }, prompt: { type: "string" }, model: { type: "string" } },
+  args: { session: { type: "positional" }, persona: { type: "positional", required: false }, prompt: { type: "string" }, model: { type: "string" } },
   async run({ args }) {
     const id = String(args.session); requireSession(id);
     const config = await loadConfig();
     if (!args.persona) {
       console.error(config.personas.length ? config.personas.map(p => `${p.name}: ${p.description}`).join("\n") : "No personas configured.");
-      console.error("Specify a persona: tack session review <session> <agent> <persona>");
+      console.error("Specify a persona: tack session review <session> <persona>");
       process.exitCode = 1; return;
     }
-    console.log(JSON.stringify(startPersonaReview(config, id, { agentId: String(args.agent), persona: String(args.persona), prompt: args.prompt, model: args.model })));
+    console.log(JSON.stringify(startRemoteReview(config, id, { persona: String(args.persona), prompt: args.prompt, model: args.model })));
   },
 });
 const sessionPrFix = defineCommand({
@@ -1603,9 +1603,9 @@ if (hidden === "__mcp") {
       let outcome: string;
       try {
         if (command.kind === "review") {
-          if (!command.agentId || !command.persona) throw new Error("Usage: /review <agentId> <persona> [focus…]");
-          const review = startPersonaReview(await loadConfig(), sessionId, { agentId: command.agentId, persona: command.persona, prompt: command.prompt });
-          outcome = `Started review agent ${review.agentId}.`;
+          if (!command.persona) throw new Error("Usage: /review <persona> [focus…]");
+          const review = startRemoteReview(await loadConfig(), sessionId, { persona: command.persona, prompt: command.prompt });
+          outcome = `Started review agent(s) ${review.reviews.map(r => r.agentId).join(", ")} for PR(s) ${review.reviews.map(r => `#${r.number}`).join(", ")}.`;
         } else {
           if (command.value && command.value !== "on" && command.value !== "off") throw new Error("Usage: /pr-fix [on|off]");
           if (!getSession(sessionId)) throw new Error(`Unknown session ${sessionId}`);

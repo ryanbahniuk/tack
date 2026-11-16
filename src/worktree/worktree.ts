@@ -232,6 +232,26 @@ export function ensurePrWorktree(repo: string, sessionId: string, agentId: strin
   return reuseWorktree(repo, sessionId, agentId) ?? createPrWorktree(repo, sessionId, agentId, prBranch);
 }
 
+/** Check out the remote PR head and pin its merge base for review, reusing on retry. */
+export function ensureRemoteReviewWorktree(repo: string, sessionId: string, agentId: string, headBranch: string, baseBranch: string | null): Worktree {
+  const existing = reuseWorktree(repo, sessionId, agentId);
+  if (existing) return existing;
+  assertRepoRoot(repo);
+  const base = baseBranch ?? remoteDefaultBranch(repo)?.replace(/^origin\//, "");
+  if (!base) throw new Error("Cannot determine the remote default branch for review");
+  const root = sessionWorktreesRoot(sessionId);
+  mkdirSync(root, { recursive: true });
+  const path = join(root, agentId);
+  const branch = `tack/${sessionId}/${agentId}`;
+  for (const ref of new Set([headBranch, base]))
+    git(["fetch", "origin", `+refs/heads/${ref}:refs/remotes/origin/${ref}`], repo);
+  const head = `refs/remotes/origin/${headBranch}`;
+  const mergeBase = git(["merge-base", `refs/remotes/origin/${base}`, head], repo);
+  git(["worktree", "add", "--no-track", "-b", branch, path, head], repo);
+  git(["update-ref", baseRef(branch), mergeBase], repo);
+  return { repo, path, branch, base: mergeBase };
+}
+
 // Async (`Bun.spawn`) git helpers for the PR watcher, which runs on a timer and so
 // must never block on `spawnSync` (see src/prwatch/watch.ts), and for supervisor
 // snapshot syncs, which run inside the MCP server and may fan out per project.

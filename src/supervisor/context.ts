@@ -183,7 +183,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "   show, use `continue_agent` to investigate further.",
     "   Never start a persona review on your own; call `review_agent` only when the human explicitly asks.",
     "   If a unit has a finished review, read it via `read_agent_output`, raise blocker/major findings to the human, and note the verdict in the PR body.",
-    "   The human can use /review and /pr-fix in attended Claude sessions.",
+    "   The human can use /review <persona> [focus…] to review open session PRs and /pr-fix in attended Claude sessions.",
     ...(config.autoOpenPrs
       ? [
           "6. When the agents are done and `check_conflicts` is clean, open the pull",
