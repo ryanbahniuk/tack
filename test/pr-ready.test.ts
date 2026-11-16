@@ -140,7 +140,7 @@ describe("open_pr draft defaults", () => {
         const agent = createAgent({ sessionId: session.id, projectName: "app" });
         setAgentWorktree(agent.id, "/unused/worktree", "work");
         setAgentRefs(agent.id, { diffRef: "/diff" });
-        const cfg = { draftPrs, projects: [{ name: "app", path: "/unused" }], prWatch: { enabled: false } } as TackConfig;
+        const cfg = { draftPrs, personas: [], projects: [{ name: "app", path: "/unused" }], prWatch: { enabled: false } } as TackConfig;
         const open = spyOn(prs, "openSessionPr").mockResolvedValue({ url: `https://github.com/acme/app/pull/${session.id}`, number: 7, headBranch: "pr" });
         const spies = [open,
           spyOn(config, "loadConfig").mockResolvedValue(cfg),

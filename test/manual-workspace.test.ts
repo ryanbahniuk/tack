@@ -95,7 +95,7 @@ function sessionFixture() {
   const config = ConfigSchema.parse({
     models: [model], projects: [{ name: "app", path: repo, description: "Test" }],
     roles: { agent: "test", supervisor: "test", summary: "test" },
-    personas: [{ name: "strict", description: "Find bugs" }],
+    personas: [{ name: "strict", description: "Find bugs", whenToUse: "Use for code; skip docs" }],
   }) as unknown as TackConfig;
   return { repo, session, config };
 }
@@ -141,7 +141,9 @@ describe("supervisor tools on manual workspaces", () => {
     const { call, open } = await supervisorTools(session.id, config);
     expect(await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x" }))
       .toMatchObject({ ok: true, number: 9 });
-    expect(open.mock.calls[0]![0]).toMatchObject({ localBranch: m.branch, repoPath: repo });
+    expect(open.mock.calls[0]![0]).toMatchObject({ localBranch: m.branch, repoPath: repo, body: "x" });
+    await call("open_pr", { agentId: m.id, title: "Hand edits", body: "x", skipReview: "ignored" });
+    expect(open.mock.calls[1]![0].body).toBe("x");
     expect(git(["status", "--porcelain"], m.worktree_path!)).toBe("");
     expect(git(["show", "--name-only", "--format=%s", "HEAD"], m.worktree_path!).split("\n"))
       .toEqual([`Tack: commit manual edits in ${m.id}`, "", "new.txt", "shared.txt"]);

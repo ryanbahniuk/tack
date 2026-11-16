@@ -64,10 +64,11 @@ export const ModelSchema = z.object({
 });
 export type Model = z.infer<typeof ModelSchema>;
 
-/** A reviewer lens: its description guides selection and the reviewer itself. */
+/** A reviewer lens: description gives reviewer instructions; whenToUse says when to pick or skip it. */
 export const PersonaSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
+  whenToUse: z.string().min(1),
   model: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
 });
 export type ResolvedPersona = Omit<z.infer<typeof PersonaSchema>, "model"> & { model: string[] };

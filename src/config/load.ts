@@ -18,6 +18,13 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     throw new Error(`Config at ${path} must \`export default\` a config object.`);
   }
 
+  if (typeof raw === "object" && raw !== null && "personas" in raw && Array.isArray(raw.personas)) {
+    for (const persona of raw.personas) {
+      if (persona && typeof persona === "object" && typeof persona.name === "string" && persona.whenToUse === undefined) {
+        throw new Error(`personas.${persona.name}.whenToUse is required: state when this persona should and should not be used.`);
+      }
+    }
+  }
   const parsed = ConfigSchema.parse(raw);
 
   // Normalize once so all consumers see ordered, distinct candidate keys.

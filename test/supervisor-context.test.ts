@@ -74,19 +74,24 @@ describe("supervisor context: publishable pages", () => {
 describe("persona contexts", () => {
   test("supervisor review guidance appears only when configured", () => {
     expect(context(true)).not.toContain("persona");
+    expect(written).not.toContain("whenToUse");
+    expect(written).not.toContain("skipReview");
     buildSupervisorContext("ses_test", { projects: [], autoOpenPrs: true,
-      personas: [{ name: "strict", description: "Strict review", model: [] }] } as unknown as TackConfig);
+      personas: [{ name: "strict", description: "Strict review", whenToUse: "Use for code; skip docs", model: [] }] } as unknown as TackConfig);
     expect(written).toContain("list_personas");
     expect(written).toContain("review_agent");
+    expect(written).toContain("whenToUse");
+    expect(written).toContain("skipReview");
     expect(written).toContain("blocker/major");
-    expect(written).toContain("Note persona verdicts briefly in the PR body");
+    expect(written).toContain("Note verdicts in the PR body");
+    expect(written).toContain("Review agents never become PRs.");
   });
 
   test("review context preserves persona instructions and reports without commits", async () => {
     const { buildAgentContext } = await import("../src/context/build");
     const description = "Strict reviewer.\n\n  Preserve this formatting verbatim.";
     buildAgentContext({ sessionId: "ses_test", agentId: "review", projectName: "test", kind: "review",
-      persona: { name: "strict", description }, reviewedAgent: { id: "author", branch: "tack/ses/author", base: "abc123" },
+      persona: { name: "strict", description, whenToUse: "Use for code; skip docs" }, reviewedAgent: { id: "author", branch: "tack/ses/author", base: "abc123" },
       sharedContext: "The intended behavior.",
     });
     expect(written).toContain("## Your persona\n\n" + description);

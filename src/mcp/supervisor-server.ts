@@ -192,12 +192,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool("list_personas", {
-    description: "List configured reviewer personas, their descriptions and model keys.",
+    description: "List configured reviewer personas; choose personas by whenToUse. " +
+      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change.",
     inputSchema: {}, annotations: { readOnlyHint: true },
   }, async () => text(config.personas));
 
   server.registerTool("review_agent", {
-    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Returns immediately.",
+    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Choose by whenToUse. " +
+      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change. Returns immediately.",
     inputSchema: { persona: z.string(), agentId: z.string(), prompt: z.string().optional(), model: z.string().optional() },
   }, async ({ persona: name, agentId, prompt, model }) => {
     const session = requireSession();
@@ -448,7 +450,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Commits anything the agent left uncommitted, merges the latest remote base, then pushes its worktree branch under the " +
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
-        "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it.",
+        "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. " +
+        "For normal workers with personas configured, a finished persona review is required unless no persona applies and skipReview gives a reason.",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),
@@ -456,9 +459,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
         base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
         draft: z.boolean().optional().describe("Request a draft PR; draftPrs forces drafts even when false. The watcher promotes addressed PRs with green CI."),
+        skipReview: z.string().optional().describe("Only when personas are configured but none applies to this change: a short reason. It is appended to the PR body."),
       },
     },
-    async ({ agentId, title, body, slug, base, draft }) => {
+    async ({ agentId, title, body, slug, base, draft, skipReview }) => {
       const session = requireSession();
       let a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
@@ -468,6 +472,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         throw new Error(`Agent ${agentId} has no worktree yet — it hasn't run.`);
       const proj = config.projects.find((p) => p.name === a!.project_name);
       if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
+      if (a.kind !== "manual" && !a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
+      const gated = config.personas.length > 0 && !a.kind;
+      const reviewed = gated && listAgents(sessionId).some((review) =>
+        review.kind === "review" && review.reviews_agent_id === agentId && review.status === "done" && review.review_ref);
+      const skipReason = skipReview?.trim();
+      if (gated && !reviewed && !skipReason) {
+        throw new Error(`Agent ${agentId} has no finished persona review. Run review_agent with a persona whose whenToUse matches this change, then wait_for_agents — or pass skipReview with a reason if no persona applies.`);
+      }
       if (a.kind === "manual") {
         // A manual workspace never "finishes", so nothing captured its diff: fold the
         // human's leftover edits into the branch, then capture what it now carries.
@@ -495,7 +507,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         localBranch: branch,
         prBranch: sessionPrBranch(sessionId, slug ?? title),
         title,
-        body,
+        body: gated && !reviewed && skipReason ? `${body}\n\n_Persona review skipped: ${skipReason}_` : body,
         base,
         draft: asDraft,
       });
