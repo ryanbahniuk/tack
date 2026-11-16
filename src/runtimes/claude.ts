@@ -160,7 +160,7 @@ export class ClaudeRuntime implements Runtime {
       args.push("--disallowedTools", readOnlyDisallowed(opts));
       // Auto-allow the mounted Tack MCP servers so their read/coordinate calls don't
       // each raise a permission prompt — the ONE human gate we want is the plan
-      // approval (`planApprovalTool`, forced to prompt by its own hook below), after
+      // approval (elicited by `planApprovalTool`), after
       // which spawn_agent proceeds. `spawn_agent` is still held before approval by
       // its own server-side plan-gate, not by a per-call prompt.
       // Layer (a) of four; see `supervisorAllowRules` for the remaining safeguards.
@@ -172,7 +172,7 @@ export class ClaudeRuntime implements Runtime {
     else if (!opts.resume && opts.sessionRef) args.push("--session-id", opts.sessionRef);
     for (const dir of opts.addDirs ?? []) args.push("--add-dir", dir);
     if (opts.contextFile) args.push("--append-system-prompt-file", opts.contextFile);
-    // Human gates use PreToolUse ask hooks for their plain-language wording.
+    // Approval tools use PreToolUse ask hooks for their plain-language wording.
     // Settings ask rules back them up against the server-wide allow rules below.
     const preToolUse: unknown[] = [];
     if (writableDirs.length && opts.writeGuard) {
@@ -182,11 +182,7 @@ export class ClaudeRuntime implements Runtime {
         hooks: [{ type: "command", command }],
       });
     }
-    // (1) Plan approval: the hook fires when the plan is presented (before the human
-    // decides) → mark the session as awaiting input (re-arms every iteration) and
-    // emit the "Proceed with implementation?" ask. The tool's handler, which flips
-    // the plan-approval gate, only runs if the human accepts — an un-forgeable
-    // signal the model can't self-trigger.
+    // (1) Mark the session awaiting input before the handler elicits a decision.
     if (opts.onPlanPresented && opts.planApprovalTool) {
       const command = shellJoin([opts.onPlanPresented.command, ...opts.onPlanPresented.args]);
       preToolUse.push({ matcher: opts.planApprovalTool, hooks: [{ type: "command", command }] });
@@ -216,15 +212,13 @@ export class ClaudeRuntime implements Runtime {
     // `--allowedTools mcp__<server>` rule above was observed NOT to be enough on its
     // own — `check_agents` still raised a prompt — so this hook is layer (b).
     // It too proved insufficient for `sync_projects` in plan mode; see (4).
-    // Exclude both approval tools and the plan-approval tool so an allow decision
-    // never pre-empts their human gates. This applies only to the supervisor.
+    // Exclude approval tools so an allow decision never pre-empts their human gates.
     if (opts.readOnly && opts.mcpServers?.length) {
       const payload = JSON.stringify({
         hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
       });
       const command = shellJoin(["printf", "%s", payload]);
       const gated = [...(opts.approvalTools ?? [])];
-      if (opts.onPlanPresented && opts.planApprovalTool) gated.push(opts.planApprovalTool);
       for (const s of opts.mcpServers) {
         const matcher = autoAllowMatcher(s.name, gated);
         preToolUse.push({ matcher, hooks: [{ type: "command", command }] });
@@ -236,11 +230,11 @@ export class ClaudeRuntime implements Runtime {
     // state the allow the way the TUI's own "Yes, and don't ask again" persists it:
     // as a settings rule. Layer (d) is that same rule pre-written to the session
     // cwd's `.claude/settings.local.json` by `prepareInteractive`.
-    // The approval tools and plan-approval tool also get `permissions.ask` rules. Permission rules
+    // The approval tools also get `permissions.ask` rules. Permission rules
     // resolve deny → ask → allow, so an `ask` rule beats every server-wide `allow`
     // above regardless of which source it came from — a guarantee that open_pr still
     // prompts that doesn't depend on how the `ask` hook in (2) ranks against rules.
-    // The hooks in (1)/(2) supply the plain-language prompt wording.
+    // The hook in (2) supplies the plain-language prompt wording.
     // (`supervisorAllowRules` is empty outside read-only; the `ask` rule follows
     // `approvalTools` wherever it's set, like its hook.)
     const allow = supervisorAllowRules(opts);
@@ -250,12 +244,7 @@ export class ClaudeRuntime implements Runtime {
     for (const dir of writableDirs) {
       allow.push(`Write(/${dir}/**)`, `Edit(/${dir}/**)`);
     }
-    const ask = [
-      ...new Set([
-        ...(opts.approvalTools ?? []),
-        ...(opts.onPlanPresented && opts.planApprovalTool ? [opts.planApprovalTool] : []),
-      ]),
-    ];
+    const ask = [...new Set(opts.approvalTools ?? [])];
     if (allow.length || ask.length)
       settings.permissions = {
         ...settings.permissions,
