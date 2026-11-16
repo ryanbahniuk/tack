@@ -49,6 +49,7 @@ export interface SessionRow {
   last_seen_at: string | null;
   /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
   pr_watch_pid: number | null;
+  pr_fix_enabled: number;
   supervisor_config_version: string | null;
   pr_watch_config_version: string | null;
   supervisor_code_version: string | null;
@@ -239,6 +240,10 @@ export function listSessions(includeArchived = false): SessionRow[] {
     ? `SELECT * FROM sessions ORDER BY created_at DESC`
     : `SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC`;
   return getDb().prepare(sql).all() as SessionRow[];
+}
+
+export function setSessionPrFixEnabled(id: string, enabled: boolean): void {
+  getDb().prepare(`UPDATE sessions SET pr_fix_enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
 }
 
 export function setSessionStatus(id: string, status: SessionStatus): void {

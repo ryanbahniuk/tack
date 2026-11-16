@@ -357,6 +357,8 @@ Adapter specifics, hidden behind the interface:
   refreshes `.claude/commands/approve.md` on every attended Claude launch (including
   resume); a UserPromptSubmit hook recognizes the command or its expanded marker
   and opens the plan gate, adding context so the supervisor proceeds to spawn agents.
+  Attended Claude sessions also provide `/review <agentId> <persona> [focus…]`
+  and `/pr-fix [on|off]`; Tack executes them in the prompt hook.
   Both escape hatches preserve the first approval timestamp and clear the
   awaiting-input flag; neither adds a supervisor-callable approval path. A plain
   chat "yes" is never approval.
@@ -707,6 +709,12 @@ one; feedback handling happens asynchronously. Per-PR refresh failures retain th
 stored status and do not prevent other PRs from refreshing. SIGUSR1 interrupts its
 sleep; requests during a pass coalesce into one immediate extra pass. Passes never overlap and all normal fix guards still apply.
 
+The per-session auto-fix toggle defaults on. `tack session pr-fix <session> [on|off]`,
+dashboard `F`, `/pr-fix [on|off]`, and the supervisor tool `set_pr_fix` expose it.
+When off, the watcher continues polling, completing existing fixes and promoting
+ready drafts, but does not record new feedback or spawn automatic fixes. Turning it
+on wakes the watcher. Explicit `fix_pr` remains available.
+
 Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
 closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
 completed; otherwise gather **new** feedback — unresolved review-thread comments,
@@ -859,19 +867,15 @@ supervisor never uses them to change an existing one.
 ## 13. Personas
 
 `personas` in `config.ts` defines optional reviewer lenses (`name`, `description`,
-`whenToUse`, optional `model` key or non-empty list). Names are unique. Description
-gives the reviewer instructions; whenToUse tells the supervisor when to select or
-skip it. Model keys normalize to ordered distinct lists; omitted models use `roles.agent`. Reviews prefer a model
-different from the author's when available, picking uniformly among candidates;
-an explicit tool model overrides that choice.
+optional `model` key or non-empty list). Names are unique. Description gives the
+reviewer instructions; omitted models use `roles.agent`. Reviews prefer a model
+different from the author's when available; an explicit model overrides the choice.
 
-After workers finish and conflicts are reconciled, the supervisor selects relevant
-personas per unit with `list_personas` and `review_agent`, waits for reports, and
-routes blocker/major findings to the author with `continue_agent`. It may re-review
-and briefly records verdicts in the PR body. `open_pr` requires normal workers to
-have a finished review with a report, or `skipReview` with a reason when no
-persona applies; the reason is added to the PR body. No personas means no added
-review step.
+Persona reviews start only when the human explicitly requests them, using
+`tack session review`, dashboard agent picker `R`, `/review <agentId> <persona>
+[focus…]`, or the supervisor's `review_agent` tool. The supervisor reads finished
+reviews, raises blocker/major findings to the human, and notes verdicts in PR bodies.
+Opening a PR does not require a review.
 
 A `review` agent is a full session agent with its own local branch/worktree forked
 from the author's local branch head. Its pinned diff base is the author's baseline,

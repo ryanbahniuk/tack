@@ -60,8 +60,8 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "  before its PR is open, including reconciling its own work. Resumes the same",
     "  conversation and worktree on the same agent row. Use spawn_agent for new units.",
     ...(config.personas?.length ? [
-      "- `list_personas` — configured reviewer lenses; choose by whenToUse.",
-      "- `review_agent` — review a finished worker by persona and agentId; optional prompt",
+      "- `list_personas` — configured reviewer lenses; use only when the human explicitly asks.",
+      "- `review_agent` — review a finished worker only when the human explicitly asks; optional prompt",
       "  adds focus and model overrides the pick (otherwise prefer a different model).",
       "  Returns immediately; read_agent_output includes its verdict and findings.",
     ] : []),
@@ -89,6 +89,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "  own — new comments, a conflict or failing CI spawn a `pr_fix` agent, then Tack pushes and",
     "  replies — so normally you just report on it. But when a PR stays conflicting, a",
     "  fix run failed, or the human asks for changes to an open PR, use `fix_pr`.",
+    "- `set_pr_fix` — change session auto-fix only when the human asks.",
     "- `fix_pr` — update an open session PR whenever the human asks for changes, or to",
     "  address a persistent conflict, failing CI or failed fix run. Spawns a `pr_fix`",
     "  agent that automatically continues the eligible PR lineage (optionally with `model`",
@@ -178,15 +179,9 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "   the only exception; other reads there aren't granted and will interrupt",
     "   the human with a permission prompt. If you need more than the result and diff",
     "   show, use `continue_agent` to investigate further.",
-    ...(config.personas?.length ? [
-      "   Before opening PRs, use `list_personas` to choose personas per finished unit",
-      "   by matching each persona's `whenToUse` against the change; do not run every persona every time.",
-      "   Call `review_agent`, then `wait_for_agents` and `read_agent_output`. Route blocker/major",
-      "   findings back via `continue_agent` on the author; optionally re-review after fixes.",
-      "   Every normal worker unit needs a persona review, or `open_pr` with `skipReview` and a reason",
-      "   if no persona applies; `open_pr` enforces this gate. Note verdicts in the PR body.",
-      "   Review agents never become PRs.",
-    ] : []),
+    "   Never start a persona review on your own; call `review_agent` only when the human explicitly asks.",
+    "   If a unit has a finished review, read it via `read_agent_output`, raise blocker/major findings to the human, and note the verdict in the PR body.",
+    "   The human can use /review and /pr-fix in attended Claude sessions.",
     ...(config.autoOpenPrs
       ? [
           "6. When the agents are done and `check_conflicts` is clean, open the pull",

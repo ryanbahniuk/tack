@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { startPersonaReview } from "../src/session/review";
+import { setPrFix } from "../src/session/pr-fix";
+import { parseSupervisorCommand } from "../src/supervisor/command-prompt";
 import { writeGuardDecision } from "../src/supervisor/write-guard";
 import { defineCommand, runMain } from "citty";
 import pc from "picocolors";
@@ -1404,6 +1407,31 @@ const sessionEdit = defineCommand({
   },
 });
 
+const sessionReview = defineCommand({
+  meta: { name: "review", description: "Start a persona review" },
+  args: { session: { type: "positional" }, agent: { type: "positional" }, persona: { type: "positional", required: false }, prompt: { type: "string" }, model: { type: "string" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    const config = await loadConfig();
+    if (!args.persona) {
+      console.error(config.personas.length ? config.personas.map(p => `${p.name}: ${p.description}`).join("\n") : "No personas configured.");
+      console.error("Specify a persona: tack session review <session> <agent> <persona>");
+      process.exitCode = 1; return;
+    }
+    console.log(JSON.stringify(startPersonaReview(config, id, { agentId: String(args.agent), persona: String(args.persona), prompt: args.prompt, model: args.model })));
+  },
+});
+const sessionPrFix = defineCommand({
+  meta: { name: "pr-fix", description: "Show or set session PR auto-fix" },
+  args: { session: { type: "positional" }, state: { type: "positional", required: false } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    if (args.state && args.state !== "on" && args.state !== "off") throw new Error("Expected on or off");
+    if (args.state) await setPrFix(id, args.state === "on", await loadConfig());
+    console.log(`PR auto-fix is ${getSession(id)!.pr_fix_enabled ? "on" : "off"} for ${id}.`);
+  },
+});
+
 const sessionPollPrs = defineCommand({
   meta: { name: "poll-prs", description: "Ask a session's PR watcher to poll now" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1430,9 +1458,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1569,6 +1597,23 @@ if (hidden === "__mcp") {
           additionalContext: "The human approved the plan via /approve; plan_approved_at is set. Proceed to spawn agents.",
         },
       }));
+    }
+    const command = typeof input?.prompt === "string" ? parseSupervisorCommand(input.prompt) : null;
+    if (sessionId && command) {
+      let outcome: string;
+      try {
+        if (command.kind === "review") {
+          if (!command.agentId || !command.persona) throw new Error("Usage: /review <agentId> <persona> [focus…]");
+          const review = startPersonaReview(await loadConfig(), sessionId, { agentId: command.agentId, persona: command.persona, prompt: command.prompt });
+          outcome = `Started review agent ${review.agentId}.`;
+        } else {
+          if (command.value && command.value !== "on" && command.value !== "off") throw new Error("Usage: /pr-fix [on|off]");
+          if (!getSession(sessionId)) throw new Error(`Unknown session ${sessionId}`);
+          if (command.value) await setPrFix(sessionId, command.value === "on", await loadConfig());
+          outcome = `PR auto-fix is ${getSession(sessionId)!.pr_fix_enabled ? "on" : "off"}.`;
+        }
+      } catch (err) { outcome = `Command failed: ${(err as Error).message}`; }
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `${outcome} Already done by Tack; report it, don't redo it.` } }));
     }
     if (sessionId && typeof input?.prompt === "string") titleFromFirstPrompt(sessionId, input.prompt);
   } catch {

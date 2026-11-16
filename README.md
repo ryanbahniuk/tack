@@ -317,3 +317,5 @@ Run `bun test` and keep `bun run typecheck` green, then
 smoke-test the CLI against a scratch `TACK_HOME`. Live runs cost money and mutate
 repos, so validate with `tack agent` before `tack session create`. See
 [AGENTS.md](./AGENTS.md) for conventions and common extension points.
+
+Persona reviews are human initiated: use `tack session review <session> <agent> <persona>`, dashboard agent picker `R`, or `/review <agent> <persona> [focus…]` in an attended Claude session. Set per-session PR auto-fix with `tack session pr-fix <session> [on|off]`, dashboard `F`, or `/pr-fix [on|off]`.

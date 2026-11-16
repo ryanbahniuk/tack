@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadConfig, modelForRole, modelForPersona, resolvePersona, resolveModel } from "../config/load";
+import { loadConfig, modelForRole, resolveModel } from "../config/load";
 import { getSession } from "../db";
 import {
   addSharedContext,
@@ -55,6 +55,8 @@ import {
   spawnPrWatcher,
   triggerPrWatch,
 } from "../prwatch/watch";
+import { startPersonaReview } from "../session/review";
+import { setPrFix } from "../session/pr-fix";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
@@ -186,39 +188,17 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   );
 
   server.registerTool("list_personas", {
-    description: "List configured reviewer personas; choose personas by whenToUse. " +
-      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change.",
+    description: "List configured reviewer personas when the human explicitly asks.",
     inputSchema: {}, annotations: { readOnlyHint: true },
   }, async () => text(config.personas));
 
   server.registerTool("review_agent", {
-    description: "Run a persona review of a finished worker's local branch in an isolated worktree. Choose by whenToUse. " +
-      "open_pr requires a finished persona review for normal workers; use skipReview only when no persona's whenToUse matches the change. Returns immediately.",
+    description: "Run a persona review only when the human explicitly asks. Returns immediately.",
     inputSchema: { persona: z.string(), agentId: z.string(), prompt: z.string().optional(), model: z.string().optional() },
   }, async ({ persona: name, agentId, prompt, model }) => {
     const session = requireSession();
     if (!session.plan_approved_at) throw new Error("Plan not approved. Use request_plan_approval before review_agent.");
-    const persona = resolvePersona(config, name);
-    const target = getAgent(agentId);
-    if (!target || target.session_id !== sessionId) throw new Error("Reviewed agent is not in this session.");
-    // Manual workspaces are refused too: they have no captured diff until open_pr, and
-    // the human's in-progress edits keep moving under a reviewer.
-    if (target.kind) throw new Error("Only normal worker agents can be reviewed; review, PR-fix and manual-workspace rows cannot.");
-    if (target.status !== "done") throw new Error("Reviewed agent must be done; use wait_for_agents first.");
-    if (!readArtifact(target.diff_ref).trim()) throw new Error("Reviewed agent has no diff to review.");
-    if (!target.branch || !target.diff_base) throw new Error("Reviewed agent has no local branch/baseline.");
-    const project = config.projects.find((p) => p.name === target.project_name);
-    if (!project) throw new Error(`Unknown project "${target.project_name}"`);
-    const m = model ? resolveModel(config, model) : modelForPersona(config, persona, { avoidKey: target.model });
-    const offered = checkModelOffered(config, m);
-    if (!offered.ok) throw new Error(`Refusing to review: ${offered.message}`);
-    const agent = prepareAgent({ session, project, model: m, kind: "review", persona: name,
-      reviewsAgentId: target.id,
-      prompt: `Review agent ${target.id}'s work using your persona and the shared contract. Report findings with report_review.` +
-        (prompt ? `\n\nExtra focus:\n${prompt}` : ""),
-    });
-    spawnAgentRunner(session.id, agent.id);
-    return text({ agentId: agent.id, persona: name, model: m.key, reviews: target.id });
+    return text(startPersonaReview(config, sessionId, { agentId, persona: name, prompt, model }));
   });
 
   // Not plan-gated: syncing is read-only investigation prep (it never touches the
@@ -444,8 +424,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Commits anything the agent left uncommitted, merges the latest remote base, then pushes its worktree branch under the " +
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
-        "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. " +
-        "For normal workers with personas configured, a finished persona review is required unless no persona applies and skipReview gives a reason.",
+        "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. ",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
         title: z.string().describe("PR title"),
@@ -453,10 +432,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
         base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
         draft: z.boolean().optional().describe("Request a draft PR; draftPrs forces drafts even when false. The watcher promotes addressed PRs with green CI."),
-        skipReview: z.string().optional().describe("Only when personas are configured but none applies to this change: a short reason. It is appended to the PR body."),
       },
     },
-    async ({ agentId, title, body, slug, base, draft, skipReview }) => {
+    async ({ agentId, title, body, slug, base, draft }) => {
       const session = requireSession();
       let a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
@@ -467,13 +445,6 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const proj = config.projects.find((p) => p.name === a!.project_name);
       if (!proj) throw new Error(`Unknown project "${a.project_name}"`);
       if (a.kind !== "manual" && !a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
-      const gated = config.personas.length > 0 && !a.kind;
-      const reviewed = gated && listAgents(sessionId).some((review) =>
-        review.kind === "review" && review.reviews_agent_id === agentId && review.status === "done" && review.review_ref);
-      const skipReason = skipReview?.trim();
-      if (gated && !reviewed && !skipReason) {
-        throw new Error(`Agent ${agentId} has no finished persona review. Run review_agent with a persona whose whenToUse matches this change, then wait_for_agents — or pass skipReview with a reason if no persona applies.`);
-      }
       if (a.kind === "manual") {
         // A manual workspace never "finishes", so nothing captured its diff: fold the
         // human's leftover edits into the branch, then capture what it now carries.
@@ -501,7 +472,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         localBranch: branch,
         prBranch: sessionPrBranch(sessionId, slug ?? title),
         title,
-        body: gated && !reviewed && skipReason ? `${body}\n\n_Persona review skipped: ${skipReason}_` : body,
+        body,
         base,
         draft: asDraft,
       });
@@ -520,7 +491,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // or bypass the per-PR budget; once open, repair failures are best-effort.
       if (baseSync.status === "conflict") {
         const prRow = listSessionPrs(sessionId).find((row) => row.url === pr.url);
-        if (!config.prWatch.enabled) baseSync.prFixSkipped = "PR watch is disabled";
+        if (!getSession(sessionId)?.pr_fix_enabled) baseSync.prFixSkipped = "PR auto-fix is off for this session";
+        else if (!config.prWatch.enabled) baseSync.prFixSkipped = "PR watch is disabled";
         else if (!session.plan_approved_at) baseSync.prFixSkipped = "Session plan is not approved";
         else if (!prRow || !isWatchablePr(prRow) || prRow.number === null || !prRow.head_branch)
           baseSync.prFixSkipped = "PR is not watchable or lacks its number/head branch";
@@ -663,6 +635,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         continued,
         fallbackReason,
         model: m.name,
+        autoFixNote: !getSession(sessionId)?.pr_fix_enabled ? "PR auto-fix is off for this session; this explicit fix is allowed." : undefined,
         note: !config.prWatch.enabled
           ? "PR watch is disabled (prWatch.enabled = false), so nothing will push this agent's commits onto " +
             `the PR; they'll stay on the agent's branch. ${after}`
@@ -674,6 +647,12 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       });
     },
   );
+
+  server.registerTool("set_pr_fix", { description: "Set PR auto-fix only when the human asks.", inputSchema: { enabled: z.boolean() } }, async ({ enabled }) => {
+    requireSession();
+    await setPrFix(sessionId, enabled, config);
+    return text({ prFixEnabled: enabled });
+  });
 
   server.registerTool(
     "check_prs",
@@ -694,6 +673,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const s = requireSession();
       return text({
         ...(pollTriggered ? { pollTriggered } : {}),
+        prFixEnabled: !!s.pr_fix_enabled,
         watcherPid: s.pr_watch_pid,
         prWatchEnabled: config.prWatch.enabled,
         prs: listSessionPrs(sessionId).map((pr) => {

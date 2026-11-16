@@ -93,13 +93,15 @@ describe("PR readiness config and persistence", () => {
     try {
       migrate(db);
       db.exec(`ALTER TABLE session_prs DROP COLUMN ready_promoted_at;
-        DELETE FROM _migrations WHERE version = 16;
+        DELETE FROM _migrations WHERE version = 16; DELETE FROM _migrations WHERE version = 17;
+        ALTER TABLE sessions DROP COLUMN pr_fix_enabled;
         INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
         INSERT INTO agents (id, session_id, project_name, status, persona, created_at, updated_at)
           VALUES ('a', 's', 'app', 'done', 'strict', 'then', 'then');
         INSERT INTO session_prs (id, session_id, url, created_at, updated_at)
           VALUES ('p', 's', 'url', 'then', 'then');`);
       migrate(db);
+      expect(db.query("SELECT pr_fix_enabled FROM sessions WHERE id = 's'").get()).toEqual({ pr_fix_enabled: 1 });
       expect(db.query("SELECT ready_promoted_at FROM session_prs").get()).toEqual({ ready_promoted_at: null });
       expect(db.query("SELECT persona FROM agents WHERE id = 'a'").get()).toEqual({ persona: "strict" });
       expect(db.query("SELECT name FROM _migrations WHERE version = 15").get()).toEqual({ name: "agent_personas" });
@@ -196,6 +198,8 @@ describe("watcher promotion", () => {
   }
   test("fetches checks with fixCi disabled and promotes a clean PR before the fix cap", async () => {
     await fixture(async ({ session, pr, config, checks, promote, logs }) => {
+      const { setSessionPrFixEnabled } = await import("../src/db");
+      setSessionPrFixEnabled(session.id, false);
       await watchPr(session, pr, config, msg => logs.push(msg));
       expect(checks).toHaveBeenCalledTimes(1);
       expect(promote).toHaveBeenCalledWith("/unused", 7);
@@ -204,6 +208,20 @@ describe("watcher promotion", () => {
       // GitHub still reports draft, as if a human changed it back.
       await watchPr(session, getSessionPr(pr.id)!, config, () => {});
       expect(promote).toHaveBeenCalledTimes(1);
+    });
+  });
+  test("auto-fix off leaves a conflict untouched", async () => {
+    await fixture(async ({ session, pr, config, logs }) => {
+      const db = await import("../src/db");
+      const prs = await import("../src/projects/prs");
+      db.setSessionPrFixEnabled(session.id, false);
+      const status = spyOn(prs, "fetchPrStatus").mockResolvedValue({ state: "OPEN", isDraft: true, mergeable: "CONFLICTING", baseRefName: "main", headRefOid: "current", headRefName: "pr", title: "Draft", url: pr.url, comments: [], reviews: [] });
+      try {
+        await watchPr(session, pr, config, msg => logs.push(msg));
+        expect(logs.some(msg => msg.includes("auto-fix is off"))).toBe(true);
+        expect(db.listPrFixAgents(pr.id)).toHaveLength(0);
+        expect(db.listPrFeedback(pr.id)).toHaveLength(0);
+      } finally { status.mockRestore(); }
     });
   });
   test("failed promotion logs, leaves the latch unset and retries next tick", async () => {
