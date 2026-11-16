@@ -1,3 +1,4 @@
+import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { startRemoteReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
 import React, { useEffect, useRef, useState } from "react";
@@ -351,6 +352,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   // `refreshing` guards against a slow `gh` call stacking with the next tick.
   // Never touches `setRows`: it only writes to SQLite, and the 1s snapshot poll
   // above already re-reads `listSessionPrs`.
+  useEffect(() => config ? startBaseCacheRefresher(config) : undefined, [config]);
+
   const refreshing = useRef(false);
   useEffect(() => {
     if (!config) return;

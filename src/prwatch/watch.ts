@@ -1,3 +1,4 @@
+import { computePreflight } from "../agent/preflight";
 import { commitSubject } from "../worktree/commit-message";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync } from "node:fs";
@@ -584,7 +585,9 @@ export async function spawnPrFixAgent(
       getDb().prepare(`UPDATE agents SET continues_agent_id = ?, worktree_path = ?, branch = ?, resume_ref = ?, diff_base = ? WHERE id = ?`)
         .run(decision.head.id, decision.head.worktree_path, decision.head.branch, decision.head.resume_ref, decision.base, agent.id);
     }
-    spawnAgentRunner(session.id, agent.id);
+    let preflight;
+    try { preflight = computePreflight(config, model); } catch { /* runner reports the failure */ }
+    spawnAgentRunner(session.id, agent.id, { preflight });
     return {
       agent: getAgent(agent.id)!, items: rows.length, continued: decision.head?.id ?? null,
       ...(decision.head ? {} : { fallbackReason: decision.reason }),

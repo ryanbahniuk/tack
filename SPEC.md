@@ -445,7 +445,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
    feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
-   a **detached** `tack __run-agent <agentId>` runner.
+   a **detached** `tack __run-agent <agentId>` runner. Long-lived launchers check runtime version pins and model availability once per process and hand the result to the runner; missing or mismatched handoffs fall back to runner checks, and unknown model availability never blocks.
 3. Each agent (`runAgent`) creates its worktree, materializes context, mounts the
    coordination server, runs its runtime autonomously, and persists usage/cost/refs
    as events stream; on completion it captures the worktree diff.
@@ -467,7 +467,7 @@ stdout/stderr to the log, and yields parsed JSON lines.
 **one agent per affected project** (so one PR per repo), splitting a project only
 into genuinely independent units that each merit their own PR. Every worktree
 forks from the project's remote default branch (`origin/HEAD`, else `origin/main` /
-`origin/master`, fetched best-effort first; local HEAD only when there is no origin),
+`origin/master`; a background refresher keeps its remote-tracking ref current, with a best-effort inline fetch when the cache is stale, missing, or disabled; local HEAD only when there is no usable origin). The `baseCache` defaults are enabled, a 120-second refresh interval, and a 600-second maximum age. Snapshot syncs also warm the cache,
 so agent branches and their PRs start from current upstream code even when the
 user's checkout is stale — and never from a sibling's branch — so ordered work within
 one project must go to a single agent; a same-project `dependsOn` would wait but

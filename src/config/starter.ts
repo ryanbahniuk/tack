@@ -10,6 +10,9 @@ export default ({
     // { name: "my-app", path: "~/Code/my-app", description: "What this repo is." },
   ],
 
+  // Background refresh of project default branches.
+  baseCache: { enabled: true, intervalSeconds: 120, maxAgeSeconds: 600 },
+
   models: [
     { key: "opus-5", provider: "anthropic", name: "Opus", version: "5", runtime: "claude", id: "claude-opus-5", effort: "high" },
     { key: "sonnet-5", provider: "anthropic", name: "Sonnet", version: "5", runtime: "claude", id: "claude-sonnet-5" },

@@ -202,6 +202,7 @@ export const ConfigSchema = z.object({
   supervisorMcpServers: z.array(McpServerSchema).default([]),
   /** Background PR polling + auto-fix (see `PrWatchSchema`). */
   prWatch: PrWatchSchema,
+  baseCache: z.object({ enabled: z.boolean().default(true), intervalSeconds: z.number().positive().default(120), maxAgeSeconds: z.number().nonnegative().default(600) }).default({ enabled: true, intervalSeconds: 120, maxAgeSeconds: 600 }),
   agentReuse: z.object({
     enabled: z.boolean().default(true),
     maxIdleHours: z.number().nonnegative().default(24),
@@ -233,6 +234,7 @@ export interface TackConfig {
   readAllowlist: string[];
   supervisorMcpServers: McpServer[];
   prWatch: PrWatch;
+  baseCache: { enabled: boolean; intervalSeconds: number; maxAgeSeconds: number };
   agentReuse: { enabled: boolean; maxIdleHours: number };
   autoOpenPrs: boolean;
   draftPrs: boolean;
