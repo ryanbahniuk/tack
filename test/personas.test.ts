@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig, modelForPersona, resolvePersona } from "../src/config/load";
 import { migrate } from "../src/db/migrate";
-import { approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getDb, setAgentReviewRef, setAgentRefs, setAgentStatus, setAgentWorktree, setAgentResumeRef } from "../src/db";
+import { approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getDb, setAgentReviewRef, setAgentRefs, setAgentStatus, setAgentWorktree, setAgentResumeRef, upsertSessionPr, listSessionPrs } from "../src/db";
 import { writeAgentArtifact } from "../src/artifacts/store";
 import { agentDisplayStatus } from "../src/cli/liveness";
-import { createReviewWorktree, ensureReviewWorktree, worktreeDiff } from "../src/worktree/worktree";
+import { createReviewWorktree, ensureReviewWorktree, ensureRemoteReviewWorktree, worktreeDiff } from "../src/worktree/worktree";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
@@ -198,4 +198,45 @@ test("open_pr does not require persona reviews", async () => {
   await call("open_pr", args);
   expect(commit).toHaveBeenCalled();
   expect(open.mock.calls.at(-1)![0].body).toBe("Details");
+});
+
+
+test("remote reviews target each open session PR", async () => {
+  const { startRemoteReview } = await import("../src/session/review");
+  const c = await config([{ name: "strict", description: "Find bugs", model: ["a", "b"] }]);
+  c.projects = [{ name: "app", path: "/tmp", description: "App" }];
+  const session = createSession({}); sessions.push(session.id);
+  const author = createAgent({ sessionId: session.id, projectName: "app", model: "a" });
+  mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  mocks.push(spyOn(availability, "checkModelOffered").mockReturnValue({ ok: true }));
+  expect(() => startRemoteReview(c, session.id, { persona: "missing" })).toThrow("Unknown persona");
+  expect(() => startRemoteReview(c, session.id, { persona: "strict" })).toThrow("No open PRs to review in this session.");
+  for (const [number, state] of [[1, "OPEN"], [2, null], [3, "CLOSED"], [4, "MERGED"]] as const)
+    upsertSessionPr({ sessionId: session.id, agentId: author.id, projectName: "app", number, url: `https://example.com/${number}`, state, headBranch: `pr-${number}` });
+  const result = startRemoteReview(c, session.id, { persona: "strict", prompt: "races" });
+  expect(result.reviews.map(r => r.number)).toEqual([1, 2]);
+  for (const review of result.reviews) {
+    expect(getAgent(review.agentId)).toMatchObject({ kind: "review", persona: "strict", session_pr_id: review.prId, reviews_agent_id: null, project_name: "app", model: "b" });
+    expect(readFileSync(getAgent(review.agentId)!.prompt_ref!, "utf8")).toContain("Extra focus:\nraces");
+  }
+  expect(listSessionPrs(session.id)).toHaveLength(4);
+});
+
+test("remote review worktree pins merge base and reuses its checkout", () => {
+  const repo = temp(); const remote = temp();
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    if (result.status) throw Error(result.stderr);
+    return result.stdout.trim();
+  };
+  git(remote, "init", "--bare"); git(repo, "init", "-b", "main");
+  git(repo, "config", "user.email", "test@example.com"); git(repo, "config", "user.name", "Test"); git(repo, "config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "file"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD"); git(repo, "remote", "add", "origin", remote); git(repo, "push", "origin", "main");
+  git(repo, "checkout", "-b", "feature"); writeFileSync(join(repo, "file"), "remote work\n"); git(repo, "commit", "-am", "feature"); git(repo, "push", "origin", "feature");
+  const session = createSession({}); sessions.push(session.id);
+  const tree = ensureRemoteReviewWorktree(repo, session.id, "remote-review", "feature", "main");
+  expect(tree.base).toBe(base); expect(worktreeDiff(tree)).toContain("+remote work");
+  expect(ensureRemoteReviewWorktree(repo, session.id, "remote-review", "missing", "missing")).toEqual(tree);
+  git(repo, "worktree", "remove", "--force", tree.path);
 });

@@ -25,7 +25,7 @@ import {
 import { getDb } from "../db";
 import { readArtifact, writeAgentArtifact } from "../artifacts/store";
 import { buildAgentContext } from "../context/build";
-import { ensureReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
+import { ensureReviewWorktree, ensureRemoteReviewWorktree, ensurePrWorktree, ensureWorktree, existingWorktree, worktreeDiff, type Worktree } from "../worktree/worktree";
 import { resolveRuntime, selectRuntime, type AgentEvent } from "../runtimes";
 import { checkModelOffered } from "../runtimes/availability";
 import { selfCommand } from "../process/self";
@@ -123,6 +123,10 @@ export async function* runAgent(
     sharedContext: shared ? readArtifact(shared.body_ref) : undefined,
     kind: agent.kind,
     persona,
+    reviewedPr: agent.kind === "review" && !reviewed && agent.session_pr_id ? (() => {
+      const pr = getSessionPr(agent.session_pr_id!);
+      return pr?.head_branch ? { number: pr.number, url: pr.url, headBranch: pr.head_branch, base: worktree.base } : undefined;
+    })() : undefined,
     reviewedAgent: reviewed ? { id: reviewed.id, branch: reviewed.branch!, base: worktree.base } : undefined,
   });
 
@@ -241,6 +245,11 @@ function agentWorktree(agent: AgentRow, repoPath: string): Worktree {
     return existingWorktree(repoPath, agent.worktree_path, agent.branch);
   if (agent.kind === "review") {
     const reviewed = agent.reviews_agent_id ? getAgent(agent.reviews_agent_id) : null;
+    if (!agent.reviews_agent_id && agent.session_pr_id) {
+      const pr = getSessionPr(agent.session_pr_id);
+      if (!pr?.head_branch) throw new Error(`Review agent ${agent.id} has no PR head branch`);
+      return ensureRemoteReviewWorktree(repoPath, agent.session_id, agent.id, pr.head_branch, pr.base_branch);
+    }
     if (!reviewed?.branch || !reviewed.diff_base)
       throw new Error(`Review agent ${agent.id} has no reviewed branch/baseline`);
     return ensureReviewWorktree(repoPath, agent.session_id, agent.id, reviewed.branch, reviewed.diff_base);

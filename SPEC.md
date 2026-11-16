@@ -357,7 +357,7 @@ Adapter specifics, hidden behind the interface:
   refreshes `.claude/commands/approve.md` on every attended Claude launch (including
   resume); a UserPromptSubmit hook recognizes the command or its expanded marker
   and opens the plan gate, adding context so the supervisor proceeds to spawn agents.
-  Attended Claude sessions also provide `/review <agentId> <persona> [focus…]`
+  Attended Claude sessions also provide `/review <persona> [focus…]`
   and `/pr-fix [on|off]`; Tack executes them in the prompt hook.
   Both escape hatches preserve the first approval timestamp and clear the
   awaiting-input flag; neither adds a supervisor-callable approval path. A plain
@@ -872,14 +872,15 @@ reviewer instructions; omitted models use `roles.agent`. Reviews prefer a model
 different from the author's when available; an explicit model overrides the choice.
 
 Persona reviews start only when the human explicitly requests them, using
-`tack session review`, dashboard agent picker `R`, `/review <agentId> <persona>
+`tack session review`, dashboard session list `R`, `/review <persona>
 [focus…]`, or the supervisor's `review_agent` tool. The supervisor reads finished
 reviews, raises blocker/major findings to the human, and notes verdicts in PR bodies.
 Opening a PR does not require a review.
 
-A `review` agent is a full session agent with its own local branch/worktree forked
-from the author's local branch head. Its pinned diff base is the author's baseline,
-so `git diff <base>` shows the work under review. Resume/retry reuses the worktree.
+Human-initiated reviews create one agent per open session PR, checking out the remote
+head and pinning its merge base with the remote base branch. `review_agent` instead
+reviews the author's local branch with its original baseline. In either case,
+`git diff <base>` shows the work under review. Resume/retry reuses the worktree.
 Reviewers may inspect, test and experiment, but never commit or open PRs. They call
 `report_review` exactly once with a verdict (`approve`, `changes_requested`, or
 `comment`), summary and findings (severity, optional file/line, title and detail).

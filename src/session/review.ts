@@ -1,6 +1,6 @@
 import type { TackConfig } from "../config/schema";
 import { resolvePersona, resolveModel, modelForPersona } from "../config/load";
-import { getAgent, getSession } from "../db";
+import { getAgent, getSession, listSessionPrs } from "../db";
 import { readArtifact } from "../artifacts/store";
 import { checkModelOffered } from "../runtimes/availability";
 import { prepareAgent } from "../agent/execute";
@@ -30,4 +30,28 @@ export function startPersonaReview(config: TackConfig, sessionId: string, { agen
     });
     spawnAgentRunner(session.id, agent.id);
     return { agentId: agent.id, persona: name, model: m.key, reviews: target.id };
+}
+
+/** Start one independent review for each open session PR. */
+export function startRemoteReview(config: TackConfig, sessionId: string, { persona: name, prompt, model }: { persona: string; prompt?: string; model?: string }) {
+    const session = getSession(sessionId);
+    if (!session) throw new Error(`Unknown session ${sessionId}`);
+    const persona = resolvePersona(config, name);
+    const prs = listSessionPrs(sessionId).filter(pr => !pr.merged_at && !["merged", "closed"].includes(pr.state?.toLowerCase() ?? "") && pr.head_branch && pr.project_name);
+    if (!prs.length) throw new Error("No open PRs to review in this session.");
+    const reviews = prs.map(pr => {
+      const project = config.projects.find(p => p.name === pr.project_name);
+      if (!project) throw new Error(`Unknown project "${pr.project_name}"`);
+      const author = pr.agent_id ? getAgent(pr.agent_id) : null;
+      const m = model ? resolveModel(config, model) : modelForPersona(config, persona, { avoidKey: author?.model });
+      const offered = checkModelOffered(config, m);
+      if (!offered.ok) throw new Error(`Refusing to review: ${offered.message}`);
+      const agent = prepareAgent({ session, project, model: m, kind: "review", persona: name, sessionPrId: pr.id,
+        prompt: `Review PR #${pr.number} (${pr.url}) using your persona and the shared contract. Report findings with report_review.` +
+          (prompt ? `\n\nExtra focus:\n${prompt}` : ""),
+      });
+      spawnAgentRunner(session.id, agent.id);
+      return { agentId: agent.id, prId: pr.id, number: pr.number, url: pr.url, model: m.key };
+    });
+    return { persona: name, reviews };
 }
