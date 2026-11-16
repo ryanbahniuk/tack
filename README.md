@@ -28,7 +28,7 @@ brew install oven-sh/bun/bun gh tmux
 | Tool | Required? | What it enables |
 | --- | --- | --- |
 | [Bun](https://bun.sh) | **Required** | Runs Tack (no build step) and installs the runtimes. |
-| `claude` / `codex` | Installed by Tack (step 3) | The supervisor (Claude) and agents (Codex by default). |
+| `claude` / `codex` | Installed by Tack (step 4) | The supervisor (Claude) and agents (Codex by default). |
 | [`gh`](https://cli.github.com) | Strongly recommended | Opening PRs, discovering them and PR watch. Without it, PR status never updates. |
 | `tmux` | Recommended | Detaching from a live supervisor and reattaching later. |
 
@@ -41,20 +41,30 @@ bun install
 bun link        # puts `tack` on your PATH
 ```
 
-### 3. Install the runtimes
+### 3. Create the config
+
+```bash
+cd ~ && tack init
+```
+
+This writes a starter config to `~/.tack/config.ts` (set `TACK_HOME` to use another
+state root). Running `tack init` inside a git repo also registers that repo as a
+project, so run it from `~` here (step 2 leaves you inside the tack clone); you add
+projects in step 6.
+
+### 4. Install the runtimes
 
 ```bash
 tack runtimes install
 ```
 
 This installs the latest Claude Code and Codex CLIs with bun and syncs Tack's
-models with them. It also writes a starter config to `~/.tack/config.ts` (set
-`TACK_HOME` to use another state root).
+models with them. It needs the config from step 3 (`tack init`).
 
 > **No Codex?** Run `tack runtimes install claude`, then `tack roles set agent opus-5`
 > so agents run on Claude.
 
-### 4. Log in
+### 5. Log in
 
 ```bash
 claude             # type /login, then exit
@@ -66,23 +76,23 @@ tack models sync   # match the models to what your logins offer
 
 Tack uses your existing logins and never manages credentials itself.
 
-### 5. Add projects
+### 6. Add projects
 
 ```bash
-cd ~/Code/my-app && tack init     # registers the repo you're in
-tack projects add ~/Code/other    # add more by path
+tack projects add ~/Code/my-app   # add a repo by path
 tack projects add --all           # or every git repo in the current directory
 ```
 
-The summary model writes each project's description for you.
+Re-running `tack init` inside a repo also registers it. The summary model writes
+each project's description for you.
 
-### 6. Check your setup
+### 7. Check your setup
 
 ```bash
 tack runtimes doctor   # binaries, version pins, auth and role models in one check
 ```
 
-### 7. Your first session
+### 8. Your first session
 
 Skim [Before your first session](#before-your-first-session) first: sessions spend
 real money and open PRs.

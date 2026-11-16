@@ -231,7 +231,7 @@ session spinning up many agents prints it once. The default is runtime-agnostic:
 `versionPolicy` lives in the shared runtime settings, so every runtime (and any future
 one, e.g. Bedrock) inherits the same behavior with no runtime-specific code.
 
-**Transparent installs** (`src/runtimes/install.ts`). `tack init` and `tack install`
+**Transparent installs** (`src/runtimes/install.ts`). `tack init` and `tack runtimes install`
 ensure the pinned versions are present. If a pinned version isn't already installed
 (managed or on PATH), Tack installs it into an isolated, Tack-owned directory —
 `~/.tack/runtimes/<kind>/<version>` — via a package manager (`bun add
