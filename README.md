@@ -166,7 +166,7 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
   servers you're comfortable with it calling.
 - **Tickets:** with `jira` set, the supervisor links the tickets a session works
   on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now,
-  `J` opens a session's tickets, `t` lists them across sessions) and
+  `J` opens a session's tickets, `t` lists every session's tickets, archived included) and
   `tack session show` lists them. `cloudId` is optional and falls back to the
   server's `CONFLUENCE_CLOUD_ID`.
 
@@ -240,9 +240,9 @@ with work on the left and **Insights** on the right.
 | `m` | View pending amendments (read-only) |
 | `O` | Open the session's PRs in the browser |
 | `J` | Open the session's Jira tickets in the browser |
-| `t` | Tickets view: every linked Jira ticket across the sessions shown (open work first), with its session and state. `enter`/`o` opens a ticket, `g` jumps to its session, `esc`/`q` goes back |
+| `t` | Tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `esc`/`q` goes back |
 | `p` | Poll PRs now |
-| `P` | Poll Jira now instead of waiting for the 2-minute refresh (list or tickets view) |
+| `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
 | `r` | Refresh the session onto current Tack code (asks first) |

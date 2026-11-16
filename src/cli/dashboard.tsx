@@ -9,6 +9,7 @@ import {
   getSession,
   listAgents,
   listInterruptedAgents,
+  listAllSessionJiraTickets,
   listPendingAmendments,
   listSessionJiraTickets,
   listSessionPrs,
@@ -16,6 +17,7 @@ import {
   sessionTotalCost,
   type AgentRow,
   type AmendmentRow,
+  type JiraTicketWithSessionRow,
   type SessionJiraTicketRow,
   type SessionPrRow,
   type SessionRow,
@@ -303,6 +305,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
    * status change that re-sorts the list keeps the highlight; `index` is the
    * fallback when that ticket disappears (unlinked), clamping to a neighbor. */
   const [ticketSel, setTicketSel] = useState<{ id: string | null; index: number }>({ id: null, index: 0 });
+  /** Tickets-view filters, reset each time `t` opens the view. */
+  const [ticketFilter, setTicketFilter] = useState<TicketFilter>(DEFAULT_TICKET_FILTER);
+  /** `/` text entry in progress: keystrokes edit `ticketFilter.text` instead of
+   * running the panel's shortcuts, until enter (keep) or esc (clear). */
+  const [ticketTyping, setTicketTyping] = useState(false);
+  /** Every linked ticket, archived sessions included — independent of `z` and only
+   * read while the tickets view is open (see the tick below). */
+  const [allTickets, setAllTickets] = useState<JiraTicketWithSessionRow[]>([]);
+  const ticketsSigRef = useRef("");
   /** Persona chooser for the selected session. */
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
@@ -317,11 +328,26 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const selected = rows[cursor] as View | undefined;
   const pickerView = rows.find((r) => r.session.id === pickerId);
 
+  // Entries the tickets view shows: the full ticket history joined with live views
+  // for the sessions on screen, then narrowed by the view's filters.
+  const shownTickets = mode === "tickets" ? filterTicketEntries(ticketEntries(allTickets, rows), ticketFilter) : [];
+
+  /** Re-read the whole ticket history; re-renders only when its fingerprint moved. */
+  const refreshTickets = () => {
+    const next = listAllSessionJiraTickets();
+    const sig = ticketsSignature(next);
+    if (sig !== ticketsSigRef.current) {
+      ticketsSigRef.current = sig;
+      setAllTickets(next);
+    }
+  };
+
   const sigRef = useRef("");
   const refresh = () => {
     const next = snapshot(showArchived);
     sigRef.current = signature(next);
     setRows(next);
+    if (mode === "tickets") refreshTickets();
   };
 
   // The dashboard only observes — it never marks a session seen. The "unread work"
@@ -342,6 +368,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [showArchived]);
+
+  // The tickets view's history query rides the same 1s cadence, but only while the
+  // view is open: the main list never needs archived sessions' tickets.
+  useEffect(() => {
+    if (mode !== "tickets") return;
+    refreshTickets();
+    const t = setInterval(refreshTickets, 1000);
+    return () => clearInterval(t);
+  }, [mode]);
 
   // Kept fresh so the refresh effect below (which fires on mount + every
   // `prWatch.intervalSeconds`, like the PR watcher, not on every 1s snapshot)
@@ -512,7 +547,21 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     // Cross-session tickets view: read-only, like the rest of the Jira surface. `q`
     // backs out here rather than quitting (ctrl+c above still quits).
     if (mode === "tickets") {
-      const entries = ticketEntries(rows);
+      // Typing a `/` filter captures every key — `q`, `j`, `g`… are text here — so
+      // a search for "quality" can't quit the view or jump to a session.
+      if (ticketTyping) {
+        if (key.escape) {
+          setTicketFilter((f) => ({ ...f, text: "" }));
+          return setTicketTyping(false);
+        }
+        if (key.return) return setTicketTyping(false);
+        if (key.backspace || key.delete) return setTicketFilter((f) => ({ ...f, text: f.text.slice(0, -1) }));
+        // Printable only (a paste may arrive as several characters at once).
+        const text = key.ctrl || key.meta ? "" : input.replace(/[\u0000-\u001f\u007f]/g, "");
+        if (text) setTicketFilter((f) => ({ ...f, text: f.text + text }));
+        return;
+      }
+      const entries = shownTickets;
       const index = ticketCursorIndex(entries, ticketSel);
       const entry = entries[index];
       const move = (next: number) => {
@@ -522,7 +571,16 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (input === "q" || key.escape) return setMode("list");
       if (key.downArrow || input === "j") return move(index + 1);
       if (key.upArrow || input === "k") return move(index - 1);
-      if (input === "P") return startJiraPoll();
+      if (input === "/") return setTicketTyping(true);
+      if (input === "f") return setTicketFilter((f) => ({ ...f, status: nextTicketStatusFilter(f.status) }));
+      if (input === "a") return setTicketFilter((f) => ({ ...f, hideArchived: !f.hideArchived }));
+      // Polls what the view is showing (archived sessions included), not just the
+      // main list's rows; same guard as the background tick, so they never overlap.
+      if (input === "P") {
+        if (!config) return setNotice("config is unavailable");
+        if (entries.length === 0) return setNotice("no tickets match the filters — nothing to poll");
+        return pollJira(config, [...new Set(entries.map((e) => e.session.id))], true);
+      }
       if (!entry) return;
       if (key.return || input === "o") {
         const url = resolveTicketUrl(config, entry.ticket);
@@ -531,7 +589,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         return setNotice(`opened ${entry.ticket.key} in browser`);
       }
       if (input === "g") {
-        setCursorId(entry.view.session.id);
+        // An archived session only has a row in the main list with `z` on, so turn
+        // it on first or the cursor would fall back to the top row.
+        if (entry.session.status === "archived" && !showArchived) setShowArchived(true);
+        setCursorId(entry.session.id);
         return setMode("list");
       }
       return;
@@ -627,6 +688,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     // empty list and in the full-screen insights layout too.
     if (input === "t") {
       setTicketSel({ id: null, index: 0 });
+      setTicketFilter(DEFAULT_TICKET_FILTER);
+      setTicketTyping(false);
+      // Read now so the first frame already has the history, not an empty list.
+      refreshTickets();
       return setMode("tickets");
     }
     if (input === "P") return startJiraPoll();
@@ -768,11 +833,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   }
 
   if (mode === "tickets") {
-    const entries = ticketEntries(rows);
     return (
       <TicketsPanel
-        entries={entries}
-        cursor={ticketCursorIndex(entries, ticketSel)}
+        entries={shownTickets}
+        total={allTickets.length}
+        filter={ticketFilter}
+        typing={ticketTyping}
+        cursor={ticketCursorIndex(shownTickets, ticketSel)}
         notice={notice}
         jiraUnavailable={jiraUnavailable}
         size={size}
@@ -1035,29 +1102,104 @@ function AmendmentsPanel({ view, cursor, notice }: { view: View; cursor: number;
 }
 
 /** One (session, ticket) pair in the cross-session tickets view. A key linked to
- * several sessions gets one entry per session, since each is separate work. */
+ * several sessions gets one entry per session, since each is separate work.
+ * `session` comes from the history query, so every entry has it; `view` is the
+ * live dashboard row, present only while that session is on the main list. */
 export interface TicketEntry {
-  view: View;
   ticket: SessionJiraTicketRow;
+  session: { id: string; title: string | null; status: SessionRow["status"]; created_at: string };
+  view?: View;
 }
 
 /** Stable identity for a tickets-view entry across snapshots. */
 function ticketEntryId(e: TicketEntry): string {
-  return `${e.view.session.id}:${e.ticket.id}`;
+  return `${e.session.id}:${e.ticket.id}`;
 }
 
-/** Open work first — in progress before to do — then done; `Array.prototype.sort`
- * is stable, so each group keeps the dashboard's session order from `rows`. */
+/** Content fingerprint of the ticket history, so the 1s read only re-renders on a
+ * visible change (a link, a status refresh, a session archived or retitled). */
+function ticketsSignature(tickets: readonly JiraTicketWithSessionRow[]): string {
+  return tickets
+    .map((t) => `${t.id}/${t.session_status}/${t.session_title ?? ""}/${t.status ?? ""}/${t.status_category ?? ""}/${t.title ?? ""}/${t.url ?? ""}`)
+    .join("|");
+}
+
+/** Open work first — in progress before to do — then done. */
 function ticketSortWeight(category: string | null): number {
   if (category === "indeterminate") return 0;
   if (category === "done") return 2;
   return 1;
 }
 
-export function ticketEntries(rows: readonly View[]): TicketEntry[] {
-  return rows
-    .flatMap((view) => view.tickets.map((ticket) => ({ view, ticket })))
-    .sort((a, b) => ticketSortWeight(a.ticket.status_category) - ticketSortWeight(b.ticket.status_category));
+/** Every ticket in the history as a view entry, open work first and, inside each
+ * status group, the newest link first. Sessions on screen get their live `View`
+ * (for the needs-input/working/live badge); the rest render from the joined row. */
+export function ticketEntries(tickets: readonly JiraTicketWithSessionRow[], rows: readonly View[]): TicketEntry[] {
+  const views = new Map(rows.map((v) => [v.session.id, v]));
+  return tickets
+    .map(({ session_title, session_status, session_created_at, ...ticket }) => ({
+      ticket,
+      session: { id: ticket.session_id, title: session_title, status: session_status, created_at: session_created_at },
+      view: views.get(ticket.session_id),
+    }))
+    .sort(
+      (a, b) =>
+        ticketSortWeight(a.ticket.status_category) - ticketSortWeight(b.ticket.status_category) ||
+        b.ticket.created_at.localeCompare(a.ticket.created_at),
+    );
+}
+
+/** The `f` cycle, in order. Buckets use Jira's stable status category, like the
+ * glyphs: `indeterminate` = in progress, `new`/unknown = to do, `done` = done. */
+export const TICKET_STATUS_FILTERS = ["all", "open", "in_progress", "todo", "done"] as const;
+export type TicketStatusFilter = (typeof TICKET_STATUS_FILTERS)[number];
+
+export interface TicketFilter {
+  status: TicketStatusFilter;
+  /** `a`: drop tickets whose session is archived (shown by default). */
+  hideArchived: boolean;
+  /** `/`: case-insensitive substring over ticket key/title and session id/title. */
+  text: string;
+}
+
+export const DEFAULT_TICKET_FILTER: TicketFilter = { status: "all", hideArchived: false, text: "" };
+
+export function nextTicketStatusFilter(current: TicketStatusFilter): TicketStatusFilter {
+  return TICKET_STATUS_FILTERS[(TICKET_STATUS_FILTERS.indexOf(current) + 1) % TICKET_STATUS_FILTERS.length]!;
+}
+
+function matchesTicketStatus(category: string | null, status: TicketStatusFilter): boolean {
+  switch (status) {
+    case "all": return true;
+    case "open": return category !== "done";
+    case "in_progress": return category === "indeterminate";
+    case "todo": return category !== "done" && category !== "indeterminate";
+    case "done": return category === "done";
+  }
+}
+
+/** Narrow entries by the view's filters, keeping their order. */
+export function filterTicketEntries(entries: readonly TicketEntry[], filter: TicketFilter): TicketEntry[] {
+  const needle = filter.text.trim().toLowerCase();
+  return entries.filter((e) => {
+    if (!matchesTicketStatus(e.ticket.status_category, filter.status)) return false;
+    if (filter.hideArchived && e.session.status === "archived") return false;
+    if (!needle) return true;
+    return [e.ticket.key, e.ticket.title, e.session.id, e.session.title].some((field) => field?.toLowerCase().includes(needle));
+  });
+}
+
+const TICKET_STATUS_LABELS: Record<TicketStatusFilter, string> = {
+  all: "all", open: "open", in_progress: "in progress", todo: "to do", done: "done",
+};
+
+/** The active filters for the header, e.g. `status: open · archived hidden · "X"`; empty when none. */
+export function describeTicketFilters(filter: TicketFilter): string {
+  const parts: string[] = [];
+  if (filter.status !== "all") parts.push(`status: ${TICKET_STATUS_LABELS[filter.status]}`);
+  if (filter.hideArchived) parts.push("archived hidden");
+  if (filter.text.trim()) parts.push(JSON.stringify(filter.text.trim()));
+  return parts.join(" · ");
 }
 
 /** The pinned entry when it still exists, else the remembered index clamped. */
@@ -1094,28 +1236,48 @@ function sessionBadge(v: View): React.ReactElement {
   return <Text color="gray">○ <Text dimColor>{v.session.status}</Text></Text>;
 }
 
-const TICKETS_HINT = "j/k move · enter/o open ticket · g go to session · P poll Jira · esc/q back";
+/** A tickets-view row's session state: the live badge while the session is on the
+ * main list, else a static one from its stored status. An archived session that is
+ * still live (or waiting on you) keeps a dim `archived` marker beside its badge. */
+function ticketSessionBadge(e: TicketEntry): React.ReactElement {
+  const archived = e.session.status === "archived";
+  if (e.view && (e.view.needsInput || e.view.working || e.view.live)) {
+    return <Text>{sessionBadge(e.view)}{archived ? <Text dimColor> archived</Text> : null}</Text>;
+  }
+  return <Text color="gray">○ <Text dimColor>{e.session.status}</Text></Text>;
+}
 
-/** Every linked Jira ticket across the sessions on screen (follows `z`), one row per
- * (session, ticket). Rows truncate to one line each and window around the cursor
- * inside the same body budget as the main list, so the panel fits the terminal. */
-function TicketsPanel({ entries, cursor, notice, jiraUnavailable, size }: {
-  entries: TicketEntry[]; cursor: number; notice: string; jiraUnavailable: boolean;
-  size: { columns: number; rows: number };
+const TICKETS_HINT = "j/k move · enter/o open ticket · g go to session · f status · a archived · / search · P poll Jira · esc/q back";
+const TICKETS_TYPING_HINT = "type to filter · enter keep · esc clear";
+
+/** Every Jira ticket linked to any existing session — archived ones included, and
+ * independent of the main list's `z` — one row per (session, ticket), narrowed by
+ * the view's own filters. Rows truncate to one line each and window around the
+ * cursor inside the same body budget as the main list, so the panel fits the terminal. */
+function TicketsPanel({ entries, total, filter, typing, cursor, notice, jiraUnavailable, size }: {
+  entries: TicketEntry[]; total: number; filter: TicketFilter; typing: boolean; cursor: number;
+  notice: string; jiraUnavailable: boolean; size: { columns: number; rows: number };
 }) {
-  const sessions = new Set(entries.map((e) => e.view.session.id)).size;
+  const sessions = new Set(entries.map((e) => e.session.id)).size;
   const done = entries.filter((e) => e.ticket.status_category === "done").length;
-  const footer = [notice, jiraUnavailable ? "jira unavailable — ticket status not updating" : "", TICKETS_HINT].filter(Boolean);
+  const filters = describeTicketFilters(filter);
+  const footer = [
+    notice,
+    jiraUnavailable ? "jira unavailable — ticket status not updating" : "",
+    typing ? `/${filter.text}▏  ${TICKETS_TYPING_HINT}` : TICKETS_HINT,
+  ].filter(Boolean);
   const budget = dashboardBodyHeight(size.rows, size.columns, footer);
   const window = windowSessionLines(entries.map(() => 1), cursor, budget);
   return (
     <Box flexDirection="column" maxHeight={Math.max(0, size.rows - 1)} overflowY="hidden">
       <Text bold wrap="truncate">
-        Jira tickets · {entries.length} ticket{entries.length === 1 ? "" : "s"} across {sessions} session{sessions === 1 ? "" : "s"}
+        Jira tickets · {entries.length} of {total} · {sessions} session{sessions === 1 ? "" : "s"}
         {" · "}<Text color={done > 0 ? "green" : undefined} dimColor={done === 0}>{done} done</Text>
+        {filters ? <Text color="cyan">{" · "}{filters}</Text> : null}
       </Text>
       <Box flexDirection="column" height={budget} flexShrink={0} overflowY="hidden">
-        {entries.length === 0 && <Text dimColor wrap="truncate">No Jira tickets linked to any session.</Text>}
+        {total === 0 && <Text dimColor wrap="truncate">No Jira tickets linked to any session.</Text>}
+        {total > 0 && entries.length === 0 && <Text dimColor wrap="truncate">No tickets match the filters.</Text>}
         {window.above > 0 && <Text dimColor wrap="truncate">↑ {window.above} more</Text>}
         {entries.slice(window.start, window.end).map((e, offset) => {
           const i = window.start + offset;
@@ -1126,8 +1288,9 @@ function TicketsPanel({ entries, cursor, notice, jiraUnavailable, size }: {
               <Text bold>{e.ticket.key}</Text>{" "}
               <Text color={color}>{glyph} {e.ticket.status ?? "?"}</Text>
               {e.ticket.title ? <Text dimColor>{"  "}{oneLine(e.ticket.title, 60)}</Text> : null}
-              {"  "}<Text>{e.view.session.id}</Text>{" "}
-              {sessionBadge(e.view)}
+              {"  "}<Text>{e.session.id}</Text>{" "}
+              {ticketSessionBadge(e)}
+              {e.session.title ? <Text dimColor>{"  "}{oneLine(e.session.title, 40)}</Text> : null}
             </Text>
           );
         })}

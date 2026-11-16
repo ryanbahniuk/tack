@@ -1069,6 +1069,33 @@ export function listSessionJiraTickets(sessionId: string): SessionJiraTicketRow[
     .all(sessionId) as SessionJiraTicketRow[];
 }
 
+/** A linked ticket plus the few fields of its session the cross-session tickets
+ * view shows and filters on. Columns are prefixed `session_` so they can't shadow
+ * the ticket's own `title`/`status`/`created_at`. */
+export interface JiraTicketWithSessionRow extends SessionJiraTicketRow {
+  session_title: string | null;
+  session_status: SessionStatus;
+  session_created_at: string;
+}
+
+/**
+ * Every ticket linked to any existing session — archived sessions included — in
+ * one query, newest link first. The dashboard's tickets view reads this rather
+ * than its on-screen session list, so it shows the whole history regardless of the
+ * `z` toggle without building full session views for every archived session.
+ * Tickets of deleted sessions are gone already (ON DELETE CASCADE).
+ */
+export function listAllSessionJiraTickets(): JiraTicketWithSessionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT t.*, s.title AS session_title, s.status AS session_status, s.created_at AS session_created_at
+         FROM session_jira_tickets t
+         JOIN sessions s ON s.id = t.session_id
+        ORDER BY t.created_at DESC, t.key ASC`,
+    )
+    .all() as JiraTicketWithSessionRow[];
+}
+
 /** Stops tracking a ticket on a session. Local only — Jira is never touched.
  * Returns whether a row was actually removed. */
 export function unlinkSessionJiraTicket(sessionId: string, key: string): boolean {
