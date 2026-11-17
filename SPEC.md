@@ -356,8 +356,11 @@ Adapter specifics, hidden behind the interface:
   handler presents an MCP elicitation form with one optional
   "What would you change?" field. Submitting it blank approves and opens the `spawn_agent` gate;
   non-empty feedback returns keep-planning with that feedback for revision and
-  another approval request, while cancellation asks the supervisor to clarify
-  changes in chat. Both leave the plan unapproved.
+  another approval request. Decline or cancel that carries non-blank feedback is
+  treated the same way (keep planning). Without feedback — clients usually drop
+  typed text on decline/dismiss — the supervisor is told the text may have been
+  lost and asks the human to restate their changes in chat, never claiming they
+  left none. All of these leave the plan unapproved.
   If the prompt never appears, the human can type `/approve` in the session or run
   `tack session approve <session>` themselves, then return to the session. Tack
   refreshes `.claude/commands/approve.md` on every attended Claude launch (including
@@ -452,7 +455,9 @@ stdout/stderr to the log, and yields parsed JSON lines.
    full plan in chat before calling `request_plan_approval` with it. The
    dialog shows a prompt line and the full plan. A hook marks it awaiting input,
    and the handler elicits "What would you change?" — a blank submission approves,
-   feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
+   feedback keeps planning (including feedback sent with a decline/cancel); a
+   decline/cancel without feedback has the supervisor ask the human to restate their
+   changes, since typed text may have been lost. Neither approves. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,
    each `spawn_agent` `prepareAgent`s (creates the row + prompt artifact) and launches
    a **detached** `tack __run-agent <agentId>` runner. Long-lived launchers check runtime version pins and model availability once per process and hand the result to the runner; missing or mismatched handoffs fall back to runner checks, and unknown model availability never blocks.
