@@ -216,6 +216,12 @@ export const ConfigSchema = z.object({
    * `open_pr` call raises a per-call confirmation in attended sessions.
    */
   autoOpenPrs: z.boolean().default(true),
+  /**
+   * Adopt GitHub PR URLs found in the human's messages into the session (as
+   * `link_pr` would) without waiting for the supervisor to call `link_pr`.
+   * Local bookkeeping plus read-only `gh`; never writes to GitHub.
+   */
+  autoLinkPrs: z.boolean().default(true),
   /** Force new PRs to draft; the watcher promotes addressed, green PRs. */
   draftPrs: z.boolean().default(true),
   /** Optional JIRA ticket tracking via one of `supervisorMcpServers` (see `JiraConfigSchema`). */
@@ -239,6 +245,7 @@ export interface TackConfig {
   dashboard: { shellAfterEdit: boolean };
   agentReuse: { enabled: boolean; maxIdleHours: number };
   autoOpenPrs: boolean;
+  autoLinkPrs: boolean;
   draftPrs: boolean;
   jira?: JiraConfig;
 }

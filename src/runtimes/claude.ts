@@ -50,6 +50,7 @@ const AGENT_SANDBOX_SETTINGS = {
  */
 export class ClaudeRuntime implements Runtime {
   readonly kind = "claude" as const;
+  readonly supportsUserPromptHook = true;
 
   async *run(opts: RunOptions): AsyncIterable<AgentEvent> {
     const cmd = this.buildCmd(opts);

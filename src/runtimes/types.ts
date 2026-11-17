@@ -163,6 +163,12 @@ export type AgentEvent =
 
 export interface Runtime {
   readonly kind: RuntimeKind;
+  /**
+   * True when the attended TUI honours `RunOptions.onUserPrompt` (claude's
+   * UserPromptSubmit hook). Callers use it to decide whether per-prompt work such
+   * as PR auto-linking happens in the hook or must be done before launch.
+   */
+  readonly supportsUserPromptHook?: boolean;
   /** Execute an agent turn (fresh, or a continuation when `opts.resume`). */
   run(opts: RunOptions): AsyncIterable<AgentEvent>;
   /**

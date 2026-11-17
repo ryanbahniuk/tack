@@ -116,6 +116,10 @@ export default ({
   // in every affected repo without asking (you still review and merge each). Set to
   // false to have it ask first and confirm each PR before it's opened.
   autoOpenPrs: true,
+  // PR URLs you paste into a supervisor prompt are adopted into the session
+  // automatically (read-only gh; follow-ups go onto that PR). false = leave it to
+  // the supervisor's link_pr.
+  autoLinkPrs: true,
   // Force drafts even if open_pr requests ready; PR watch promotes when ready.
   draftPrs: true,
 

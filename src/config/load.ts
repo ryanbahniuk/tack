@@ -77,6 +77,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     dashboard: parsed.dashboard,
     agentReuse: parsed.agentReuse,
     autoOpenPrs: parsed.autoOpenPrs,
+    autoLinkPrs: parsed.autoLinkPrs,
     draftPrs: parsed.draftPrs,
     jira: parsed.jira,
   };
