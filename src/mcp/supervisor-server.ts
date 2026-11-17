@@ -55,6 +55,7 @@ import {
   fetchReviewThreads,
   normalizeFeedback,
   openSessionPr,
+  parseGithubPrUrl,
 } from "../projects/prs";
 import {
   isWatchablePr,
@@ -69,6 +70,7 @@ import {
 import { startPersonaReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
+import { linkSessionPr, unlinkSessionPr } from "../session/link-pr";
 
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -587,7 +589,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "fix_pr",
     {
       description:
-        "Update an existing session PR: use this for any change to an open PR, including follow-ups the " +
+        "Update an existing session PR (opened by this session or adopted with link_pr): use this for any change to an open PR, including follow-ups the " +
         "human asked for (put them in `prompt`), a conflict that persists, or a failed fix run (pass `model` " +
         "to choose another model). Reuses the PR's existing fix agent when its last run succeeded and is still " +
         "resumable (same agent id, lineage: \"reused\"); otherwise starts a new fix agent that continues the " +
@@ -839,6 +841,64 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
   );
 
+  // Adopting an existing PR is local bookkeeping plus read-only `gh` calls — nothing
+  // is written to GitHub — so like the Jira tools these are neither plan-gated nor in
+  // SUPERVISOR_APPROVAL_TOOLS. Changes to a linked PR then go through `fix_pr`.
+  server.registerTool(
+    "link_pr",
+    {
+      description:
+        "Adopt an existing GitHub PR (e.g. a PR URL in the problem) in one of your projects into this session, so " +
+        "check_prs, the PR watcher and fix_pr cover it. Read-only on GitHub. Refuses merged/closed and fork PRs. " +
+        "Feedback and failing CI that predate the link are recorded as already handled; only newer feedback is " +
+        "acted on, and the watcher never auto-promotes a linked draft. Idempotent. To change the PR afterwards " +
+        "use fix_pr (never spawn_agent + open_pr, which creates a second PR).",
+      inputSchema: {
+        url: z.string().describe("The PR URL, e.g. https://github.com/<owner>/<repo>/pull/<n>"),
+        project: z.string().optional().describe("Project name, to disambiguate; must match the PR's repo"),
+      },
+    },
+    async ({ url, project }) => {
+      requireSession();
+      const result = await linkSessionPr({ sessionId, config, url, project });
+      try {
+        spawnPrWatcher(sessionId, config); // no-op when disabled or already running
+      } catch {
+        /* the dashboard's refresh will retry starting it */
+      }
+      try {
+        refreshSessionSummary(sessionId);
+      } catch {
+        /* best-effort, like open_pr */
+      }
+      return text(result);
+    },
+  );
+
+  server.registerTool(
+    "unlink_pr",
+    {
+      description:
+        "Stop tracking a PR adopted with link_pr (e.g. linked by mistake). Refuses PRs this session opened and " +
+        "PRs with a fix still running or awaiting its push. Local only — GitHub is untouched.",
+      inputSchema: {
+        pr: z
+          .union([z.number().int(), z.string()])
+          .describe("The linked PR: its number (18 or \"#18\") or its URL — see check_prs"),
+      },
+    },
+    async ({ pr: ref }) => {
+      requireSession();
+      const result = unlinkSessionPr(resolveSessionPr(listSessionPrs(sessionId), ref));
+      try {
+        refreshSessionSummary(sessionId);
+      } catch {
+        /* best-effort */
+      }
+      return text(result);
+    },
+  );
+
   // Past-session lookup. Read-only (they never write anything), so — like the other
   // read-only tools — they're neither plan-gated nor in SUPERVISOR_APPROVAL_TOOLS:
   // they ride the server-wide auto-allow and never prompt the human.
@@ -1070,8 +1130,15 @@ function resolveSessionPr(prs: SessionPrRow[], ref: number | string): SessionPrR
   const raw = typeof ref === "number" ? String(ref) : ref.trim();
   const byUrl = prs.find((p) => p.url.replace(/\/+$/, "") === raw.replace(/\/+$/, ""));
   if (byUrl) return byUrl;
-  const num = /^#?(\d+)$/.exec(raw)?.[1] ?? /\/pull\/(\d+)\/?$/.exec(raw)?.[1];
-  const matches = num ? prs.filter((p) => p.number === Number(num)) : [];
+  // A PR URL (sub-pages like `/files` included) narrows to its own repo, so a
+  // number shared across repos still resolves when the URL names one.
+  const parsed = parseGithubPrUrl(raw);
+  const num = /^#?(\d+)$/.exec(raw)?.[1] ?? (parsed ? String(parsed.number) : undefined);
+  const sameRepo = (p: SessionPrRow) => {
+    const own = parsed && parseGithubPrUrl(p.url);
+    return !own || `${own.owner}/${own.repo}`.toLowerCase() === `${parsed!.owner}/${parsed!.repo}`.toLowerCase();
+  };
+  const matches = num ? prs.filter((p) => p.number === Number(num) && sameRepo(p)) : [];
   if (matches.length === 1) return matches[0]!;
   if (matches.length > 1)
     throw new Error(`PR number ${num} is ambiguous in this session; pass its URL. Session PRs: ${list()}`);

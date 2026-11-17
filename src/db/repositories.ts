@@ -173,6 +173,8 @@ export interface SessionPrRow {
   checked_at: string | null;
   /** The PR description passed to `open_pr`; null for PRs opened before it was kept. */
   body_ref: string | null;
+  /** When `link_pr` adopted this existing PR into the session; null for PRs Tack opened. */
+  linked_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -823,6 +825,35 @@ export function markSessionPrReadyPromoted(id: string): void {
     WHERE id = ? AND ready_promoted_at IS NULL`).run(now, now, id);
 }
 
+/**
+ * Marks a PR adopted via `link_pr`. Both stamps are COALESCEd so a re-link keeps
+ * the original link time, and `ready_promoted_at` is latched so the watcher never
+ * auto-promotes a draft the human opened (see `readyToPromote`).
+ */
+export function markSessionPrLinked(id: string): void {
+  const now = nowIso();
+  getDb().prepare(`UPDATE session_prs SET linked_at = COALESCE(linked_at, ?),
+    ready_promoted_at = COALESCE(ready_promoted_at, ?), updated_at = ? WHERE id = ?`).run(now, now, now, id);
+}
+
+/**
+ * Removes a linked PR from its session (`unlink_pr`). Its feedback and the
+ * dependencies it is downstream of cascade; dependencies it is the *upstream* of
+ * don't (no ON DELETE CASCADE on that FK), so they go first. Fix-run history rows
+ * carry no FK and are dropped with it. Refuses rows Tack opened itself.
+ */
+export function deleteLinkedSessionPr(id: string): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = db.prepare(`SELECT linked_at FROM session_prs WHERE id = ?`).get(id) as { linked_at: string | null } | null;
+    if (!row?.linked_at) return false;
+    db.prepare(`DELETE FROM pr_dependencies WHERE upstream_pr_id = ?`).run(id);
+    db.prepare(`DELETE FROM pr_fix_runs WHERE session_pr_id = ?`).run(id);
+    db.prepare(`DELETE FROM session_prs WHERE id = ?`).run(id);
+    return true;
+  }).immediate();
+}
+
 /** Records (or clears, with null) the session's PR-watch process id. */
 export function setSessionPrWatchPid(sessionId: string, pid: number | null): void {
   getDb()
@@ -1026,6 +1057,37 @@ export function insertPrFeedback(input: {
   return db
     .prepare(`SELECT * FROM pr_feedback WHERE session_pr_id = ? AND source_id = ?`)
     .get(input.sessionPrId, input.sourceId) as PrFeedbackRow;
+}
+
+/**
+ * Ingests one item as already handled (`not_applicable`, no reply): the history a
+ * `link_pr` baseline records so the watcher never acts on feedback that predates
+ * the link. INSERT OR IGNORE keeps an already-known item (and its real verdict)
+ * untouched, so re-linking never re-baselines. Returns whether a row was added.
+ */
+export function insertBaselinePrFeedback(input: Parameters<typeof insertPrFeedback>[0]): boolean {
+  const now = nowIso();
+  const r = getDb().prepare(
+    `INSERT OR IGNORE INTO pr_feedback
+       (id, session_pr_id, source_id, source_kind, author, author_is_bot, url, path, line, in_reply_to, body_ref,
+        decision, created_at, handled_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_applicable', ?, ?)`,
+  ).run(
+    shortId("fb"),
+    input.sessionPrId,
+    input.sourceId,
+    input.sourceKind,
+    input.author ?? null,
+    input.authorIsBot ? 1 : 0,
+    input.url ?? null,
+    input.path ?? null,
+    input.line ?? null,
+    input.inReplyTo ?? null,
+    input.bodyRef ?? null,
+    now,
+    now,
+  );
+  return r.changes > 0;
 }
 
 /** All feedback ingested for a PR, oldest first. */

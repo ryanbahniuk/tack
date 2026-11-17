@@ -615,6 +615,10 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   5s catches archived changes too; identical stats never trigger a repaint.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
   branches, upserted into `session_prs`. `O` opens the selected session's PRs.
+  Existing PRs adopted with `link_pr` (`src/session/link-pr.ts`) are ordinary rows with
+  `linked_at` set (discovery never clobbers or drops them): `ready_promoted_at` is latched so they
+  are never auto-promoted, and pre-link feedback/CI is baselined as handled
+  `not_applicable`. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
 - **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in

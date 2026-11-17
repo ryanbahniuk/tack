@@ -33,7 +33,8 @@ const SEARCH_MAX_LIMIT = 50;
 export interface SessionSummaryInput {
   session: Pick<SessionRow, "id" | "title" | "created_at">;
   prs: Array<{
-    row: Pick<SessionPrRow, "title" | "project_name" | "url" | "state" | "head_branch">;
+    row: Pick<SessionPrRow, "title" | "project_name" | "url" | "state" | "head_branch"> &
+      Partial<Pick<SessionPrRow, "linked_at">>;
     /** The PR description as passed to `open_pr`; empty/null when it wasn't kept. */
     body?: string | null;
   }>;
@@ -79,6 +80,8 @@ export function composeSessionSummary(input: SessionSummaryInput): string {
       `- State: ${row.state ?? "(unknown)"}`,
       `- Branch: ${row.head_branch ?? "(unknown)"}`,
     );
+    // Adopted with `link_pr`: the session worked on it but didn't open it.
+    if (row.linked_at) lines.push(`- Linked: ${row.linked_at.slice(0, 10)} (existing PR adopted into this session)`);
     const text = body?.trim();
     if (text) lines.push("", text);
   }
