@@ -393,6 +393,13 @@ const migrations: Migration[] = [
     sql: ``,
     addColumns: [{ table: "session_prs", column: "linked_at", type: "TEXT" }],
   },
+  { version: 22, name: "boot_links", sql: `
+    CREATE TABLE IF NOT EXISTS boot_links (
+      lock TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent_id TEXT, project_name TEXT NOT NULL,
+      worktree_path TEXT, pid INTEGER, plan_path TEXT, log_path TEXT, status TEXT NOT NULL,
+      error TEXT, started_at TEXT, updated_at TEXT
+    );
+  ` },
 ];
 
 /** Applies any pending migrations in a single transaction. */
