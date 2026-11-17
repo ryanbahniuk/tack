@@ -112,3 +112,8 @@ export function writeContextFile(sessionId: string, name: string, body: string):
 export function writeContinuationPrompt(sessionId: string, agentId: string, turnId: string, body: string): string {
   return write(join(ARTIFACTS_DIR, sessionId, agentId, "turns", `${turnId}.md`), body);
 }
+
+/** Preserve the exact teardown procedure even if configuration changes. */
+export function writeBootPlan(sessionId: string, project: string, body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, "boot", `${encodeURIComponent(project)}-${crypto.randomUUID()}.json`), body);
+}

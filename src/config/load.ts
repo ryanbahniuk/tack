@@ -56,7 +56,13 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     );
   }
 
+  for (const project of parsed.projects) {
+    if (project.boot?.recipe && !parsed.bootRecipes[project.boot.recipe])
+      throw new Error(`projects.${project.name}.boot.recipe = "${project.boot.recipe}" is not a bootRecipes entry. Known: ${Object.keys(parsed.bootRecipes).join(", ") || "(none)"}`);
+  }
+
   return {
+    bootRecipes: parsed.bootRecipes,
     projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
     models: parsed.models,
     roles,

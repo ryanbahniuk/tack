@@ -12,6 +12,7 @@ import {
   getSession,
   listAgents,
   listAgentsBySession,
+  listBootProjectsBySession,
   listInterruptedAgents,
   listAllSessionJiraTickets,
   listPendingAmendmentsBySession,
@@ -54,6 +55,7 @@ const DIVIDER_WIDTH = 3;
 interface View {
   session: SessionRow;
   agents: AgentRow[];
+  boots: string[];
   prs: SessionPrRow[];
   /** JIRA tickets the supervisor linked to this session (track-only). */
   tickets: SessionJiraTicketRow[];
@@ -84,6 +86,7 @@ function snapshot(showArchived: boolean): View[] {
   if (!sessions.length) return [];
   const ids = sessions.map((s) => s.id);
   const agentsBy = listAgentsBySession(ids);
+  const bootsBy = listBootProjectsBySession(ids);
   const prsBy = listSessionPrsBySession(ids);
   const ticketsBy = listSessionJiraTicketsBySession(ids);
   const amendmentsBy = listPendingAmendmentsBySession(ids);
@@ -97,6 +100,7 @@ function snapshot(showArchived: boolean): View[] {
       return {
         session,
         agents,
+        boots: bootsBy.get(session.id) ?? [],
         prs,
         tickets: ticketsBy.get(session.id) ?? [],
         // Same sum as `sessionTotalCost`: the supervisor's own cost plus its agents'.
@@ -140,7 +144,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -202,9 +206,11 @@ type Confirm =
   | { action: "delete" | "stop" | "refresh"; id: string }
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number }
-  | { action: "reconnect"; id: string; count: number; planPending: boolean };
+  | { action: "reconnect"; id: string; count: number; planPending: boolean }
+  | { action: "unboot"; id: string }
+  | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -283,6 +289,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         <Text bold>{v.session.id}</Text>
         <Text dimColor> {v.session.status} </Text>
         <Text color="green">{usd(v.cost)}</Text>
+        {v.boots.length > 0 ? <Text color="green"> booted: {v.boots.join(", ")}</Text> : null}
         {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
         {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
         {v.amendments.length > 0 ? (
@@ -454,6 +461,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
   const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
+  const [bootPick, setBootPick] = useState<{ session: string; groups: { project: string; agents: AgentRow[] }[]; choices: Record<string, string>; cursor: number } | null>(null);
+  const [bootBusy, setBootBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [sessionRefreshing, setSessionRefreshing] = useState(false);
   const [notice, setNotice] = useState(initialNotice);
@@ -602,18 +611,53 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     };
   }, [config]);
 
+  const runBootWorker = (session: string, action: "boot" | "unboot", agents: Record<string, string> = {}, projects?: string[], steal = false) => {
+    if (!config || bootBusy) return;
+    setBootBusy(true);
+    setNotice(`${action === "boot" ? "booting" : "unbooting"} ${session}…`);
+    const worker = new Worker(new URL("../boot/worker.ts", import.meta.url));
+    worker.onmessage = (event: MessageEvent<{ progress?: string; error?: string; results?: import("../boot").BootOutcome[] }>) => {
+      if (event.data.progress) { setNotice(event.data.progress); return; }
+      worker.terminate(); setBootBusy(false); refresh();
+      if (event.data.error) { setNotice(`${action} failed: ${event.data.error}`); return; }
+      const results = event.data.results ?? [];
+      const locked = results.filter(r => r.status === "locked");
+      setNotice(results.map(r => `${r.project}: ${r.status}${r.error ? `: ${r.error}` : ""}`).join(" · ") || "no configured worktrees");
+      if (locked.length) setConfirm({ action: "steal", id: session, projects: locked.map(r => r.project), holders: locked.map(r => r.holder ?? "unknown"), agents });
+    };
+    worker.onerror = event => { worker.terminate(); setBootBusy(false); setNotice(`${action} failed: ${event.message}`); };
+    worker.postMessage({ config, session, action, agents, projects, steal });
+  };
+
   useInput((input, key) => {
     // Quit is the one gesture that works from everywhere.
     if (key.ctrl && input === "c") return exit();
 
     if (sessionRefreshing) return;
+    if (bootPick) {
+      const group = bootPick.groups[0]!;
+      if (input === "q" || key.escape) { setBootPick(null); setNotice("cancelled"); return; }
+      if (key.downArrow || input === "j") { setBootPick({ ...bootPick, cursor: Math.min(bootPick.cursor + 1, group.agents.length - 1) }); return; }
+      if (key.upArrow || input === "k") { setBootPick({ ...bootPick, cursor: Math.max(bootPick.cursor - 1, 0) }); return; }
+      if (key.return) {
+        const choices = { ...bootPick.choices, [group.project]: group.agents[bootPick.cursor]!.id };
+        if (bootPick.groups.length > 1) setBootPick({ ...bootPick, groups: bootPick.groups.slice(1), choices, cursor: 0 });
+        else { setBootPick(null); runBootWorker(bootPick.session, "boot", choices); }
+      }
+      return;
+    }
 
     // A pending confirmation swallows the next keypress: y commits, anything
     // else cancels (stop/delete also accept enter). Keeps a stray `d` from deleting a session's
     // worktrees and artifacts irreversibly.
     if (confirm) {
       if (input === "y" || input === "Y" || (key.return && (confirm.action === "delete" || confirm.action === "stop"))) {
-        if (confirm.action === "edit") {
+        if (confirm.action === "unboot" || confirm.action === "steal") {
+          const pending = confirm; setConfirm(null);
+          if (pending.action === "unboot") runBootWorker(pending.id, "unboot");
+          else runBootWorker(pending.id, "boot", pending.agents, pending.projects, true);
+          return;
+        } else if (confirm.action === "edit") {
           onLaunch({ kind: "edit", path: confirm.path, agentId: confirm.agentId });
           setConfirm(null);
           return exit();
@@ -869,6 +913,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setAgentCursor(0);
       setProjectPick(null);
       setMode("agents");
+    } else if (input === "b") {
+      if (!config) return setNotice("config is unavailable");
+      if (bootBusy) return setNotice("boot operation already running");
+      const groups = config.projects.filter(p => p.boot).map(p => ({ project: p.name, agents: selected.agents.filter(a => a.project_name === p.name && a.kind !== "pr_fix" && a.worktree_path && existsSync(a.worktree_path)) })).filter(g => g.agents.length > 1);
+      if (groups.length) setBootPick({ session: selected.session.id, groups, choices: {}, cursor: 0 });
+      else runBootWorker(selected.session.id, "boot");
+    } else if (input === "B") {
+      if (bootBusy) return setNotice("boot operation already running");
+      setConfirm({ action: "unboot", id: selected.session.id });
     } else if (input === "m") {
       if (selected.amendments.length === 0) {
         setNotice(`${selected.session.id} has no pending amendments`);
@@ -945,6 +998,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
   const confirmText = confirm ? (confirm.action === "edit"
     ? `Agent ${confirm.agentId} is still running. Edit its worktree anyway? (y/N)`
+    : confirm.action === "unboot"
+      ? `Unboot ${confirm.id}? (y/N)`
+    : confirm.action === "steal"
+      ? `Steal ${confirm.projects.join(", ")} from ${[...new Set(confirm.holders)].join(", ")}? (y/N)`
     : confirm.action === "delete"
     ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
     : confirm.action === "refresh"
@@ -954,6 +1011,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
+
+  if (bootPick) return <Box flexDirection="column"><Text bold>Boot {bootPick.session} · choose a worktree for {bootPick.groups[0]!.project}</Text>{bootPick.groups[0]!.agents.map((a, i) => <Text key={a.id} color={i === bootPick.cursor ? "cyan" : undefined}>{i === bootPick.cursor ? "❯ " : "  "}{a.id} · {a.worktree_path}</Text>)}<Text dimColor>j/k move · enter choose · esc/q cancel</Text></Box>;
 
   if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.sessionId} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
 

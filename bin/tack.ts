@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { bootSession, unbootSession, bootStatus } from "../src/boot";
 import { decodePreflight } from "../src/agent/preflight";
 import { followAgent } from "../src/cli/follow";
 import { startRemoteReview } from "../src/session/review";
@@ -1357,6 +1358,11 @@ const sessionShow = defineCommand({
       `  cost ${usd(cost.total)} ${pc.dim(`(supervisor ${cost.supervisor.toFixed(4)} + agents ${cost.agents.toFixed(4)})`)}`,
     );
 
+    const boots = bootStatus(null, id);
+    if (boots.length) {
+      console.log(pc.bold("\nBoots"));
+      for (const boot of boots) console.log(`  ${boot.project_name} · ${boot.lock} · ${boot.status} · pid ${boot.pid ?? "-"} · ${boot.url ?? "-"} · ${boot.log_path ?? "-"}`);
+    }
     console.log(pc.bold(`\nAgents (${agents.length})`));
     if (agents.length === 0) console.log(pc.dim("  none yet"));
     for (const a of agents) {
@@ -1584,6 +1590,41 @@ const sessionPollPrs = defineCommand({
   },
 });
 
+const sessionBoot = defineCommand({
+  meta: { name: "boot", description: "Boot session worktrees" },
+  args: { session: { type: "positional", required: true, description: "Session id" }, project: { type: "positional", required: false, description: "Projects (space-separated)" }, agent: { type: "string", description: "Worktree choices, comma-separated: project=agent,project=agent" }, steal: { type: "boolean", description: "Take locks held by other sessions" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    const agents: Record<string, string> = {};
+    for (const pair of args.agent ? String(args.agent).split(",") : []) {
+      const [project, agent, ...extra] = pair.split("=");
+      if (!project || !agent || extra.length) throw new Error(`Invalid --agent entry: ${pair}`);
+      agents[project] = agent;
+    }
+    const results = bootSession(await loadConfig(), id, { projects: args._.slice(1).map(String), agents, steal: args.steal, onProgress: message => console.error(message) });
+    for (const result of results) console.error(`${result.project}: ${result.status}${result.holder ? ` (held by ${result.holder})` : ""}${result.error ? `: ${result.error}` : ""}`);
+    if (results.some(r => r.status === "failed" || r.status === "locked")) process.exitCode = 1;
+  },
+});
+const sessionUnboot = defineCommand({
+  meta: { name: "unboot", description: "Stop session boots" },
+  args: { session: { type: "positional", required: true }, project: { type: "positional", required: false, description: "Projects (space-separated)" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    const results = unbootSession(null, id, { projects: args._.slice(1).map(String) });
+    for (const result of results) console.error(`${result.project}: ${result.error ?? "stopped"}`);
+    if (results.some(r => r.status === "failed")) process.exitCode = 1;
+  },
+});
+const sessionBootStatus = defineCommand({
+  meta: { name: "boot-status", description: "Show session boot status" },
+  args: { session: { type: "positional", required: true } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    for (const row of bootStatus(null, id)) console.log(`${row.project_name} · ${row.lock} · ${row.status} · pid ${row.pid ?? "-"} · alive ${row.alive ?? "-"} · healthy ${row.healthy ?? "-"} · ${row.url ?? "-"} · ${row.log_path ?? "-"}`);
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -1591,9 +1632,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, reconnect, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, show, boot, unboot, boot-status, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

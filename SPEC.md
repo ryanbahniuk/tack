@@ -506,7 +506,11 @@ quickest way to validate the runtime pipeline.
 
 ```ts
 export default ({
-  projects: [{ name, path, description, metadata: { language, frameworks: [] } }],
+  bootRecipes: { compose: { up: ["docker compose up -d"], down: ["docker compose down"], lock: "compose:{project}" } },
+  projects: [
+    { name, path, description, boot: { recipe: "compose" } },
+    { name: "web", path, description, boot: { run: "bun run dev", env: { PORT: "3001" } } },
+  ],
   models: [
     { name: "opus", runtime: "claude", id: "opus", effort: "high" },
     { name: "gpt-5-codex", runtime: "codex", id: "gpt-5-codex",
@@ -578,11 +582,29 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
 
 ## 11. Dashboard, PRs, lifecycle
 
+### Booting session worktrees
+
+`tack session boot <session> [project...]` starts configured projects from their
+session worktrees. Multiple worktrees require `--agent project=id` (separate
+choices with commas). Projects without boot configuration are skipped unless
+explicitly requested. Recipes share procedures; project fields override them,
+with `vars` and `env` merged by key. Templates support `{project}`, `{path}`,
+`{session}`, `{agent}`, `{branch}` and configured variables. Command substitutions
+are shell-quoted. Locks default to the project name; `--steal` tears down the
+holder before taking its lock. A booting claim older than 15 minutes can be
+recovered without `--steal`. The resolved plan is stored so `unboot` uses the
+original teardown even after config changes. Archive and delete unboot; stop does
+not. `tack session boot-status <session>` shows processes and probes. In the
+session list, `b` boots and offers worktree choices and lock-steal confirmation;
+`B` confirms teardown. The booted project badge updates on the normal dashboard
+refresh tick.
+
+
 - **`tack dashboard`** — an Ink dashboard: live Session → Agent → PR tree, pid-based
   liveness and a change-driven refresh loop. Live supervisors mid-turn show a cyan
   spinner and `working <elapsed>` badge, with a working count beside live in the
   header. Pending plan prompts show needs-input instead. The spinner ticks only
-  while a session is working. Session keys: `j/k enter/o v m O p J c x a d z q`.
+  while a session is working. Session keys: `j/k enter/o v m O p J c b B x a d z q`.
   At ≥140 columns it defaults to a 55% session list / 45% **Insights** split.
   `s` cycles split → list-only → full-screen Insights; narrow terminals start with
   the list and retain access to full-screen Insights. `[` / `]` select

@@ -21,6 +21,15 @@ export const ProjectMetadataSchema = z.object({
 });
 export type ProjectMetadata = z.infer<typeof ProjectMetadataSchema>;
 
+/** Named recipes let projects reuse one boot procedure while retaining local overrides. */
+export const BootRecipeSchema = z.object({
+  vars: z.record(z.string(), z.string()).optional(),
+  up: z.array(z.string()).optional(), run: z.string().optional(),
+  down: z.array(z.string()).optional(), status: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(), url: z.string().optional(), lock: z.string().optional(),
+});
+export type BootRecipe = z.infer<typeof BootRecipeSchema>;
+
 export const ProjectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
@@ -28,6 +37,7 @@ export const ProjectSchema = z.object({
   description: z.string().min(1),
   /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
   metadata: ProjectMetadataSchema.optional(),
+  boot: BootRecipeSchema.extend({ recipe: z.string().min(1).optional() }).optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
@@ -191,6 +201,7 @@ export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 
 export const ConfigSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
+  bootRecipes: z.record(z.string(), BootRecipeSchema).default({}),
   models: z.array(ModelSchema).default([]),
   roles: RolesSchema,
   personas: z.array(PersonaSchema).default([]),
@@ -228,6 +239,7 @@ export type TackConfigInput = z.input<typeof ConfigSchema>;
 /** Fully resolved config used throughout the app (paths home-expanded, roles normalized). */
 export interface TackConfig {
   projects: Project[];
+  bootRecipes: Record<string, BootRecipe>;
   models: Model[];
   roles: ResolvedRoles;
   personas: ResolvedPersona[];
