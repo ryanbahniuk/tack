@@ -23,7 +23,7 @@ function client(result: unknown, capable = true) {
 }
 
 test("plan approval message shows the full plan", () => {
-  const prompt = "Review the plan below — submit blank to approve, or say what to change.";
+  const prompt = "Review the plan below. Submit blank to approve, or type what to change and press Submit. Decline discards anything typed.";
   expect(planApprovalMessage("\r\n  \r\nGoal sentence  \r\n\r\n  - tack: do X  \r\n- penny: do Y\r\n \r\n"))
     .toBe(`${prompt}\n\nGoal sentence\n\n  - tack: do X\n- penny: do Y`);
   expect(planApprovalMessage(" \n\t\n ")).toBe(prompt);
@@ -34,7 +34,7 @@ test("accepted approval presents the form and approves", async () => {
   const c = client({ action: "accept", content: {} });
   expect(await requestPlanApproval(c, id, "Build it")).toMatchObject({ approved: true });
   expect(c.elicitInput).toHaveBeenCalledWith({
-    message: "Review the plan below — submit blank to approve, or say what to change.\n\nBuild it",
+    message: "Review the plan below. Submit blank to approve, or type what to change and press Submit. Decline discards anything typed.\n\nBuild it",
     requestedSchema: {
       type: "object",
       properties: {
@@ -80,6 +80,33 @@ for (const result of [
   });
 }
 
+for (const action of ["decline", "cancel"] as const) {
+  test(`${action} with feedback keeps planning`, async () => {
+    const id = fixture();
+    const c = client({ action, content: { feedback: "  Change scope " } });
+    expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({
+      approved: false, keepPlanning: true, feedback: "Change scope", action,
+    });
+    expect(getSession(id)?.plan_approved_at).toBeNull();
+    expect(getSession(id)?.awaiting_input_at).toBeNull();
+  });
+
+  for (const content of [undefined, {}, { feedback: "  " }]) {
+    test(`${action} without feedback (${JSON.stringify(content)}) asks to restate`, async () => {
+      const id = fixture();
+      const result = await requestPlanApproval(client({ action, content }), id, "Plan");
+      const { note } = result as { note: string };
+      expect(note).toContain("restate");
+      expect(note).toContain(action === "decline" ? "declined" : "dismissed");
+      expect(note).toContain("Do NOT say they left no feedback");
+      expect(result).toMatchObject({ approved: false, action });
+      expect(result).not.toHaveProperty("keepPlanning");
+      expect(getSession(id)?.plan_approved_at).toBeNull();
+      expect(getSession(id)?.awaiting_input_at).toBeNull();
+    });
+  }
+}
+
 test("missing capability and elicitation errors preserve the awaiting marker", async () => {
   for (const c of [client(null, false), client(Promise.reject(new Error("unavailable")))]) {
     const id = fixture();
@@ -100,16 +127,16 @@ test("already approved skips elicitation", async () => {
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
-for (const outcome of ["keep planning", "cancel", "error"]) {
+for (const outcome of ["keep planning", "cancel", "decline with feedback", "error"]) {
   test(`out-of-band approval wins over ${outcome}`, async () => {
     const id = fixture();
     const c = client(null);
     c.elicitInput = mock(async () => {
       approveSessionPlan(id);
       if (outcome === "error") throw new Error("unavailable");
-      return outcome === "cancel"
-        ? { action: "cancel" as const }
-        : { action: "accept" as const, content: { feedback: "revise" } };
+      if (outcome === "cancel") return { action: "cancel" as const };
+      if (outcome === "decline with feedback") return { action: "decline" as const, content: { feedback: "revise" } };
+      return { action: "accept" as const, content: { feedback: "revise" } };
     });
     expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
     expect(getSession(id)?.awaiting_input_at).toBeNull();
