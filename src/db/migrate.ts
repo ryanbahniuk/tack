@@ -5,6 +5,10 @@ interface Migration {
   version: number;
   name: string;
   sql: string;
+  /** Columns to add only when missing, after `sql` runs. SQLite has no
+   * `ADD COLUMN IF NOT EXISTS`; this keeps a re-applied migration (tests rewind
+   * `_migrations`) a no-op instead of a "duplicate column" error. */
+  addColumns?: Array<{ table: string; column: string; type: string }>;
 }
 
 /**
@@ -380,6 +384,15 @@ const migrations: Migration[] = [
       updated_at TEXT NOT NULL, detail TEXT, UNIQUE(downstream_pr_id, upstream_pr_id)
     );
   ` },
+  {
+    version: 21,
+    name: "session_pr_linked_at",
+    // `link_pr` adopts an existing GitHub PR into a session. `linked_at` marks such
+    // rows (NULL = Tack opened it via `open_pr` / discovery): only linked rows may be
+    // unlinked, and summaries say "linked" rather than "opened" for them.
+    sql: ``,
+    addColumns: [{ table: "session_prs", column: "linked_at", type: "TEXT" }],
+  },
 ];
 
 /** Applies any pending migrations in a single transaction. */
@@ -405,7 +418,11 @@ export function migrate(db: Database): void {
   );
   db.transaction(() => {
     for (const m of pending) {
-      db.exec(m.sql);
+      if (m.sql.trim()) db.exec(m.sql);
+      for (const c of m.addColumns ?? []) {
+        const cols = db.prepare(`PRAGMA table_info(${c.table})`).all() as Array<{ name: string }>;
+        if (!cols.some((col) => col.name === c.column)) db.exec(`ALTER TABLE ${c.table} ADD COLUMN ${c.column} ${c.type}`);
+      }
       record.run(m.version, m.name, nowIso());
     }
   })();

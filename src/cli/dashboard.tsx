@@ -342,6 +342,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
               <Text color={color}>
                 {glyph} {label}
               </Text>
+              {pr.linked_at ? <Text dimColor> linked</Text> : null}
               {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
               {w && w.openFeedback > 0 ? (
                 <Text color="yellow">

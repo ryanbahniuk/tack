@@ -152,6 +152,55 @@ function numberFromPrUrl(url: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** A GitHub pull request URL, split into its parts (see `parseGithubPrUrl`). */
+export interface GithubPrRef {
+  host: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+// `https://<host>/<owner>/<repo>/pull/<n>`, optionally followed by a sub-page
+// (`/files`, `/commits`, `/checks`, …), a query, or a fragment. Any host is accepted
+// so GitHub Enterprise URLs parse too; owner/repo use GitHub's name alphabet.
+const GITHUB_PR_URL_RE =
+  /^https?:\/\/([A-Za-z0-9.-]+(?::\d+)?)\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pull\/(\d+)(?:\/[^?#\s]*)?(?:\?[^#\s]*)?(?:#\S*)?$/;
+
+/** Parses a GitHub PR URL (`link_pr`'s input); null for anything else. */
+export function parseGithubPrUrl(url: string): GithubPrRef | null {
+  const m = GITHUB_PR_URL_RE.exec(url.trim());
+  if (!m) return null;
+  const number = Number(m[4]);
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  return { host: m[1]!.toLowerCase(), owner: m[2]!, repo: m[3]!.replace(/\.git$/, ""), number };
+}
+
+/** What `link_pr` needs to adopt an existing PR (`gh pr view`'s JSON). */
+export interface LinkablePr {
+  number: number;
+  url: string;
+  title: string;
+  state: string; // OPEN | MERGED | CLOSED
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  headRefOid: string;
+  mergeable: string;
+  mergedAt: string | null;
+  isCrossRepository: boolean;
+}
+
+/** Fetches a PR's metadata for `link_pr`. Read-only; throws a one-line reason on failure. */
+export async function fetchPrForLink(repoPath: string, number: number): Promise<LinkablePr> {
+  const out = await runOk(
+    ["gh", "pr", "view", String(number), "--json",
+      "number,url,title,state,isDraft,headRefName,baseRefName,headRefOid,mergeable,mergedAt,isCrossRepository"],
+    repoPath,
+    "gh pr view",
+  );
+  return JSON.parse(out) as LinkablePr;
+}
+
 async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
   const proc = Bun.spawn(
     ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,url,title,state,headRefName,mergeable,mergedAt"],
