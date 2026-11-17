@@ -42,6 +42,8 @@ src/context/build.ts     per-agent context file
 src/worktree/            session-scoped worktrees, background base cache, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply, promote drafts), prompt.ts
+src/session/run.ts       local app planning, boot and process state
+src/session/run-detect.ts local app detection and environment wiring
 src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/manual.ts    manual workspaces (kind "manual"): project resolution, creation, live diff

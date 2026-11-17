@@ -31,6 +31,9 @@ export const WORKTREES_DIR = join(TACK_HOME, "worktrees");
  * grant covers only fresh upstream code, never the agents' in-progress branches. */
 export const SNAPSHOTS_DIR = join(TACK_HOME, "snapshots");
 
+export const RUNS_DIR = join(TACK_HOME, "runs");
+export function runDir(sessionId: string): string { return join(RUNS_DIR, sessionId); }
+
 /** Expands a leading `~` to the user's home directory. */
 export function expandHome(p: string): string {
   if (p === "~") return homedir();

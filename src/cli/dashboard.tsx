@@ -1,3 +1,4 @@
+import { bootRun, stopRun, readRun, runLive, type RunState } from "../session/run";
 import { hasUnresolvedDependencies, listPrDependencies } from "../db";
 import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
@@ -49,10 +50,14 @@ import type { TackConfig } from "../config/schema";
 import { readInsights, RANGES, type InsightRange } from "./stats";
 import { Insights, insightChartWidth } from "./insights";
 
+import { tmuxListSessions } from "../session/tmux";
+
 const DIVIDER_WIDTH = 3;
 
 interface View {
   session: SessionRow;
+  run?: RunState;
+  runLive?: boolean;
   agents: AgentRow[];
   prs: SessionPrRow[];
   /** JIRA tickets the supervisor linked to this session (track-only). */
@@ -90,12 +95,18 @@ function snapshot(showArchived: boolean): View[] {
   const agentCost = agentCostBySession(ids);
   const openFeedback = countOpenPrFeedbackByPr(ids);
   const stale = staleSessionIds(sessions);
+  const runs = new Map(ids.map(id => [id, readRun(id)]));
+  const tmuxSessions = [...runs.values()].some(run => run?.status === "running" && run.mode === "tmux")
+    ? tmuxListSessions() : new Set<string>();
   return sessions
     .map((session) => {
+      const run = runs.get(session.id);
       const agents = agentsBy.get(session.id) ?? [];
       const prs = prsBy.get(session.id) ?? [];
       return {
         session,
+        run,
+        runLive: runLive(run, tmuxSessions),
         agents,
         prs,
         tickets: ticketsBy.get(session.id) ?? [],
@@ -140,7 +151,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.runLive ? v.run?.apps.map(a => `${a.url}/${a.status}`).join(",") : ""}:${v.session.id}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -204,7 +215,7 @@ type Confirm =
   | { action: "unarchive"; id: string; count: number }
   | { action: "reconnect"; id: string; count: number; planPending: boolean };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "b boot · B stop apps · s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -281,6 +292,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
         <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
         <Text bold>{v.session.id}</Text>
+        {v.runLive ? <Text color="green"> ▶ running {v.run!.apps.map(a => a.url).join(" ")}</Text> : null}
         <Text dimColor> {v.session.status} </Text>
         <Text color="green">{usd(v.cost)}</Text>
         {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
@@ -856,6 +868,18 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       exit();
     } else if (!selected) {
       return;
+    } else if (input === "b") {
+      if (!config) return setNotice("config is unavailable");
+      const id = selected.session.id;
+      setNotice(`booting apps for ${id}…`);
+      void bootRun(id, config, { print: () => {} })
+        .then(state => setNotice(state.apps.map(a => `${a.name}: ${a.url} (${a.status})`).join(" · ")))
+        .catch(err => setNotice(`boot failed: ${(err as Error).message}`))
+        .finally(refresh);
+    } else if (input === "B") {
+      stopRun(selected.session.id);
+      setNotice(`stopped apps for ${selected.session.id}`);
+      refresh();
     } else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
       // launching the session happens in `runDashboard` once this unmounts — we just

@@ -16,6 +16,7 @@ import {
 } from "../db";
 import { spawnAgentRunner } from "../agent/detached";
 import { isAlive } from "../process/self";
+import { stopRun } from "./run";
 import { tmuxKillSession } from "./tmux";
 import { purgeSessionWorktrees, sessionSnapshotsRoot } from "../worktree/worktree";
 
@@ -41,6 +42,7 @@ export function stopAgent(agentId: string): void {
  * watcher on its next PR refresh while the session has open PRs — archive the
  * session to stop watching until restored. This does not mark work for resumption. */
 export function stopSession(sessionId: string): void {
+  stopRun(sessionId);
   const s = getSession(sessionId);
   if (s) {
     kill(s.pid);

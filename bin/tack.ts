@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { bootRun, stopRun, readRun, runLive, planRun, attachRun, repeatedRunFlag, formatRunStatus, formatRunConfig } from "../src/session/run";
 import { decodePreflight } from "../src/agent/preflight";
 import { followAgent } from "../src/cli/follow";
 import { startRemoteReview } from "../src/session/review";
@@ -10,7 +11,7 @@ import pc from "picocolors";
 import { createInterface } from "node:readline/promises";
 import { tackBugSeed, writeTackBugReport } from "../src/session/bug-report";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_PATH, collapseHome, expandHome } from "../src/paths";
 import { ensureConfigExists } from "../src/config/ensure";
@@ -1584,6 +1585,56 @@ const sessionPollPrs = defineCommand({
   },
 });
 
+const sessionRun = defineCommand({
+  meta: { name: "run", description: "Boot, inspect or stop a session's local apps" },
+  args: {
+    session: { type: "positional", required: true, description: "Session id" },
+    configProject: { type: "positional", required: false, description: "Project for --print-config" },
+    project: { type: "string", description: "Project to boot (repeatable)" },
+    agent: { type: "string", description: "Agent worktree to use (repeatable)" },
+    setup: { type: "boolean", description: "Run setup again" },
+    restart: { type: "boolean", description: "Restart the run" },
+    stop: { type: "boolean", description: "Stop the run" },
+    status: { type: "boolean", description: "Show run status" },
+    logs: { type: "string", description: "Tail a project's log" },
+    attach: { type: "boolean", description: "Attach to tmux" },
+    "print-config": { type: "boolean", description: "Print resolved run config without booting" },
+  },
+  async run({ args }) {
+    const id = String(args.session);
+    requireSession(id);
+    if (args.stop) {
+      stopRun(id);
+      console.log(`Stopped run for ${id}.`);
+      return;
+    }
+    if (args.attach) {
+      attachRun(id);
+      return;
+    }
+    if (args.logs) {
+      const app = readRun(id)?.apps.find(a => a.name === args.logs);
+      if (!app) throw new Error(`No log for ${args.logs}`);
+      spawnSync("tail", ["-f", app.log], { stdio: "inherit" });
+      return;
+    }
+    if (args.status) {
+      const state = readRun(id);
+      console.log(formatRunStatus(state, runLive(state)));
+      return;
+    }
+    const projects = repeatedRunFlag(process.argv, "project");
+    const agents = repeatedRunFlag(process.argv, "agent");
+    if (args["print-config"] && args.configProject) projects.push(String(args.configProject));
+    const config = await loadConfig();
+    if (args["print-config"]) {
+      for (const app of planRun(id, config, projects, agents)) console.log(formatRunConfig(app));
+      return;
+    }
+    await bootRun(id, config, { projects, agents, setup: args.setup, restart: args.restart });
+  },
+});
+
 // `default: "list"` makes bare `tack session` run the list subcommand.
 // `alias: "sessions"` keeps the plural spelling working for `create`/`list`/
 // `stop`/etc. (Bare `tack` routes to `create` instead — see `main` below.)
@@ -1591,9 +1642,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, reconnect, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, run, show, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { run: sessionRun, follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

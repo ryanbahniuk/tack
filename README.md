@@ -191,9 +191,35 @@ Insights covers archived sessions regardless of the `z` filter. It shows session
 tack                                        # create a session (interactive supervisor chat)
 tack session create -m "Fix the flaky login test"   # seed the first message
 tack session create -b -m "…"               # --background: headless + detached, plan auto-approved
+tack session run <session>                  # boot session apps on localhost
 tack session resume <session>               # rejoin a live supervisor, or resume a stopped one
 tack session resume <session> -m "Also update the docs"   # resume with a message (-b for headless)
 ```
+
+Boot session worktrees together with `tack session run <session>`. For example,
+when a session contains `workflow-engine-client` and `workflow-engine-service`,
+Tack detects their Node or Rails dev servers, allocates free ports and prints their
+URLs. Localhost URLs in `.env.example`, `.env.sample`, and `.env` can be rewired
+when they uniquely identify another app's preferred port. Docker Compose is not
+auto-detected.
+
+To always include the service and explicitly wire the client, add this to the
+client project in `config.ts`:
+
+```ts
+run: {
+  requires: ["workflow-engine-service"],
+  env: { BACKEND_URL: "${url:workflow-engine-service}" },
+},
+```
+
+Use repeatable `--project <name>` and `--agent <id>` to select apps and trees;
+`--setup` reruns setup and `--restart` replaces an existing run. `--status`,
+`--stop`, `--logs <project>`, `--attach`, and `--print-config [project]` inspect
+or control it. Set `run: false` to disable a project. Dependencies without a
+session worktree run from their main checkout without setup or file copies.
+Dashboard `b` boots and `B` stops apps.
+
 
 Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 

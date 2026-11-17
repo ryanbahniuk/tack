@@ -21,6 +21,15 @@ export const ProjectMetadataSchema = z.object({
 });
 export type ProjectMetadata = z.infer<typeof ProjectMetadataSchema>;
 
+export const RunOverrideSchema = z.object({
+  command: z.string().min(1).optional(), setup: z.array(z.string()).optional(),
+  setupInputs: z.array(z.string()).optional(), port: z.number().int().min(1).max(65535).optional(),
+  portEnv: z.string().min(1).optional(), env: z.record(z.string(), z.string()).optional(),
+  copyFiles: z.array(z.string()).optional(), requires: z.array(z.string()).optional(),
+  readyPath: z.string().optional(), readyTimeoutSeconds: z.number().positive().optional(),
+});
+export type RunOverride = z.infer<typeof RunOverrideSchema>;
+
 export const ProjectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
@@ -28,6 +37,7 @@ export const ProjectSchema = z.object({
   description: z.string().min(1),
   /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
   metadata: ProjectMetadataSchema.optional(),
+  run: z.union([z.literal(false), RunOverrideSchema]).optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 

@@ -256,3 +256,10 @@ export function tmuxRequestExit(sessionId: string): void {
     spawnSync("tmux", tmuxArgs("send-keys", "-t", `=${tmuxSessionName(sessionId)}:`, "Enter"), { stdio: "ignore", timeout: 1000 });
   } catch { /* kill-session remains the fallback */ }
 }
+
+export function tmuxRunName(id: string): string { return `tack-run-${id}`; }
+export function tmuxRunWindow(id: string, project: string, cwd: string, command: string, first: boolean): boolean {
+  const args = first ? ["new-session", "-d", "-s", tmuxRunName(id), "-n", project, "-c", cwd, command] : ["new-window", "-d", "-t", `=${tmuxRunName(id)}`, "-n", project, "-c", cwd, command];
+  return spawnSync("tmux", tmuxArgs(...args), { stdio: "ignore" }).status === 0;
+}
+export function tmuxKillRun(id: string): void { try { spawnSync("tmux", tmuxArgs("kill-session", "-t", `=${tmuxRunName(id)}`), { stdio: "ignore" }); } catch {} }

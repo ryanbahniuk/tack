@@ -7,7 +7,8 @@ export const STARTER_CONFIG = `// Tack config. \`roles\` pins each function to a
 // ignores pricing.
 export default ({
   projects: [
-    // { name: "my-app", path: "~/Code/my-app", description: "What this repo is." },
+    // { name: "my-app", path: "~/Code/my-app", description: "What this repo is.",
+    //   run: { requires: ["api"], env: { API_URL: "\${url:api}" } } },
   ],
 
   // Background refresh of project default branches.
