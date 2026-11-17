@@ -36,6 +36,7 @@ import {
 } from "../mcp/supervisor-server";
 import { supervisorPromptPath } from "./prompt";
 import { buildSupervisorContext } from "./context";
+import { promptWithAutoLinks } from "../session/auto-link-prs";
 import { sessionSnapshotsRoot } from "../worktree/worktree";
 import {
   tmuxAttachArgs,
@@ -157,9 +158,13 @@ async function* runSupervisor(opts: {
   // stored one back through. Codex can't pre-assign, so a fresh run has none.
   const sessionRef = resume ? opts.sessionRef : model.runtime === "claude" ? uuid() : undefined;
 
+  // No prompt hook runs headless, so PR URLs in the prompt are auto-linked here and
+  // the supervisor is told what was linked (see src/session/auto-link-prs.ts).
+  const runPrompt = await promptWithAutoLinks({ sessionId: session.id, config, prompt });
+
   let lastCost = 0;
   for await (const ev of runtime.run({
-    prompt,
+    prompt: runPrompt,
     cwd,
     model,
     bin: resolved.bin,
@@ -233,7 +238,7 @@ export async function superviseInteractive(opts: {
   config: TackConfig;
   park?: boolean;
 }): Promise<{ code: number; detached: boolean }> {
-  const { session, prompt, resume, config } = opts;
+  const { session, resume, config } = opts;
   if (!session.supervisor_model) throw new Error(`Session ${session.id} has no recorded supervisor model.`);
   if (resume && !session.resume_ref)
     throw new Error(`Session ${session.id} has no resume handle yet — it never got far enough to follow up on.`);
@@ -249,6 +254,11 @@ export async function superviseInteractive(opts: {
   const supervisorMcp = selfCommand(["__supervisor-mcp", session.id]);
   const runtime = selectRuntime(model.runtime);
   const resolved = resolveRuntime(config, model.runtime); // verifies version pin
+  // Runtimes with a prompt hook auto-link PR URLs there (including the seed, which
+  // is submitted like any prompt), so only hookless ones link the seed up front.
+  const prompt = !runtime.supportsUserPromptHook && opts.prompt.trim()
+    ? await promptWithAutoLinks({ sessionId: session.id, config, prompt: opts.prompt })
+    : opts.prompt;
 
   // Attended Claude sessions start gated and obtain human approval through
   // elicitation. Other runtimes start approved and use their own interaction.

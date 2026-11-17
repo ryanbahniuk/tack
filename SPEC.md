@@ -518,6 +518,7 @@ export default ({
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
   prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
+  autoLinkPrs: true,
   draftPrs: true,
   jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", cloudId? },
 });
@@ -619,6 +620,13 @@ contract, or the seed prompt) into `sessions.title`, best-effort and in the back
   `linked_at` set (discovery never clobbers or drops them): `ready_promoted_at` is latched so they
   are never auto-promoted, and pre-link feedback/CI is baselined as handled
   `not_applicable`. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
+  With `autoLinkPrs` (default `true`), PR URLs in the human's messages are linked the
+  same way without the supervisor (`src/session/auto-link-prs.ts`): the attended claude
+  `UserPromptSubmit` hook (`__approve-prompt`, ~20s budget) does it per prompt and adds a
+  note to `additionalContext`; headless runs and hookless attended runtimes link the
+  prompt before launch and append the note. The supervisor calls `link_pr` only for
+  URLs that weren't auto-linked. Project matching parses each project's `origin`
+  remote locally before falling back to `gh repo view`.
 - **JIRA tickets** — linked by the supervisor (`link_jira_ticket`/`unlink_jira_ticket`),
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
