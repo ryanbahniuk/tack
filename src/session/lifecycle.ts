@@ -1,3 +1,4 @@
+import { unbootSession } from "../boot";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { ARTIFACTS_DIR, CONTEXT_DIR, LOGS_DIR } from "../paths";
@@ -54,6 +55,7 @@ export function stopSession(sessionId: string): void {
 
 /** Stops and hides a session, remembering unfinished work so unarchive can resume it. */
 export function archiveSession(sessionId: string): void {
+  try { for (const result of unbootSession(null, sessionId)) if (result.error) console.error(result.error); } catch (error) { console.error(error); }
   for (const a of listAgents(sessionId)) markAgentInterrupted(a.id);
   stopSession(sessionId); // SIGTERMs the PR watcher too; an archived session is never re-watched
   tmuxKillSession(sessionId);
@@ -89,6 +91,7 @@ export function unarchiveSession(sessionId: string): { resumedAgents: string[] }
  * amendments/prs cascade), and sweeps its on-disk artifacts/context/logs.
  */
 export function deleteSession(sessionId: string): void {
+  try { for (const result of unbootSession(null, sessionId)) if (result.error) console.error(result.error); } catch (error) { console.error(error); }
   stopSession(sessionId);
   tmuxKillSession(sessionId);
   purgeSessionWorktrees(sessionId);

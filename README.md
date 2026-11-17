@@ -547,3 +547,8 @@ first, such as `bun run ./bin/tack.ts -m "<small task>"` against that throwaway
 `TACK_HOME`. See [SPEC.md](./SPEC.md) for the
 design and [AGENTS.md](./AGENTS.md) for conventions and extension points (adding a
 model, runtime, persona or supervisor tool).
+
+Session worktrees can run configured applications with `tack session boot <session>`;
+use `tack session boot-status <session>` to inspect them and `tack session unboot
+<session>` to stop them. Define reusable `bootRecipes` and reference them from
+project `boot` settings; see SPEC.md §11 for details.

@@ -33,6 +33,7 @@ collisions (SPEC §7).
 ```
 bin/tack.ts              CLI entry (citty) + hidden __mcp / __supervisor-mcp / __run-agent
 src/config/              schema, load, starter template
+src/boot/                session worktree boot recipes, execution, and locks
 src/db/                  connection, migrate (schema), repositories, index
 src/runtimes/            types (Runtime/AgentEvent), claude.ts, codex.ts, proc.ts, pricing.ts, pricing-sync.ts (models.dev), resolve.ts, install.ts
 src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (supervisor: spawn/continue/touches/dependsOn, check_conflicts)

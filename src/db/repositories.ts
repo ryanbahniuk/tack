@@ -398,6 +398,7 @@ export function stampSessionHeartbeat(id: string, pid: number): void {
 }
 
 export function deleteSession(id: string): void {
+  getDb().prepare(`DELETE FROM boot_links WHERE session_id = ?`).run(id);
   // agents/context/amendments/prs/jira tickets cascade via FK.
   getDb().prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
 }
@@ -1425,4 +1426,63 @@ export function updatePrDependency(id: string, values: Partial<Pick<PrDependency
 }
 export function hasUnresolvedDependencies(sessionId: string): boolean {
   return listPrDependencies(sessionId).some(d => ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status));
+}
+
+export interface BootLink {
+  lock: string; session_id: string; agent_id: string | null; project_name: string;
+  worktree_path: string | null; pid: number | null; plan_path: string | null; log_path: string | null;
+  status: string; error: string | null; started_at: string | null; updated_at: string | null;
+}
+export function getBootLink(lock: string): BootLink | null {
+  return getDb().query("SELECT * FROM boot_links WHERE lock = ?").get(lock) as BootLink | null;
+}
+export function listBootLinks(sessionId: string): BootLink[] {
+  return getDb().query("SELECT * FROM boot_links WHERE session_id = ? ORDER BY project_name").all(sessionId) as BootLink[];
+}
+export function deleteBootLink(lock: string): void { getDb().query("DELETE FROM boot_links WHERE lock = ?").run(lock); }
+export function putBootLink(row: BootLink): void {
+  const result = getDb().query(`INSERT INTO boot_links (lock, session_id, agent_id, project_name, worktree_path, pid, plan_path, log_path, status, error, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(lock) DO UPDATE SET agent_id=excluded.agent_id, worktree_path=excluded.worktree_path, pid=excluded.pid, plan_path=excluded.plan_path, log_path=excluded.log_path, status=excluded.status, error=excluded.error, started_at=excluded.started_at, updated_at=excluded.updated_at
+    WHERE boot_links.session_id=excluded.session_id AND boot_links.project_name=excluded.project_name`)
+    .run(row.lock, row.session_id, row.agent_id, row.project_name, row.worktree_path, row.pid, row.plan_path, row.log_path, row.status, row.error, row.started_at, row.updated_at);
+  if (!result.changes) throw new Error(`Boot lock ${row.lock} was claimed by another session.`);
+}
+
+/** Read all visible boot badges in the dashboard's existing snapshot tick. */
+export function listBootProjectsBySession(ids: readonly string[]): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  if (!ids.length) return result;
+  const rows = getDb().query(`SELECT session_id, project_name FROM boot_links WHERE status IN ('running', 'booted') AND session_id IN (${ids.map(() => "?").join(",")}) ORDER BY project_name`).all(...ids) as { session_id: string; project_name: string }[];
+  for (const row of rows) result.set(row.session_id, [...(result.get(row.session_id) ?? []), row.project_name]);
+  return result;
+}
+
+/** Reserve ownership with a short immediate transaction. The primary key and the
+ * write lock make the check and replacement atomic across Tack processes. */
+export function claimBootLink(row: BootLink, steal: boolean): { claimed: true; previous: BootLink | null } | { claimed: false; holder: string } {
+  const db = getDb();
+  return db.transaction(() => {
+    const previous = db.query("SELECT * FROM boot_links WHERE lock = ?").get(row.lock) as BootLink | null;
+    // A crashed launcher cannot keep a booting claim forever; active claims get
+    // fifteen minutes before another session may recover them without --steal.
+    const stale = previous?.status === "booting" && !!previous.updated_at && Date.parse(previous.updated_at) < Date.now() - 15 * 60_000;
+    if (previous && previous.session_id !== row.session_id && !steal && !stale)
+      return { claimed: false as const, holder: previous.session_id };
+    db.query(`INSERT INTO boot_links (lock, session_id, agent_id, project_name, worktree_path, pid, plan_path, log_path, status, error, started_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(lock) DO UPDATE SET session_id=excluded.session_id, agent_id=excluded.agent_id, project_name=excluded.project_name, worktree_path=excluded.worktree_path, pid=excluded.pid, plan_path=excluded.plan_path, log_path=excluded.log_path, status=excluded.status, error=excluded.error, started_at=excluded.started_at, updated_at=excluded.updated_at`)
+      .run(row.lock, row.session_id, row.agent_id, row.project_name, row.worktree_path, row.pid, row.plan_path, row.log_path, row.status, row.error, row.started_at, row.updated_at);
+    return { claimed: true as const, previous };
+  }).immediate();
+}
+
+/** The unique plan path also identifies an attempt, protecting same-session reboots. */
+export function finalizeBootLink(row: BootLink): boolean {
+  return getDb().query(`UPDATE boot_links SET pid = ?, status = ?, error = ?, updated_at = ?
+    WHERE lock = ? AND session_id = ? AND plan_path = ? AND status = 'booting'`)
+    .run(row.pid, row.status, row.error, row.updated_at, row.lock, row.session_id, row.plan_path).changes > 0;
+}
+export function deleteOwnedBootLink(row: BootLink): boolean {
+  return getDb().query(`DELETE FROM boot_links WHERE lock = ? AND session_id = ? AND plan_path IS ?`)
+    .run(row.lock, row.session_id, row.plan_path).changes > 0;
 }
