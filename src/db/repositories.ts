@@ -18,7 +18,7 @@ export type AgentKind = "pr_fix" | "review" | "manual";
 export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
-export type PrFeedbackKind = "review_thread" | "review" | "issue_comment" | "ci_check";
+export type PrFeedbackKind = "review_thread" | "review" | "issue_comment" | "ci_check" | "dependency_release";
 export type PrFeedbackDecision = "pending" | "fixed" | "declined" | "not_applicable" | "failed";
 
 export interface SessionRow {
@@ -126,7 +126,7 @@ export interface AgentRow {
   /** Full commit SHA successfully pushed to the PR, otherwise NULL. */
   fix_pushed_sha: string | null;
   /** PR fix initiator; legacy NULL origins count as automatic for the daily cap. */
-  fix_origin: "auto" | "supervisor" | null;
+  fix_origin: "auto" | "supervisor" | "dependency" | null;
   created_at: string;
   updated_at: string;
 }
@@ -433,7 +433,7 @@ export function createAgent(input: {
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
   /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
-  fixOrigin?: "auto" | "supervisor" | null;
+  fixOrigin?: "auto" | "supervisor" | "dependency" | null;
 }): AgentRow {
   const db = getDb();
   const now = nowIso();
@@ -896,7 +896,7 @@ export interface PrFixRunRow {
   id: string;
   agent_id: string;
   session_pr_id: string | null;
-  origin: "auto" | "supervisor" | null;
+  origin: "auto" | "supervisor" | "dependency" | null;
   created_at: string;
   /** When post-fix latched this run; NULL while it is in flight. */
   finished_at: string | null;
@@ -908,7 +908,7 @@ export interface PrFixRunRow {
 export function insertPrFixRun(
   agentId: string,
   sessionPrId: string | null,
-  origin: "auto" | "supervisor" | null,
+  origin: "auto" | "supervisor" | "dependency" | null,
   createdAt = nowIso(),
 ): PrFixRunRow {
   const id = shortId("fr");
@@ -947,7 +947,7 @@ export type PrFixReuseSnapshot = Pick<AgentRow,
  */
 export function claimPrFixAgentForReuse(
   id: string,
-  next: { continuationPromptRef: string; model: string; origin: "auto" | "supervisor" },
+  next: { continuationPromptRef: string; model: string; origin: "auto" | "supervisor" | "dependency" },
 ): PrFixReuseSnapshot | null {
   const db = getDb();
   const before = db
@@ -1341,4 +1341,26 @@ export function countOpenPrFeedbackByPr(sessionIds: readonly string[]): Map<stri
       GROUP BY f.session_pr_id`)
     .all(JSON.stringify(sessionIds)) as { id: string; n: number }[];
   return new Map(rows.map((r) => [r.id, r.n]));
+}
+
+export type DependencyStatus = "waiting_merge" | "waiting_release" | "bump_queued" | "bumped" | "abandoned" | "timed_out" | "failed";
+export interface PrDependencyRow {
+  id: string; session_id: string; downstream_pr_id: string; upstream_pr_id: string;
+  ecosystem: string; package: string; status: DependencyStatus; merge_sha: string | null;
+  merged_at: string | null; release_tag: string | null; released_version: string | null;
+  feedback_id: string | null; created_at: string; updated_at: string; detail: string | null;
+}
+export function insertPrDependency(sessionId: string, downstream: string, upstream: string, ecosystem: string, pkg: string): void {
+  const now = nowIso();
+  getDb().prepare(`INSERT OR IGNORE INTO pr_dependencies (id, session_id, downstream_pr_id, upstream_pr_id, ecosystem, package, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(shortId("dep"), sessionId, downstream, upstream, ecosystem, pkg, now, now);
+}
+export function listPrDependencies(sessionId: string): PrDependencyRow[] {
+  return getDb().prepare(`SELECT * FROM pr_dependencies WHERE session_id = ? ORDER BY created_at`).all(sessionId) as PrDependencyRow[];
+}
+export function updatePrDependency(id: string, values: Partial<Pick<PrDependencyRow, "status" | "merge_sha" | "merged_at" | "release_tag" | "released_version" | "feedback_id" | "detail">>): void {
+  const entries = Object.entries(values); if (!entries.length) return;
+  getDb().prepare(`UPDATE pr_dependencies SET ${entries.map(([k]) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...entries.map(([,v]) => v), nowIso(), id);
+}
+export function hasUnresolvedDependencies(sessionId: string): boolean {
+  return listPrDependencies(sessionId).some(d => ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status));
 }

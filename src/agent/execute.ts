@@ -52,7 +52,7 @@ export function prepareAgent(input: {
   /** The session PR a `pr_fix` agent is fixing. */
   sessionPrId?: string | null;
   /** PR fix initiator; supervisor-requested runs are exempt from the daily cap. */
-  fixOrigin?: "auto" | "supervisor" | null;
+  fixOrigin?: "auto" | "supervisor" | "dependency" | null;
 }): AgentRow {
   const agent = createAgent({
     sessionId: input.session.id,

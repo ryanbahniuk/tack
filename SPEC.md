@@ -957,3 +957,7 @@ The JSON artifact is referenced by `agents.review_ref`; `persona` and
 `reviews_agent_id` identify its lens and author. Normal output remains `output_ref`.
 Reviews can be continued for questions, are excluded from file collision checks,
 and appear as `review:<persona>` with their reported verdict in the dashboard.
+
+### Release-gated PR dependencies
+
+A downstream PR can declare upstream session PRs with `awaitsRelease`. Tack infers a shared ecosystem and package from the worktrees, waits for each upstream merge and a containing stable GitHub release or tag, and queues a dependency-release feedback item for a PR fix. The fix uses the exact tagged version and the repository’s package tooling. Dependency fixes honor the session auto-fix switch and one-fix-at-a-time guard but are exempt from the automatic daily cap. Unresolved dependencies keep the watcher alive and block draft promotion; closed upstream PRs, a 24-hour release timeout, and failed fixes are recorded for inspection.

@@ -12,6 +12,7 @@ import { sessionIdFromPrBranch } from "../worktree/worktree";
 
 interface GhPr {
   mergedAt?: string | null;
+  mergeCommit?: { oid: string } | null;
   number: number;
   url: string;
   title: string;
@@ -277,6 +278,7 @@ export interface GhReview {
 /** PR metadata from `gh pr view`, with conversation feedback from GraphQL. */
 export interface PrStatus {
   mergedAt?: string | null;
+  mergeCommit?: { oid: string } | null;
   state: string; // OPEN | MERGED | CLOSED
   isDraft?: boolean;
   mergeable: PrMergeable | string | null;
@@ -323,7 +325,7 @@ export interface PrFeedbackItem {
 }
 
 const PR_STATUS_FIELDS =
-  "state,mergedAt,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title";
+  "state,mergedAt,mergeCommit,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title";
 
 /** Fetches a PR's state, mergeability, refs, conversation comments, and reviews. */
 export async function fetchPrStatus(repoPath: string, number: number): Promise<PrStatus> {
@@ -340,6 +342,7 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
   return {
     state: raw.state ?? "OPEN",
     mergedAt: raw.mergedAt ?? null,
+    mergeCommit: raw.mergeCommit ?? null,
     isDraft: raw.isDraft ?? false,
     mergeable: raw.mergeable ?? null,
     mergeStateStatus: raw.mergeStateStatus ?? null,
@@ -760,13 +763,13 @@ export function buildConversationReplyBody(items: Array<{
   const sections = items.map((item) => {
     const login = item.author;
     const key = login?.toLowerCase();
-    const mention = login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
+    const mention = item.kind !== "dependency_release" && login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
     if (mention) mentioned.add(key);
-    const who = login ? (mention ? `@${login}` : `**${login}**`) : "";
+    const who = item.kind === "dependency_release" ? "" : login ? (mention ? `@${login}` : `**${login}**`) : "";
     const quote = feedbackQuote(item.original, item.kind);
     return [
-      `[${item.kind === "ci_check" ? quote : "Original feedback"}](${item.url})${who ? ` — ${who}` : ""}`,
-      ...(quote && item.kind !== "ci_check" ? [`> ${quote}`] : []),
+      `[${item.kind === "dependency_release" ? "Upstream release" : item.kind === "ci_check" ? quote : "Original feedback"}](${item.url})${who ? ` — ${who}` : ""}`,
+      ...(quote && item.kind !== "ci_check" && item.kind !== "dependency_release" ? [`> ${quote}`] : []),
       "",
       item.reply.trim(),
       ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),

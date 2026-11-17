@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { inferPackage, readManifests } from "../prwatch/dependency";
+import { insertPrDependency, listPrDependencies } from "../db";
 import { computePreflight } from "../agent/preflight";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { commitSubject } from "../worktree/commit-message";
@@ -442,9 +445,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Commits leftover changes using the PR title as the commit subject, merges the latest remote base, then pushes its worktree branch under the " +
         "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
+        "Open upstream PRs first, then pass awaitsRelease with their agent IDs; give downstream work a temporary pin until release. " +
         "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. ",
       inputSchema: {
         agentId: z.string().describe("The finished agent whose committed work becomes the PR"),
+        awaitsRelease: z.array(z.object({ agentId: z.string() })).optional().describe("Upstream agents whose open PRs must release before this PR is ready"),
         title: z.string().trim().min(1).describe("PR title"),
         body: z.string().describe("PR description (markdown)"),
         slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
@@ -452,7 +457,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         draft: z.boolean().optional().describe("Request a draft PR; draftPrs forces drafts even when false. The watcher promotes addressed PRs with green CI."),
       },
     },
-    async ({ agentId, title, body, slug, base, draft }) => {
+    async ({ agentId, title, body, slug, base, draft, awaitsRelease }) => {
       const session = requireSession();
       let a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
@@ -479,6 +484,17 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // diff means there's nothing to push — fail legibly rather than letting `gh`
       // reject an empty branch, which matters most when PRs open unattended.
       if (!a.diff_ref) throw new Error(`Agent ${agentId} made no changes — there's nothing to open a PR for.`);
+      const dependencies = (awaitsRelease ?? []).map(({ agentId: upstreamId }) => {
+        const upstream = getAgent(upstreamId);
+        if (!upstream || upstream.session_id !== sessionId) throw new Error(`Upstream agent ${upstreamId} is not in this session`);
+        if (upstream.project_name === a!.project_name) throw new Error(`Upstream agent ${upstreamId} must be in a different project`);
+        const upstreamPr = listSessionPrs(sessionId).find(p => p.agent_id === upstreamId);
+        if (!upstreamPr) throw new Error(`Upstream agent ${upstreamId} has no session PR; open it first`);
+        const upstreamProject = config.projects.find(p => p.name === upstream.project_name);
+        const inferred = inferPackage(readManifests(a!.worktree_path!), readManifests(upstream.worktree_path && existsSync(upstream.worktree_path) ? upstream.worktree_path : upstreamProject?.path ?? ""));
+        if (!inferred) throw new Error(`Cannot infer a shared package for ${upstreamId}: looked for Gemfile/gemspec, package.json, pyproject.toml, setup.py, requirements*.txt and go.mod`);
+        return { upstreamPr, inferred };
+      });
       const worktreePath = a.worktree_path!;
       const branch = a.branch!;
       // Safety net: fold any changes the agent left uncommitted into its branch so
@@ -508,6 +524,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         state: asDraft ? "draft" : "open",
         headBranch: pr.headBranch,
       });
+      const downstreamPr = listSessionPrs(sessionId).find(p => p.url === pr.url);
+      if (downstreamPr) for (const dep of dependencies) insertPrDependency(sessionId, downstreamPr.id, dep.upstreamPr.id, dep.inferred.ecosystem, dep.inferred.package);
       // Keep the PR description and (re)write the session summary so it covers every
       // PR so far — the record `search_past_sessions` / `read_past_session` serve to
       // later sessions. Best-effort: the PR is already open, so this must never turn
@@ -735,6 +753,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             baseBranch: pr.base_branch,
             headBranch: pr.head_branch,
             checkedAt: pr.checked_at,
+            dependencies: listPrDependencies(sessionId).filter(d => d.downstream_pr_id === pr.id).map(d => ({ package: d.package, status: d.status, version: d.released_version, tag: d.release_tag, detail: d.detail })),
             pendingFeedback: feedback.filter((f) => !f.handled_at).map(brief),
             handledFeedback: feedback.filter((f) => f.handled_at).map(brief),
             fixAgents: listPrFixAgents(pr.id).map((a) => ({

@@ -83,6 +83,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "  In your final summary, plainly flag PRs with baseSync.status=conflict and whether a fix agent started; don't narrate clean merges.",
     "- `list_amendments` / `resolve_amendment` — adjudicate agents' proposed changes",
     "  to the shared contract; you are authoritative.",
+    "  For release dependencies, give downstream work a temporary git, branch or pre-release pin so it builds. Open the upstream PR first, then pass awaitsRelease: [{ agentId }] when opening the downstream PR; Tack waits for a GitHub release or tag and bumps it.",
     "- `check_prs` — view your PRs: state, merge conflicts, failing CI checks, review feedback and how Tack",
     "  handled it. Read-only by default; `refresh: true` requests an async poll (results",
     "  on the next check). Tack handles open PRs on its",

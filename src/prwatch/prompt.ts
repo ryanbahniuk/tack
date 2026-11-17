@@ -37,7 +37,8 @@ export function buildPrFixPrompt(input: {
 }): string {
   const { pr, conflict, items } = input;
   const ciItems = items.filter((item) => item.kind === "ci_check");
-  const reviewItems = items.filter((item) => item.kind !== "ci_check");
+  const dependencyItems = items.filter((item) => item.kind === "dependency_release");
+  const reviewItems = items.filter((item) => item.kind !== "ci_check" && item.kind !== "dependency_release");
   const guidance = input.guidance?.trim() ?? "";
   const base = input.baseBranch || "main";
   const label = pr.number !== null ? `#${pr.number}` : pr.url;
@@ -115,6 +116,12 @@ export function buildPrFixPrompt(input: {
     }
   }
 
+  if (dependencyItems.length) {
+    out.push("", "## Dependency release", "");
+    for (const item of dependencyItems) out.push(`sourceId \`${item.sourceId}\``, item.body, "");
+    out.push("Update the manifest and lockfile to the exact released version using the repository's tooling: bundle update --conservative <gem>, npm install <pkg>@<ver>, poetry add or pip, or go get <module>@<tag> as appropriate. Remove temporary git, branch, path and pre-release pins, regenerate derived files, run the checks, commit, and report the item fixed. If the registry cannot resolve the version, report declined with the reason; never hand-edit a lockfile to fake it.");
+  }
+
   if (guidance) {
     out.push("");
     out.push("## Supervisor guidance");
@@ -132,7 +139,7 @@ export function buildPrFixPrompt(input: {
   );
   if (items.length) {
     out.push(
-      "- Before finishing, call `report_pr_feedback` ONCE with an entry for EVERY review and CI check item above: its `sourceId`, " +
+      "- Before finishing, call `report_pr_feedback` ONCE with an entry for EVERY review and CI check item above, and every dependency item: its `sourceId`, " +
         "your `decision`, and a short `reply` (1-3 plain sentences explaining what you did, or why not). " +
         "Items you don't report are treated as declined with no reply.",
     );
