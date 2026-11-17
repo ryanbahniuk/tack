@@ -25,11 +25,17 @@ brew install oven-sh/bun/bun gh tmux
 
 ### 2. Install Tack
 
+Homebrew's bun doesn't add its global bin to PATH. Add it for `tack` and the
+runtimes installed in step 4 (use `~/.bashrc` for bash):
+
 ```bash
+echo 'export PATH="$(bun pm bin -g):$PATH"' >> ~/.zshrc
+source ~/.zshrc
 git clone git@github.com:ryanbahniuk/tack.git
 cd tack
 bun install
-bun link        # puts `tack` on your PATH
+bun link        # links `tack` into bun's global bin
+which tack
 ```
 
 ### 3. Create the config
@@ -502,6 +508,7 @@ See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 | Agent fails with `model_not_found`, or doctor warns that a model isn't offered | `tack models sync` (re-pins roles to models your login offers). |
 | Agents fail because `codex` isn't installed | `tack runtimes install codex` and `codex login`, or `tack roles set agent opus-5`. |
 | A runtime is outdated or `not found` | `tack runtimes install [runtime]` installs or upgrades it to the latest. A pinned runtime gets its pin. |
+| `tack: command not found` after `bun link` (or `claude`/`codex` not found after `runtimes install`) | Add bun's global bin (`bun pm bin -g`) to PATH as in step 2. |
 | `runtimes install` warns that PATH resolves elsewhere | Another copy (e.g. a native installer's `~/.local/bin/claude`) shadows bun's. Put bun's global bin (`bun pm bin -g`) earlier on PATH, or remove the other copy. |
 | Version drift warning | `tack runtimes doctor` to see it; `tack runtimes sync` to adopt the installed version, or `tack runtimes install <runtime>` to restore the pin. |
 | `mismatch` / run stops on version | That runtime has `versionPolicy: "strict"`. Sync, install the pin or relax the policy. |
