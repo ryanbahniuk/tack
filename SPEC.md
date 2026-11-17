@@ -351,9 +351,8 @@ Adapter specifics, hidden behind the interface:
   merged and deduped into the Tack-owned cwd's `.claude/settings.local.json`
   without clobbering existing or corrupt files), and wires a PreToolUse hook
   on `mcp__tack-supervisor__request_plan_approval` that runs `tack __await-plan <id>`
-  — marking the session as awaiting input. The supervisor writes the summary in chat
-  before calling the tool; the dialog shows a prompt line and only the summary's
-  first line (the goal), with the full plan in chat. The auto-allowed tool
+  — marking the session as awaiting input. The supervisor writes the full plan in chat
+  before calling the tool with it; the dialog shows a prompt line and the full plan. The auto-allowed tool
   handler presents an MCP elicitation form with one optional
   "What would you change?" field. Submitting it blank approves and opens the `spawn_agent` gate;
   non-empty feedback returns keep-planning with that feedback for revision and
@@ -450,9 +449,8 @@ stdout/stderr to the log, and yields parsed JSON lines.
    gets the human's approval before any agent runs. `spawn_agent` is **plan-gated**:
    it refuses until the session's `plan_approved_at` is set. An attended claude
    session flips that gate when the human accepts the plan: the supervisor writes a
-   short summary in chat before calling `request_plan_approval` with it. Because the
-   dialog shows a prompt line and only the summary's first line (the goal); the full
-   plan is in chat. A hook marks it awaiting input,
+   full plan in chat before calling `request_plan_approval` with it. The
+   dialog shows a prompt line and the full plan. A hook marks it awaiting input,
    and the handler elicits "What would you change?" — a blank submission approves,
    feedback keeps planning; cancellation also leaves the plan unapproved. Background runs (no human) and codex interactive sessions
    (which keep native per-tool approvals) are pre-approved up front. Once approved,

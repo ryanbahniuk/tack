@@ -101,9 +101,12 @@ export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__reque
 const PLAN_ELICITATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 export function planApprovalMessage(summary: string): string {
-  const prompt = "Review the plan above — submit blank to approve, or say what to change.";
-  const goal = summary.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-  return goal ? `${prompt}\n\n${goal}` : prompt;
+  const prompt = "Review the plan below — submit blank to approve, or say what to change.";
+  const lines = summary.replace(/\r\n/g, "\n").split("\n").map((line) => line.trimEnd());
+  while (lines.length && !lines[0]) lines.shift();
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  const plan = lines.join("\n");
+  return plan ? `${prompt}\n\n${plan}` : prompt;
 }
 
 /**
@@ -289,15 +292,17 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "request_plan_approval",
     {
       description:
-        "Present your plan in a form asking what the human would change. A blank submission approves; " +
+        "Present your full plan in a form asking what the human would change. A blank submission approves; " +
         "feedback means revise the plan and call this again; on cancellation, ask what to change. " +
         "`spawn_agent` is blocked until the plan is approved.",
       inputSchema: {
         summary: z
           .string()
           .describe(
-            "Short plan summary for the human: goal in one sentence, then one line per agent (project + " +
-              "what it does), plus any real trade-off/risk.",
+            "The full plan for the human, shown in the approval dialog: the goal in one sentence on the first line, " +
+              "then for each agent its project, scope, files/functions to change, key findings from investigation, " +
+              "the bar for done and any dependsOn/ordering; plus cross-project contracts and conventions and " +
+              "any risk, trade-off or irreversible step.",
           ),
       },
     },
@@ -345,7 +350,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // during planning.
       if (!session.plan_approved_at)
         throw new Error(
-          "Plan not approved yet. Call `request_plan_approval` with your short plan summary and wait for " +
+          "Plan not approved yet. Call `request_plan_approval` with your full plan and wait for " +
             "the human to accept it before spawning any agents. Don't ask the human to change or exit any " +
             "mode — the tool call is the approval. `spawn_agent` stays blocked until then. " +
             `If the human says they never saw an approval prompt, they can type \`/approve\` in the session or run \`tack session approve ${sessionId}\` themselves.`,

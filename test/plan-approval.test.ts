@@ -22,12 +22,10 @@ function client(result: unknown, capable = true) {
   } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
 }
 
-test("plan approval message shows only the goal", () => {
-  const prompt = "Review the plan above — submit blank to approve, or say what to change.";
-  const message = planApprovalMessage("Goal sentence\n- tack: do X\n- penny: do Y");
-  expect(message).toBe(`${prompt}\n\nGoal sentence`);
-  expect(message.split("\n").length).toBeLessThanOrEqual(3);
-  expect(planApprovalMessage("\n  \n  Goal sentence  \n- tack: do X")).toBe(`${prompt}\n\nGoal sentence`);
+test("plan approval message shows the full plan", () => {
+  const prompt = "Review the plan below — submit blank to approve, or say what to change.";
+  expect(planApprovalMessage("\r\n  \r\nGoal sentence  \r\n\r\n  - tack: do X  \r\n- penny: do Y\r\n \r\n"))
+    .toBe(`${prompt}\n\nGoal sentence\n\n  - tack: do X\n- penny: do Y`);
   expect(planApprovalMessage(" \n\t\n ")).toBe(prompt);
 });
 
@@ -36,7 +34,7 @@ test("accepted approval presents the form and approves", async () => {
   const c = client({ action: "accept", content: {} });
   expect(await requestPlanApproval(c, id, "Build it")).toMatchObject({ approved: true });
   expect(c.elicitInput).toHaveBeenCalledWith({
-    message: "Review the plan above — submit blank to approve, or say what to change.\n\nBuild it",
+    message: "Review the plan below — submit blank to approve, or say what to change.\n\nBuild it",
     requestedSchema: {
       type: "object",
       properties: {
