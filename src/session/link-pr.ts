@@ -41,29 +41,66 @@ export interface LinkPrResult {
   next: string;
 }
 
+/** A git remote URL's `owner/repo`, from the https, `ssh://` and scp-style
+ * (`git@host:owner/repo.git`) forms; null for anything else (local paths, etc.). */
+export function parseRemoteRepo(url: string): { owner: string; repo: string } | null {
+  const u = url.trim();
+  const m =
+    /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(u) ??
+    /^(?:[^@/\s]+@)?[^:/\s]+:([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(u);
+  return m ? { owner: m[1]!, repo: m[2]! } : null;
+}
+
+/** `git remote get-url origin` in `repoPath`; rejects when there's no such remote. */
+export async function originRemoteUrl(repoPath: string): Promise<string> {
+  const proc = Bun.spawn(["git", "remote", "get-url", "origin"], { cwd: repoPath, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  if (code !== 0 || !out.trim()) throw new Error("no origin remote");
+  return out.trim();
+}
+
 /**
  * The configured project whose GitHub repo is `owner/repo` (case-insensitive).
  * When `wanted` names a project it must be that one. Projects whose repo can't be
  * resolved (not a GitHub remote, gh offline) are skipped; if nothing matches the
  * error names the repo and says it isn't a configured project.
+ *
+ * Fast path first: each project's `origin` remote is parsed locally, because the
+ * auto-link hook runs in a fresh process where `ghRepo`'s cache is empty and one
+ * `gh repo view` per configured project would stall the human's prompt. Only
+ * projects whose origin couldn't be read or parsed fall back to `ghRepo`. A project
+ * whose origin parses to a different repo is not asked again: origin is where Tack
+ * pushes (`pushBranch`), so it couldn't add to that PR's branch anyway.
  */
 export async function resolveLinkProject(
   config: Pick<TackConfig, "projects">,
   ref: Pick<prs.GithubPrRef, "owner" | "repo">,
   wanted?: string,
   ghRepo: typeof prs.ghRepo = prs.ghRepo,
+  remoteUrl: (repoPath: string) => Promise<string> = originRemoteUrl,
 ): Promise<Project> {
   const slug = `${ref.owner}/${ref.repo}`;
+  const same = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase() === slug.toLowerCase();
   const candidates = wanted ? config.projects.filter((p) => p.name === wanted) : config.projects;
   if (wanted && candidates.length === 0) throw new Error(`"${wanted}" isn't a configured project.`);
-  for (const project of candidates) {
+  const remotes = await Promise.all(candidates.map(async (project) => {
+    try {
+      return parseRemoteRepo(await remoteUrl(project.path));
+    } catch {
+      return null;
+    }
+  }));
+  const local = candidates.find((_, i) => remotes[i] && same(remotes[i]!.owner, remotes[i]!.repo));
+  if (local) return local;
+  for (const [i, project] of candidates.entries()) {
+    if (remotes[i]) continue;
     let repo: { owner: string; name: string };
     try {
       repo = await ghRepo(project.path);
     } catch {
       continue;
     }
-    if (`${repo.owner}/${repo.name}`.toLowerCase() === slug.toLowerCase()) return project;
+    if (same(repo.owner, repo.name)) return project;
   }
   throw new Error(
     wanted

@@ -62,6 +62,7 @@ import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlocke
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
+import { AUTO_LINK_BUDGET_MS, autoLinkNote, autoLinkPromptPrs, autoLinkablePrompt, extractPrUrls } from "../src/session/auto-link-prs";
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
@@ -1759,25 +1760,24 @@ if (hidden === "__mcp") {
 } else if (hidden === "__approve-prompt") {
   // Only the harness runs this on submitted prompts. Fail open so malformed input
   // or a missing session never interrupts ordinary chat or leaks junk to stdout.
+  // Every piece of context (approval, command outcome, auto-link note) is collected
+  // and written as ONE hookSpecificOutput object: two JSON writes aren't valid output.
+  const context: string[] = [];
   try {
     const sessionId = process.argv[3];
     const input = JSON.parse(await Bun.stdin.text());
-    if (sessionId && typeof input?.prompt === "string") {
+    const prompt: string | null = typeof input?.prompt === "string" ? input.prompt : null;
+    if (sessionId && prompt !== null) {
       setSupervisorTurnStartedAt(sessionId, new Date().toISOString());
       // The human replied, so an open question is answered. A pending plan keeps
       // its own lifecycle (elicitation / /approve), so only "question" clears here.
       clearSessionAwaitingInputFor(sessionId, "question");
     }
-    if (sessionId && typeof input?.prompt === "string" && isApprovePrompt(input.prompt)) {
+    if (sessionId && prompt !== null && isApprovePrompt(prompt)) {
       approveSessionPlan(sessionId);
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: "The human approved the plan via /approve; plan_approved_at is set. Proceed to spawn agents.",
-        },
-      }));
+      context.push("The human approved the plan via /approve; plan_approved_at is set. Proceed to spawn agents.");
     }
-    const command = typeof input?.prompt === "string" ? parseSupervisorCommand(input.prompt) : null;
+    const command = prompt !== null ? parseSupervisorCommand(prompt) : null;
     if (sessionId && command) {
       let outcome: string;
       try {
@@ -1792,11 +1792,31 @@ if (hidden === "__mcp") {
           outcome = `PR auto-fix is ${getSession(sessionId)!.pr_fix_enabled ? "on" : "off"}.`;
         }
       } catch (err) { outcome = `Command failed: ${(err as Error).message}`; }
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `${outcome} Already done by Tack; report it, don't redo it.` } }));
+      context.push(`${outcome} Already done by Tack; report it, don't redo it.`);
     }
-    if (sessionId && typeof input?.prompt === "string") titleFromFirstPrompt(sessionId, input.prompt);
+    // Title before the (slower) auto-link step.
+    try { if (sessionId && prompt !== null) titleFromFirstPrompt(sessionId, prompt); } catch { /* best-effort */ }
+    // Auto-link PR URLs the human pasted, so adoption doesn't hinge on the model
+    // calling link_pr. Config is loaded only when there's a URL to link; the whole
+    // step is time-boxed so a slow `gh` can't hold the prompt hostage.
+    if (sessionId && prompt !== null && autoLinkablePrompt(prompt) && extractPrUrls(prompt).length && getSession(sessionId)) {
+      try {
+        const config = await loadConfig();
+        if (config.autoLinkPrs) {
+          const note = autoLinkNote(await autoLinkPromptPrs({
+            sessionId, config, prompt, deadlineMs: Date.now() + AUTO_LINK_BUDGET_MS,
+          }));
+          if (note) context.push(note);
+        }
+      } catch { /* best-effort; the supervisor can still call link_pr */ }
+    }
   } catch {
     // Approval and titling are best-effort; never block the human's prompt.
+  }
+  if (context.length) {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context.join("\n\n") },
+    }));
   }
   process.exit(0);
 } else if (hidden === "__turn-end") {

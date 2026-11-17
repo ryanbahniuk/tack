@@ -135,7 +135,7 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 - **Auth:** Tack passes no tokens. The server inherits your environment and reuses the OAuth cache that the `chime-atlassian` plugin keeps at `~/.cache/chime-atlassian-mcp/`. Seed that cache once from an interactive client (the plugin, or an interactive Tack supervisor, which can answer the OAuth prompt). After that, headless runs reuse it. Never put tokens in `config.ts`.
 - **Permissions:** a mounted server's tools are auto-allowed under the supervisor's read-only posture, including any write tools the server exposes. Only mount servers you're comfortable with it calling.
 - **Tickets:** with `jira` set, the supervisor links the tickets a session works on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now, `J` opens a session's tickets, `t` lists every session's tickets, archived included) and `tack session show` lists them. `cloudId` is optional and falls back to the server's `CONFLUENCE_CLOUD_ID`.
-- **Existing PRs:** paste a GitHub PR URL (in one of your configured projects) into the problem and the supervisor adopts it with `link_pr` instead of opening a second PR; follow-up changes go onto that PR's branch via `fix_pr`. Like ticket linking it's local bookkeeping (read-only `gh` calls, never a write to GitHub). Feedback and failing CI that predate the link count as already handled, the watcher never auto-promotes a linked draft, and fork or merged/closed PRs are refused. `unlink_pr` drops one linked by mistake; the dashboard tags linked PRs `linked`.
+- **Existing PRs:** paste a GitHub PR URL (in one of your configured projects) into any message to the supervisor and Tack adopts it into the session automatically (`autoLinkPrs`, default on), telling the supervisor what it linked; the supervisor calls `link_pr` only for URLs that weren't auto-linked, and never opens a second PR; follow-up changes go onto that PR's branch via `fix_pr`. Like ticket linking it's local bookkeeping (read-only `gh` calls, never a write to GitHub). Feedback and failing CI that predate the link count as already handled, the watcher never auto-promotes a linked draft, and fork or merged/closed PRs are refused. `unlink_pr` drops one linked by mistake; the dashboard tags linked PRs `linked`.
 
 ---
 
@@ -353,6 +353,7 @@ export default ({
   agentReuse: { enabled: true, maxIdleHours: 24 },
   prWatch: {},
   autoOpenPrs: true,
+  autoLinkPrs: true,
   draftPrs: true,
 });
 ```
@@ -372,6 +373,7 @@ export default ({
 | `agentReuse` | `{ enabled: true, maxIdleHours: 24 }` | Continue a PR's previous agent conversation for fixes. |
 | `baseCache` | `{ enabled: true, intervalSeconds: 120, maxAgeSeconds: 600 }` | Background refresh of project default branches, so agents start fast. |
 | `autoOpenPrs` | `true` | Supervisor opens PRs without asking; `false` asks and confirms each one. |
+| `autoLinkPrs` | `true` | Adopt GitHub PR URLs from your messages into the session automatically; `false` leaves it to the supervisor's `link_pr`. |
 | `draftPrs` | `true` | Force new PRs to draft; `false` honours `open_pr`'s `draft` argument. |
 | `jira` | unset | `{ mcpServer, siteUrl, cloudId? }`: track-only ticket status. |
 
@@ -485,6 +487,7 @@ different from the author's when one is available.
 | `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
 | `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |
 | `autoOpenPrs` | `true` | See [Before your first session](#before-your-first-session). |
+| `autoLinkPrs` | `true` | Auto-link PR URLs pasted into supervisor messages (read-only `gh`). |
 | `draftPrs` | `true` | Force drafts. |
 
 ### `readAllowlist`, `supervisorMcpServers`, `jira`
