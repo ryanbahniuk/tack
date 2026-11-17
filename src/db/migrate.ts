@@ -370,6 +370,16 @@ const migrations: Migration[] = [
           FROM agents WHERE kind = 'pr_fix';
     `,
   },
+  { version: 20, name: "pr_dependencies", sql: `
+    CREATE TABLE IF NOT EXISTS pr_dependencies (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      downstream_pr_id TEXT NOT NULL REFERENCES session_prs(id) ON DELETE CASCADE,
+      upstream_pr_id TEXT NOT NULL REFERENCES session_prs(id), ecosystem TEXT NOT NULL, package TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'waiting_merge', merge_sha TEXT, merged_at TEXT, release_tag TEXT,
+      released_version TEXT, feedback_id TEXT REFERENCES pr_feedback(id), created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, detail TEXT, UNIQUE(downstream_pr_id, upstream_pr_id)
+    );
+  ` },
 ];
 
 /** Applies any pending migrations in a single transaction. */

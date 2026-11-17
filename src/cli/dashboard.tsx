@@ -1,3 +1,4 @@
+import { hasUnresolvedDependencies, listPrDependencies } from "../db";
 import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { startRemoteReview } from "../session/review";
@@ -65,7 +66,7 @@ interface View {
   amendments: AmendmentRow[];
   /** PR-watch state per session PR id: comments Tack hasn't finished with yet, and
    * whether a pr_fix agent is currently working on the PR. */
-  prWatch: Record<string, { openFeedback: number; fixing: boolean }>;
+  prWatch: Record<string, { openFeedback: number; fixing: boolean; dependency?: string }>;
 }
 
 /** Sort weight: sessions waiting on the human float to the top, then live ones, so
@@ -112,6 +113,7 @@ function snapshot(showArchived: boolean): View[] {
             pr.id,
             {
               openFeedback: openFeedback.get(pr.id) ?? 0,
+              dependency: listPrDependencies(session.id).find(d => d.downstream_pr_id === pr.id && ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status))?.package,
               fixing: agents.some(
                 (a) =>
                   a.kind === "pr_fix" &&
@@ -146,7 +148,7 @@ function signature(views: View[]): string {
         v.prs
           .map((p) => {
             const w = v.prWatch[p.id];
-            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}`;
+            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}/${w?.dependency ?? ""}`;
           })
           .join(",") +
         ";" +
@@ -347,6 +349,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
                   {w.openFeedback} comment{w.openFeedback === 1 ? "" : "s"}
                 </Text>
               ) : null}
+              {w?.dependency ? <Text color="yellow"> ⏳ {w.dependency} release</Text> : null}
               {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
               <Text underline>{pr.url}</Text>
             </Text>
@@ -1386,7 +1389,7 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
   for (const id of sessionIds) {
     const s = getSession(id);
     if (!s || s.status !== "active" || isAlive(s.pr_watch_pid)) continue;
-    if (!listSessionPrs(id).some(isWatchablePr)) continue;
+    if (!(listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) continue;
     try {
       spawnPrWatcher(id, config);
     } catch {

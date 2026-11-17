@@ -159,3 +159,5 @@ always relaunches the supervisor parked in tmux (`parkReconnectedSupervisor`) an
 the dashboard stays open; `--all` parks only supervisors that were running. Without
 tmux the supervisor stays stopped until `tack session resume`.
 Logic lives in `src/session/reconnect.ts`; supervisor stop is shared with refresh.
+
+Release-gated dependencies use `open_pr` with `awaitsRelease` after opening the upstream PR. PR watch waits for a containing GitHub release or tag, queues an uncapped dependency fix, and blocks draft promotion while it waits. No package registry or configuration setting determines publication.

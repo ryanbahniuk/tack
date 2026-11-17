@@ -1,3 +1,4 @@
+import { hasUnresolvedDependencies } from "../db";
 import type { TackConfig } from "../config/schema";
 import { getSession, listAgents, listSessionPrs, listSessions, resetAgentAttempt, setAgentError, setAgentStatus, setSessionPrWatchPid, type AgentRow, type SessionRow } from "../db";
 import { isTransientError, spawnAgentRunner } from "../agent/detached";
@@ -91,7 +92,7 @@ export async function reconnectSession(id: string, config: TackConfig): Promise<
 
   let watcherRestarted = false;
   const fresh = getSession(id) ?? session;
-  if (!isAlive(fresh.pr_watch_pid) && listSessionPrs(id).some(isWatchablePr)) {
+  if (!isAlive(fresh.pr_watch_pid) && (listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) {
     if (fresh.pr_watch_pid) setSessionPrWatchPid(id, null);
     spawnPrWatcher(id, config);
     watcherRestarted = true;

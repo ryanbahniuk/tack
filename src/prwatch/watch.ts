@@ -9,6 +9,7 @@ import type { Model, Project, TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import {
   assignPrFeedback,
+  listPrDependencies, updatePrDependency, hasUnresolvedDependencies,
   claimPrFixAgentForReuse,
   countPrFixRunsSince,
   deletePrFixRun,
@@ -70,6 +71,7 @@ import {
 } from "../projects/prs";
 import { commitWorktreeAsync, fastForwardPrWorktree, worktreeBase, worktreeHead } from "../worktree/worktree";
 import { buildPrFixPrompt } from "./prompt";
+import { findRelease } from "./dependency";
 import { currentCodeVersion, currentConfigVersion } from "../process/version";
 import { nowIso, uuid } from "../util/id";
 
@@ -162,9 +164,10 @@ export function readyToPromote(input: {
   releasedCount: number;
   feedback: Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref">[];
   checks: PrCheck[] | null;
+  unresolvedDependencies?: number;
 }): boolean {
   return input.enabled && input.autoReady && !!input.isDraft && !input.readyPromotedAt &&
-    input.mergeable === "MERGEABLE" && !input.prFixBusy &&
+    input.mergeable === "MERGEABLE" && !input.prFixBusy && !input.unresolvedDependencies &&
     input.freshCount === 0 && input.releasedCount === 0 &&
     input.feedback.every((row) => row.decision !== "pending" && row.decision !== "failed" &&
       (row.source_kind === "ci_check" ||
@@ -225,7 +228,7 @@ export async function triggerPrWatch(
     const project = config.projects.find((p) => p.name === pr.project_name);
     if (pr.number !== null && project) await deps.poll(pr, project);
   }));
-  if (!listSessionPrs(sessionId).some(isWatchablePr)) return { kind: "no-open-prs" };
+  if (!listSessionPrs(sessionId).some(isWatchablePr) && !hasUnresolvedDependencies(sessionId)) return { kind: "no-open-prs" };
   if (session.pr_watch_pid && deps.isAlive(session.pr_watch_pid)) {
     try {
       deps.signal(session.pr_watch_pid);
@@ -300,7 +303,7 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
         log(`superseded by watcher pid ${session.pr_watch_pid}; exiting`);
         break;
       }
-      if (!listSessionPrs(sessionId).some(isWatchablePr)) {
+      if (!listSessionPrs(sessionId).some(isWatchablePr) && !hasUnresolvedDependencies(sessionId)) {
         log("no open PRs remain; exiting");
         break;
       }
@@ -319,12 +322,45 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
 
 /** One tick over every watchable PR in the session. Per-PR failures are isolated. */
 async function watchPass(session: SessionRow, config: TackConfig, log: Log): Promise<void> {
+  await watchDependencies(session, config, log);
   for (const pr of listSessionPrs(session.id).filter(isWatchablePr)) {
     try {
       await watchPr(session, pr, config, log);
     } catch (err) {
       log(`PR #${pr.number ?? "?"}: ${(err as Error).message}`);
     }
+  }
+}
+
+/** Poll merged upstreams separately: they disappear from the ordinary PR loop. */
+async function watchDependencies(session: SessionRow, config: TackConfig, log: Log): Promise<void> {
+  for (const dep of listPrDependencies(session.id)) {
+    try {
+      if (!["waiting_merge", "waiting_release"].includes(dep.status)) continue;
+      const upstream = getSessionPr(dep.upstream_pr_id);
+      const downstream = getSessionPr(dep.downstream_pr_id);
+      if (!upstream || !downstream || !isWatchablePr(downstream)) continue;
+      const project = config.projects.find(p => p.name === upstream.project_name);
+      if (!project || upstream.number === null) continue;
+      let sha = dep.merge_sha, mergedAt = dep.merged_at;
+      if (dep.status === "waiting_merge") {
+        const { status, state } = await pollPrStatus(upstream.id, project.path, upstream.number);
+        if (state === "closed") { updatePrDependency(dep.id, { status: "abandoned", detail: "Upstream closed without merging" }); continue; }
+        if (state !== "merged" || !status.mergeCommit?.oid || !status.mergedAt) continue;
+        sha = status.mergeCommit.oid; mergedAt = status.mergedAt;
+        updatePrDependency(dep.id, { status: "waiting_release", merge_sha: sha, merged_at: mergedAt });
+      }
+      if (!sha || !mergedAt) continue;
+      if (Date.now() - Date.parse(dep.status === "waiting_release" ? dep.updated_at : nowIso()) > DAY_MS) { updatePrDependency(dep.id, { status: "timed_out", detail: "No release within 24 hours of merge" }); continue; }
+      const repo = upstream.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
+      if (!repo) continue;
+      const release = await findRelease(project.path, repo, sha, mergedAt, dep.package);
+      if (!release) continue;
+      const sourceId = `dep:${dep.id}:${release.version}`;
+      const body = `Ecosystem: ${dep.ecosystem}\nPackage: ${dep.package}\nVersion: ${release.version}\nTag: ${release.tag}\nUpstream PR: ${upstream.url}\nMerge SHA: ${sha}`;
+      const feedback = insertPrFeedback({ sessionPrId: downstream.id, sourceId, sourceKind: "dependency_release", author: "Tack", url: upstream.url, bodyRef: writePrFeedbackArtifact(session.id, downstream.id, sourceId, "body", body) });
+      updatePrDependency(dep.id, { status: "bump_queued", release_tag: release.tag, released_version: release.version, feedback_id: feedback.id, detail: "Release found; bump queued" });
+    } catch (err) { log(`dependency ${dep.id}: ${(err as Error).message}`); }
   }
 }
 
@@ -390,6 +426,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
     releasedCount: released.length,
     feedback: listPrFeedback(pr.id),
     checks,
+    unresolvedDependencies: listPrDependencies(session.id).filter(d => d.downstream_pr_id === pr.id && ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status)).length,
   })) {
     try {
       await markPrReady(project.path, pr.number);
@@ -408,8 +445,9 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
 
   if (!getSession(session.id)?.pr_fix_enabled) return log(`${tag}: PR auto-fix is off for this session`);
 
+  const dependencyPending = released.some(f => f.source_kind === "dependency_release");
   const cap = prFixCapReached(pr.id, config);
-  if (cap.reached) {
+  if (cap.reached && !dependencyPending) {
     return log(
       `${tag}: ${fresh.length + released.length} item(s)${conflict ? " + conflict" : ""} waiting, but the daily cap ` +
         `(${config.prWatch.maxFixRunsPerDay} fix runs/24h) is reached; will retry later`,
@@ -417,11 +455,11 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   }
 
   const { agent, items, lineage, continued, fallbackReason, reuseFallbackReason } = await spawnPrFixAgent(session, pr, project, config, {
-    origin: "auto",
-    conflict,
+    origin: dependencyPending ? "dependency" : "auto",
+    conflict: dependencyPending ? false : conflict,
     baseBranch: status.baseRefName,
     title: status.title,
-    fresh,
+    fresh: dependencyPending ? [] : fresh,
   });
   const ciCount = fresh.filter((f) => f.kind === "ci_check").length +
     released.filter((f) => f.source_kind === "ci_check").length;
@@ -614,7 +652,7 @@ export async function spawnPrFixAgent(
   project: Project,
   config: TackConfig,
   opts: {
-    origin: "auto" | "supervisor";
+    origin: "auto" | "supervisor" | "dependency";
     conflict: boolean;
     baseBranch: string | null;
     title: string | null;
@@ -657,7 +695,7 @@ export async function spawnPrFixAgent(
       }
       feedbackRecorded = true;
     }
-    const rows = listUnassignedPrFeedback(pr.id);
+    const rows = listUnassignedPrFeedback(pr.id).filter(r => opts.origin === "dependency" ? r.source_kind === "dependency_release" : r.source_kind !== "dependency_release");
     const prompt = buildPrFixPrompt({
       pr: { number: pr.number, title: opts.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
       conflict: opts.conflict,
@@ -819,7 +857,9 @@ export async function postFix(
   // Failed: mark its items failed (terminal — never retried automatically, so a
   // comment that reliably breaks the agent can't loop), keep the error legible.
   if (agent.status === "failed") {
-    for (const f of items) markPrFeedbackHandled(f.id, { decision: "failed" });
+    for (const f of items) { markPrFeedbackHandled(f.id, { decision: "failed" });
+      for (const d of listPrDependencies(pr.session_id)) if (d.feedback_id === f.id) updatePrDependency(d.id, { status: "failed", detail: agent.error || "Fix run failed" });
+    }
     if (!agent.error) setAgentError(agent.id, "PR fix run failed");
     markAgentPostFixed(agent.id, "failed");
     return log(`${tag}: failed; marked ${items.length} item(s) failed`);
@@ -920,6 +960,10 @@ export async function postFix(
       log(`${tag}: conversation reply failed: ${(err as Error).message}`);
     }
     for (const f of conversation) markPrFeedbackHandled(f.id, { replyUrl: url });
+  }
+  for (const f of items) for (const d of listPrDependencies(pr.session_id)) if (d.feedback_id === f.id) {
+    const fixed = f.decision === "fixed" && outcome !== "not_pushed";
+    updatePrDependency(d.id, { status: fixed ? "bumped" : "failed", detail: fixed ? "Dependency updated" : (f.reply_ref ? readArtifact(f.reply_ref) : "Fix did not report fixed") });
   }
   markAgentPostFixed(agent.id, outcome, pushedSha ?? undefined);
   log(`${tag}: post-fix complete (${items.length} item(s))`);

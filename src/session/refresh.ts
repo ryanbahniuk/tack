@@ -1,3 +1,4 @@
+import { hasUnresolvedDependencies } from "../db";
 import type { TackConfig } from "../config/schema";
 import { resolveModel } from "../config/load";
 import { getSession, listSessions, listSessionPrs, setSessionPrWatchPid, setSupervisorTurnStartedAt, type SessionRow } from "../db";
@@ -103,7 +104,7 @@ export async function refreshSession(id: string, config: TackConfig, opts: { for
     // Never clear a live pid: spawnPrWatcher must not race a still-running watcher.
     if (!await waitUntilGone(() => isAlive(session.pr_watch_pid))) throw new Error(`PR watcher ${id} did not exit`);
     if (getSession(id)?.pr_watch_pid === session.pr_watch_pid) setSessionPrWatchPid(id, null);
-    if (listSessionPrs(id).some(isWatchablePr)) spawnPrWatcher(id, config);
+    if ((listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) spawnPrWatcher(id, config);
   }
   return { ...stale, refreshed: true, blocked: null };
 }
