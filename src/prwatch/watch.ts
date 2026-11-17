@@ -333,7 +333,7 @@ async function watchPass(session: SessionRow, config: TackConfig, log: Log): Pro
 }
 
 /** Poll merged upstreams separately: they disappear from the ordinary PR loop. */
-async function watchDependencies(session: SessionRow, config: TackConfig, log: Log): Promise<void> {
+export async function watchDependencies(session: SessionRow, config: TackConfig, log: Log, deps = { poll: pollPrStatus, release: findRelease }): Promise<void> {
   for (const dep of listPrDependencies(session.id)) {
     try {
       if (!["waiting_merge", "waiting_release"].includes(dep.status)) continue;
@@ -344,7 +344,7 @@ async function watchDependencies(session: SessionRow, config: TackConfig, log: L
       if (!project || upstream.number === null) continue;
       let sha = dep.merge_sha, mergedAt = dep.merged_at;
       if (dep.status === "waiting_merge") {
-        const { status, state } = await pollPrStatus(upstream.id, project.path, upstream.number);
+        const { status, state } = await deps.poll(upstream.id, project.path, upstream.number);
         if (state === "closed") { updatePrDependency(dep.id, { status: "abandoned", detail: "Upstream closed without merging" }); continue; }
         if (state !== "merged" || !status.mergeCommit?.oid || !status.mergedAt) continue;
         sha = status.mergeCommit.oid; mergedAt = status.mergedAt;
@@ -354,7 +354,7 @@ async function watchDependencies(session: SessionRow, config: TackConfig, log: L
       if (Date.now() - Date.parse(dep.status === "waiting_release" ? dep.updated_at : nowIso()) > DAY_MS) { updatePrDependency(dep.id, { status: "timed_out", detail: "No release within 24 hours of merge" }); continue; }
       const repo = upstream.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
       if (!repo) continue;
-      const release = await findRelease(project.path, repo, sha, mergedAt, dep.package);
+      const release = await deps.release(project.path, repo, sha, mergedAt, dep.package);
       if (!release) continue;
       const sourceId = `dep:${dep.id}:${release.version}`;
       const body = `Ecosystem: ${dep.ecosystem}\nPackage: ${dep.package}\nVersion: ${release.version}\nTag: ${release.tag}\nUpstream PR: ${upstream.url}\nMerge SHA: ${sha}`;

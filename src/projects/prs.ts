@@ -763,13 +763,13 @@ export function buildConversationReplyBody(items: Array<{
   const sections = items.map((item) => {
     const login = item.author;
     const key = login?.toLowerCase();
-    const mention = login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
+    const mention = item.kind !== "dependency_release" && login && key && !item.isBot && !isBotAuthor({ login }) && !mentioned.has(key);
     if (mention) mentioned.add(key);
-    const who = login ? (mention ? `@${login}` : `**${login}**`) : "";
+    const who = item.kind === "dependency_release" ? "" : login ? (mention ? `@${login}` : `**${login}**`) : "";
     const quote = feedbackQuote(item.original, item.kind);
     return [
-      `[${item.kind === "ci_check" ? quote : "Original feedback"}](${item.url})${who ? ` — ${who}` : ""}`,
-      ...(quote && item.kind !== "ci_check" ? [`> ${quote}`] : []),
+      `[${item.kind === "dependency_release" ? "Upstream release" : item.kind === "ci_check" ? quote : "Original feedback"}](${item.url})${who ? ` — ${who}` : ""}`,
+      ...(quote && item.kind !== "ci_check" && item.kind !== "dependency_release" ? [`> ${quote}`] : []),
       "",
       item.reply.trim(),
       ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),

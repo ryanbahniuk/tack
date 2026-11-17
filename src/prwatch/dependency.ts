@@ -47,27 +47,41 @@ export const runGh: GhRunner = (args, cwd) => new Promise((resolve, reject) => {
   child.stdout.on("data", c => out += c); child.stderr.on("data", c => err += c);
   child.on("error", reject); child.on("close", code => code === 0 ? resolve(out) : reject(new Error(err)));
 });
-/** Releases carry timestamps; tag-only candidates are checked in API order (newest first).
- * Containment is authoritative even when GitHub does not expose tag creation dates. */
+/** Release timestamps and tagged commit dates give one comparable ordering even
+ * when a repository mixes releases and tags. Undated tags are skipped rather than
+ * guessed; each tick retries transient API failures. Calls and pagination are bounded. */
 export async function findRelease(path: string, repo: string, sha: string, mergedAt: string, pkg: string, run: GhRunner = runGh): Promise<{tag: string; version: string} | null> {
   try {
-    const releases = await run(["release", "list", "--limit", "100", "--json", "tagName,createdAt,isDraft,isPrerelease"], path).then(JSON.parse).catch(() => []);
-    const tags: string[] = [];
+    type Release = { tagName: string; createdAt: string; isDraft: boolean; isPrerelease: boolean };
+    type Tag = { name: string; commit?: { sha?: string } };
+    const releases: Release[] = await run(["release", "list", "--limit", "100", "--json", "tagName,createdAt,isDraft,isPrerelease"], path).then(JSON.parse).catch(() => []);
+    const tags: Tag[] = [];
     for (let page = 1; page <= 3; page++) {
-      const rows = await run(["api", `repos/${repo}/tags?per_page=100&page=${page}`], path).then(JSON.parse).catch(() => []);
-      tags.push(...rows.map((r: {name: string}) => r.name)); if (rows.length < 100) break;
+      const rows: Tag[] = await run(["api", `repos/${repo}/tags?per_page=100&page=${page}`], path).then(JSON.parse).catch(() => []);
+      tags.push(...rows); if (rows.length < 100) break;
     }
-    const excluded = new Set(releases.filter((r: any) => r.isDraft || r.isPrerelease || r.createdAt < mergedAt).map((r: any) => r.tagName));
-    const releaseCandidates = releases.filter((r: any) => !excluded.has(r.tagName))
-      .sort((a: any, b: any) => a.createdAt.localeCompare(b.createdAt)).map((r: any) => r.tagName as string);
-    // The tags endpoint is newest first. A tag has no creation date in this API;
-    // containment supplies the decisive check, and reversing gives oldest seen first.
-    const candidates: string[] = [...releaseCandidates, ...tags.reverse()];
-    const seen = new Set<string>();
-    const eligible = candidates.filter(tag => tagVersion(tag, pkg) && !excluded.has(tag));
+    const excluded = new Set(releases.filter(r => r.isDraft || r.isPrerelease).map(r => r.tagName));
+    const candidates = new Map<string, number>();
+    const afterMerge = Date.parse(mergedAt);
+    for (const r of releases) {
+      const date = Date.parse(r.createdAt);
+      if (!excluded.has(r.tagName) && tagVersion(r.tagName, pkg) && Number.isFinite(date) && date >= afterMerge) candidates.set(r.tagName, date);
+    }
+    const releaseTags = new Set(releases.map(r => r.tagName));
+    const tagOnly = tags.filter(t => !excluded.has(t.name) && !releaseTags.has(t.name) && tagVersion(t.name, pkg) && t.commit?.sha);
+    // Avoid hundreds of concurrent gh processes on repositories with many tags.
+    for (let i = 0; i < tagOnly.length; i += 8) {
+      await Promise.all(tagOnly.slice(i, i + 8).map(async t => {
+        const commit = await run(["api", `repos/${repo}/commits/${encodeURIComponent(t.commit!.sha!)}`], path).then(JSON.parse).catch(() => null);
+        const date = Date.parse(commit?.commit?.committer?.date ?? "");
+        // Tags are observed after merge, even when their commit predates it (for
+        // example a tag pointing directly at the merge commit).
+        if (Number.isFinite(date)) candidates.set(t.name, date);
+      }));
+    }
     const prefixed = (tag: string) => ["-", "/", "@"].some(sep => tag.startsWith(pkg + sep));
-    for (const tag of [...eligible.filter(prefixed), ...eligible.filter(tag => !prefixed(tag))]) {
-      if (seen.has(tag)) continue; seen.add(tag);
+    const ordered = [...candidates].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+    for (const [tag] of [...ordered.filter(([tag]) => prefixed(tag)), ...ordered.filter(([tag]) => !prefixed(tag))]) {
       const comparison = await run(["api", `repos/${repo}/compare/${encodeURIComponent(sha)}...${encodeURIComponent(tag)}`], path).then(JSON.parse).catch(() => null);
       if (comparison && ["ahead", "identical"].includes(comparison.status)) return { tag, version: tagVersion(tag, pkg)! };
     }
