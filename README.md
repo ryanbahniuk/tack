@@ -165,7 +165,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
-| `r` | Restart the session onto current Tack code (asks first) |
+| `r` | Restart a session when it is `stale` or broken after sleep or network loss. Restarts the supervisor (parked in tmux; `enter` attaches), revives dropped agents, and restarts a dead or stale PR watcher (asks first) |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
 | `d` | Delete (asks first) |
@@ -175,7 +175,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `[` / `]` | Insights range: 7d · 30d (default) · 90d · 1y · all |
 | `q` | Quit |
 
-Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale`.
+Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale` (press `r` to restart).
 
 <details>
 <summary>Insights details</summary>
@@ -212,7 +212,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session follow <agentId>` | Stream an agent's live transcript. |
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
-| `tack session restart <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
+| `tack session restart <session> \| --all` | Get a session healthy and current after a Tack update (`stale`), sleep, or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive dropped agents, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. `refresh` and `reconnect` remain available as deprecated aliases. |
 | `tack session stop <session>` | Stop the session and its agents. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
 | `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
