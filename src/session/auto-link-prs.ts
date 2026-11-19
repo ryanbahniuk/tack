@@ -4,7 +4,7 @@ import { parseGithubPrUrl } from "../projects/prs";
 import { isApprovePrompt } from "../supervisor/approve-prompt";
 import { parseSupervisorCommand } from "../supervisor/command-prompt";
 import { linkSessionPr } from "./link-pr";
-import { RECONNECT_MESSAGE, REFRESH_MESSAGE } from "./refresh-message";
+import { RESTART_MESSAGE } from "./refresh-message";
 
 /**
  * Auto-linking: GitHub PR URLs the human pastes into a supervisor prompt are adopted
@@ -50,12 +50,12 @@ export const AUTO_LINK_BUDGET_MS = 20_000;
 /**
  * Whether a submitted prompt is the human's own words worth scanning for PR URLs:
  * not a slash command, `/approve` (or its expanded body), a `/review` / `/pr-fix`
- * command, or one of Tack's synthetic refresh/reconnect openers.
+ * command, or Tack's synthetic restart opener.
  */
 export function autoLinkablePrompt(prompt: string): boolean {
   const trimmed = prompt.trim();
   return !!trimmed && !trimmed.startsWith("/") && !isApprovePrompt(prompt) && !parseSupervisorCommand(prompt) &&
-    !trimmed.startsWith(REFRESH_MESSAGE) && !trimmed.startsWith(RECONNECT_MESSAGE);
+    !trimmed.startsWith(RESTART_MESSAGE);
 }
 
 export interface AutoLinkOutcome {

@@ -57,8 +57,8 @@ import {
   writeSupervisorPrompt,
   runSupervisorToCompletion,
 } from "../src/supervisor/supervise";
-import { describeReconnect, parkReconnectedSupervisor, reconnectAllSessions, reconnectSession } from "../src/session/reconnect";
-import { REFRESH_MESSAGE, isSessionStale, refreshAllStaleSessions, refreshBlockedReason, refreshSession } from "../src/session/refresh";
+import { describeRestart, parkRestartedSupervisor, restartAllSessions, restartSession } from "../src/session/restart";
+import { RESTART_MESSAGE, isSessionStale, refreshBlockedReason, refreshSession } from "../src/session/refresh";
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
@@ -1070,69 +1070,23 @@ const sessionCreate = defineCommand({
   },
 });
 
-const sessionRefresh = defineCommand({
-  meta: { name: "refresh", description: "Refresh stale Tack processes; --all parks supervisors detached in tmux (without tmux, leaves them stopped for resume)" },
+const sessionRestart = defineCommand({
+  meta: { name: "restart", description: "Restart session processes and recover dropped agents (--all for every active session)" },
   args: {
     session: { type: "positional", required: false, description: "Session id (or use --all)" },
-    all: { type: "boolean", description: "Refresh all stale active sessions" },
-    force: { type: "boolean", description: "Allow refresh during a turn or pending plan approval" },
+    all: { type: "boolean", description: "Restart every active session" },
   },
   async run({ args }) {
     if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
     const config = await loadConfig();
     if (args.all) {
-      for (const result of await refreshAllStaleSessions(config, { force: args.force })) {
-        const id = result.session.id;
-        if (result.status === "blocked") console.error(`${id}: refresh blocked: ${result.reason}`);
-        else if (result.status === "error") {
-          console.error(`${id}: ${result.error}`);
-          process.exitCode = 1;
-        } else console.log(`${id}: ${result.status === "refreshed" ? "refreshed" : "already current"}`);
-      }
-      return;
-    }
-    const sessions = [getSession(String(args.session))];
-    for (const session of sessions) {
-      if (!session) throw new Error(`Unknown session ${args.session}`);
-      const result = await refreshSession(session.id, config, { force: args.force });
-      if (result.blocked) {
-        console.error(`${session.id}: refresh blocked: ${result.blocked}`);
-        process.exitCode = 1;
-        continue;
-      }
-      console.log(`${session.id}: ${result.refreshed ? "refreshed" : "already current"}`);
-      if (result.refreshed) {
-        if (!result.supervisor) {
-          const attached = await attachSupervisor(session.id, config);
-          if (attached.alive) { reportInteractiveOutcome(session.id, attached.detached); continue; }
-        }
-        const { detached } = await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: false });
-        reportInteractiveOutcome(session.id, detached);
-      }
-    }
-  },
-});
-
-/** Recovery after sleep or a network drop: restart the supervisor even on current
- * code, revive agents the outage killed, restart a dead PR watcher, then park the
- * replacement supervisor detached in tmux and hand the terminal back. */
-const sessionReconnect = defineCommand({
-  meta: { name: "reconnect", description: "Recover a session after sleep or a lost connection; restarts the supervisor detached in tmux (--all for every active session)" },
-  args: {
-    session: { type: "positional", required: false, description: "Session id (or use --all)" },
-    all: { type: "boolean", description: "Reconnect every active session" },
-  },
-  async run({ args }) {
-    if (Boolean(args.all) === Boolean(args.session)) throw new Error("Pass a session id or --all");
-    const config = await loadConfig();
-    if (args.all) {
-      for (const result of await reconnectAllSessions(config)) {
+      for (const result of await restartAllSessions(config)) {
         const id = result.session.id;
         if (result.status === "error") {
           console.error(`${id}: ${result.error}`);
           process.exitCode = 1;
         } else {
-          console.log(`${id}: ${describeReconnect(result)}${result.parked ? " · parked in tmux" : ""}`);
+          console.log(`${id}: ${describeRestart(result)}${result.parked ? " · parked in tmux" : ""}`);
           if (result.failedAgents.length) process.exitCode = 1;
         }
       }
@@ -1140,16 +1094,16 @@ const sessionReconnect = defineCommand({
     }
     const id = String(args.session);
     requireSession(id);
-    const result = await reconnectSession(id, config);
+    const result = await restartSession(id, config);
     if (!getSession(id)!.resume_ref) {
-      console.log(pc.dim(`${id}: ${describeReconnect(result)}`));
+      console.log(pc.dim(`${id}: ${describeRestart(result)}`));
       console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
       return process.exit(1);
     }
-    // Unlike refresh, always relaunch: the user asked to reconnect this session,
+    // Always relaunch: the user asked to restart this session,
     // so a supervisor that was already down comes back too.
-    const park = await parkReconnectedSupervisor(id, config);
-    console.log(`${id}: ${describeReconnect(result)}${park.parked ? " · parked in tmux" : ""}`);
+    const park = await parkRestartedSupervisor(id, config);
+    console.log(`${id}: ${describeRestart(result)}${park.parked ? " · parked in tmux" : ""}`);
     if (park.parked) {
       console.log(pc.dim(`Rejoin it with \`tack session resume ${id}\`.`));
       console.log(pc.dim("Watch work with `tack dashboard`."));
@@ -1160,6 +1114,15 @@ const sessionReconnect = defineCommand({
       process.exitCode = 1;
     }
     if (result.failedAgents.length) process.exitCode = 1;
+  },
+});
+
+const deprecatedSessionAction = (name: "refresh" | "reconnect") => defineCommand({
+  meta: { name, hidden: true, description: "Deprecated alias for restart" },
+  args: { session: { type: "positional", required: false }, all: { type: "boolean" }, force: { type: "boolean" } },
+  async run(ctx) {
+    console.log(pc.dim(`\`tack session ${name}\` is now \`tack session restart\``));
+    return sessionRestart.run!(ctx as never);
   },
 });
 
@@ -1189,7 +1152,7 @@ const sessionResume = defineCommand({
     if (stale.stale) {
       const blocked = refreshBlockedReason(before);
       if (stale.supervisor && blocked) {
-        console.log(pc.dim(`Running old Tack code (${blocked}); run tack session refresh ${id} once idle.`));
+        console.log(pc.dim(`Running old Tack code (${blocked}); run tack session restart ${id}.`));
         if (stale.watcher) await refreshSession(id, config, { watcherOnly: true });
       } else {
         console.log(pc.dim(`Refreshing ${id} onto new Tack code…`));
@@ -1211,7 +1174,7 @@ const sessionResume = defineCommand({
       console.error(pc.red(`Session "${id}" has no resume handle yet — it never got far enough to follow up on.`));
       return process.exit(1);
     }
-    const prompt = refreshedSupervisor ? [REFRESH_MESSAGE, message].filter(Boolean).join("\n\n") : message ?? "";
+    const prompt = refreshedSupervisor ? [RESTART_MESSAGE, message].filter(Boolean).join("\n\n") : message ?? "";
     console.log(`${pc.dim("supervisor")} ${pc.bold(existing.id)} ${pc.dim(`· ${existing.supervisor_model ?? "?"} (${existing.runtime ?? "?"})`)} ${pc.dim("· resuming")}`);
     const { detached } = await superviseInteractive({ session: existing, prompt, resume: true, config });
     reportInteractiveOutcome(id, detached);
@@ -1633,9 +1596,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, reconnect, show, boot, unboot, boot-status, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 

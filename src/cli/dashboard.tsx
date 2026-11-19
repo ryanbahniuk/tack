@@ -29,8 +29,8 @@ import {
   type SessionRow,
 } from "../db";
 import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
-import { REFRESH_MESSAGE, refreshAllStaleSessions, refreshSession, staleSessionIds } from "../session/refresh";
-import { describeReconnect, parkReconnectedSupervisor, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
+import { refreshAllStaleSessions, staleSessionIds } from "../session/refresh";
+import { describeRestart, parkRestartedSupervisor, restartSession, selectAgentsToRevive } from "../session/restart";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
@@ -203,14 +203,14 @@ type Launch =
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
 type Confirm =
-  | { action: "delete" | "stop" | "refresh"; id: string }
+  | { action: "delete" | "stop"; id: string }
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number }
-  | { action: "reconnect"; id: string; count: number; planPending: boolean }
+  | { action: "restart"; id: string; count: number; planPending: boolean; stale: boolean; midTurn: boolean }
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r refresh · w reconnect · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -661,21 +661,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           onLaunch({ kind: "edit", path: confirm.path, agentId: confirm.agentId });
           setConfirm(null);
           return exit();
-        } else if (confirm.action === "refresh") {
-          const id = confirm.id;
-          setConfirm(null);
-          if (!config) { setNotice("Configuration unavailable"); return; }
-          setSessionRefreshing(true);
-          setNotice(`refreshing ${id}…`);
-          void refreshSession(id, config).then(result => {
-            if (result.blocked) setNotice(`refresh blocked: ${result.blocked}`);
-            else if (result.refreshed) {
-              onLaunch({ kind: "resume", id, message: REFRESH_MESSAGE });
-              exit();
-            } else setNotice(`${id}: ${result.refreshed ? "watcher refreshed" : "already current"}`);
-          }).catch(err => setNotice(`refresh failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
-          return;
-        } else if (confirm.action === "reconnect") {
+        } else if (confirm.action === "restart") {
           // Runs in the background and keeps the dashboard open: the replacement
           // supervisor is parked in tmux rather than launched in the foreground,
           // so enter attaches when the user wants the conversation. The busy flag
@@ -684,16 +670,16 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
           setConfirm(null);
           if (!config) { setNotice("Configuration unavailable"); return; }
           setSessionRefreshing(true);
-          setNotice(`reconnecting ${id}…`);
+          setNotice(`restarting ${id}…`);
           void (async () => {
-            const result = await reconnectSession(id, config);
-            const park = await parkReconnectedSupervisor(id, config);
-            const summary = `${id}: ${describeReconnect(result)}`;
+            const result = await restartSession(id, config);
+            const park = await parkRestartedSupervisor(id, config);
+            const summary = `${id}: ${describeRestart(result)}`;
             if (park.parked) setNotice(`${summary} · parked in tmux · enter to attach`);
             else if (park.reason === "no-resume-ref") setNotice(`${summary} · no resume handle yet — it never got far enough to follow up on`);
             else if (park.reason === "no-tmux") setNotice(`${summary} · tmux unavailable, supervisor stopped · enter to resume`);
             else setNotice(`${summary} · could not park in tmux · enter to resume`);
-          })().catch(err => setNotice(`reconnect failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
+          })().catch(err => setNotice(`restart failed: ${err.message}`)).finally(() => { setSessionRefreshing(false); refresh(); });
           return;
         } else if (confirm.action === "delete") {
           deleteSession(confirm.id);
@@ -970,12 +956,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       const skipped = total - urls.length;
       setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
     } else if (input === "r") {
-      setConfirm({ action: "refresh", id: selected.session.id });
-    } else if (input === "w") {
-      // "wake": recover a session the laptop's sleep or a network drop broke.
       const s = selected.session;
       if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
-      setConfirm({ action: "reconnect", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
+      setConfirm({ action: "restart", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
+        stale: selected.stale, midTurn: Boolean(s.supervisor_turn_started_at),
         planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
@@ -1004,10 +988,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       ? `Steal ${confirm.projects.join(", ")} from ${[...new Set(confirm.holders)].join(", ")}? (y/N)`
     : confirm.action === "delete"
     ? `Delete ${confirm.id} and its worktrees + artifacts? This can't be undone. (y/N)`
-    : confirm.action === "refresh"
-      ? `Refresh ${confirm.id} onto current Tack code? Agents keep running. (y/N)`
-    : confirm.action === "reconnect"
-      ? `Reconnect ${confirm.id}? Restarts the supervisor detached in tmux and revives ${confirm.count} dropped agent(s).${confirm.planPending ? " Pending plan will be re-presented." : ""} (y/N)`
+    : confirm.action === "restart"
+      ? `Restart ${confirm.id}? Restarts the supervisor detached in tmux${confirm.count ? `, revives ${confirm.count} dropped agent(s)` : ""}${confirm.stale ? " · onto new Tack code (stale)" : ""}${confirm.midTurn ? " · interrupts the current turn" : ""}${confirm.planPending ? " · pending plan will be re-presented" : ""}. (y/N)`
     : confirm.action === "unarchive"
       ? `Unarchive ${confirm.id}${confirm.count ? ` and resume ${confirm.count} interrupted agent(s)` : ""}? (y/N)`
       : `Stop ${confirm.id} and its agents? (y/N)`) : null;
@@ -1601,7 +1583,7 @@ export async function runDashboard(): Promise<void> {
       const blocked = count("blocked");
       const failed = count("error");
       pendingNotice = `config saved · refreshed ${count("refreshed")} session(s)`
-        + (blocked ? ` · ${blocked} blocked (refresh on resume or r)` : "")
+        + (blocked ? ` · ${blocked} blocked (restart with r)` : "")
         + (failed ? ` · ${failed} failed` : "");
       continue;
     }

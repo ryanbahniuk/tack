@@ -51,7 +51,7 @@ src/session/pr-fix.ts    per-session auto-fix toggle
 src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback, latch readiness)
 src/session/auto-link-prs.ts  autoLinkPrs: link PR URLs from the human's messages (prompt hook / before launch)
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
-src/session/reconnect.ts post-sleep/network-loss recovery: supervisor restart + agent revive
+src/session/restart.ts user-initiated process restart + agent revive
 src/process/version.ts   memoized identity of the running Tack source or binary
 src/cli/                 dashboard.tsx (Ink dashboard), liveness.ts
 src/artifacts/store.ts   refs → files (the DB only stores paths)
@@ -143,24 +143,17 @@ on the same pending/failing predicates; promotion failures retry next tick. Per-
   Keep its symlink/ancestor resolution fail-closed and the parent `.claude`
   settings unwritable. Publishing tools keep their normal permissions.
 
-## Refreshing sessions after updating Tack
+## Restarting sessions
 
-`tack session refresh <id>` refreshes stale supervisor/watcher processes without
-stopping agents and rejoins the supervisor conversation. `--force` bypasses the
-pending-plan/mid-turn guard. `--all` refreshes stale active sessions and parks
-replacement supervisors detached in tmux; without tmux they stay stopped until
-resume. Interactive `session resume` refreshes automatically when idle; dashboard
-`r` confirms refresh and `stale` marks sessions running older code.
+`tack session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or
+with a pending plan, revives orphaned or transient-failed agents except manual and
+`pr_fix` agents, and restarts dead or stale PR watchers when needed. The supervisor
+is parked detached in tmux; without tmux it stays stopped until resume. `--all`
+processes active sessions and parks only supervisors that were running. A pending
+plan is re-presented. The `stale` badge identifies processes on older code or config.
 
-`tack session reconnect <id>` (dashboard `w`) recovers a session broken by sleep or
-a network drop. It always restarts the supervisor, even mid-turn or with a plan
-pending (reported as `planPending`, re-presented on resume). It revives non-manual,
-non-`pr_fix` agents that are orphaned or failed with an `isTransientError` error,
-and restarts a dead PR watcher. `pr_fix` stays with the watcher, which fails and
-post-fixes orphaned fixes itself. It never opens a foreground TUI: the single form
-always relaunches the supervisor parked in tmux (`parkReconnectedSupervisor`) and
-the dashboard stays open; `--all` parks only supervisors that were running. Without
-tmux the supervisor stays stopped until `tack session resume`.
-Logic lives in `src/session/reconnect.ts`; supervisor stop is shared with refresh.
+Interactive `session resume` and dashboard config save retain guarded automatic
+refresh of stale processes without reviving agents. Logic lives in
+`src/session/restart.ts` and `src/session/refresh.ts`.
 
 Release-gated dependencies use `open_pr` with `awaitsRelease` after opening the upstream PR. PR watch waits for a containing GitHub release or tag, queues an uncapped dependency fix, and blocks draft promotion while it waits. No package registry or configuration setting determines publication.

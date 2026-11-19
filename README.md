@@ -165,8 +165,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
-| `r` | Refresh the session onto current Tack code (asks first) |
-| `w` | Wake: reconnect a session broken by sleep or network loss (asks first). The supervisor is parked in tmux and the dashboard stays open; `enter` attaches |
+| `r` | Restart the session onto current Tack code (asks first) |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
 | `d` | Delete (asks first) |
@@ -213,16 +212,15 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session follow <agentId>` | Stream an agent's live transcript. |
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
-| `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
-| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
+| `tack session restart <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
 | `tack session stop <session>` | Stop the session and its agents. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
 | `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
 | `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |
 
 `tack session resume` refreshes stale Tack processes automatically when the session
-is idle. `refresh --all` parks the replacement supervisors detached in tmux;
-without tmux they stay stopped until you resume them.
+is idle. Dashboard config saves also refresh idle stale processes; without tmux,
+replacement supervisors stay stopped until you resume them.
 
 ### tmux: detach, reattach, new session, bug report
 
@@ -519,8 +517,8 @@ See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 | PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
 | PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
 | Session seems stuck or its supervisor exited | `tack session resume <session>`. |
-| Session or agents died after the laptop slept or the network dropped | `tack session reconnect <session>` (or `--all`), or dashboard `w`. |
-| `stale` badge after updating Tack | `tack session refresh <session>` (or `--all`), or dashboard `r`. Add `--force` if it's mid-turn or a plan is pending. |
+| Session or agents died after the laptop slept or the network dropped | `tack session restart <session>` (or `--all`), or dashboard `r`. |
+| `stale` badge after updating Tack | `tack session restart <session>` (or `--all`), or dashboard `r`. |
 | `jira unavailable` in the dashboard | Check that the `supervisorMcpServers` entry runs (`uvx` on PATH) and its OAuth cache is seeded. |
 | `J` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
 | `Config has errors` | `tack config edit`; the message names the failing key. |

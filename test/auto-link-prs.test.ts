@@ -12,7 +12,7 @@ import {
 } from "../src/session/auto-link-prs";
 import { parseRemoteRepo, resolveLinkProject, type LinkPrResult } from "../src/session/link-pr";
 import { APPROVE_PROMPT_MARKER } from "../src/supervisor/approve-prompt";
-import { REFRESH_MESSAGE } from "../src/session/refresh-message";
+import { RESTART_MESSAGE } from "../src/session/refresh-message";
 
 describe("extractPrUrls", () => {
   test("finds PR URLs in prose, markdown links and angle brackets, stripping punctuation", () => {
@@ -56,7 +56,7 @@ describe("extractPrUrls", () => {
 test("autoLinkablePrompt skips commands and synthetic openers", () => {
   expect(autoLinkablePrompt("fix https://github.com/a/b/pull/1")).toBe(true);
   for (const p of ["", "  ", "/approve", "/review sec https://github.com/a/b/pull/1", "/pr-fix on",
-    `x\n${APPROVE_PROMPT_MARKER}`, `${REFRESH_MESSAGE} https://github.com/a/b/pull/1`, "/compact"]) {
+    `x\n${APPROVE_PROMPT_MARKER}`, `${RESTART_MESSAGE} https://github.com/a/b/pull/1`, "/compact"]) {
     expect(autoLinkablePrompt(p)).toBe(false);
   }
 });
@@ -162,7 +162,7 @@ describe("promptWithAutoLinks", () => {
     const fail = async () => { throw new Error("should not be called"); };
     const session = createSession({ title: "off" });
     for (const [autoLinkPrs, prompt] of [
-      [false, "https://github.com/acme/app/pull/1"], [true, `${REFRESH_MESSAGE} https://github.com/acme/app/pull/1`], [true, "no urls"],
+      [false, "https://github.com/acme/app/pull/1"], [true, `${RESTART_MESSAGE} https://github.com/acme/app/pull/1`], [true, "no urls"],
     ] as const) {
       expect(await promptWithAutoLinks({ sessionId: session.id, config: { ...config, autoLinkPrs }, prompt, link: fail })).toBe(prompt);
     }
