@@ -998,3 +998,8 @@ and appear as `review:<persona>` with their reported verdict in the dashboard.
 ### Release-gated PR dependencies
 
 A downstream PR can declare upstream session PRs with `awaitsRelease`. Tack infers a shared ecosystem and package from the worktrees, waits for each upstream merge and a containing stable GitHub release or tag, and queues a dependency-release feedback item for a PR fix. The fix uses the exact tagged version and the repository’s package tooling. Dependency fixes honor the session auto-fix switch and one-fix-at-a-time guard but are exempt from the automatic daily cap. Unresolved dependencies keep the watcher alive and block draft promotion; closed upstream PRs, a 24-hour release timeout, and failed fixes are recorded for inspection.
+
+
+## Session READMEs
+
+A human can request a session README from the CLI or dashboard. Tack builds a bounded digest of the session and asks the configured `readme` role to author a self-contained HTML page in a read-only runtime. A separate publisher either saves a local URL or uses Claude Artifact to publish a private page, updating the same URL on regeneration. The digest and HTML live in the artifact store; the database stores their refs and publication URL. To add a Codex publisher, implement `PagePublisher`, add its config enum value and select it in `src/publish/index.ts`; the runtime-neutral authoring stage stays unchanged.

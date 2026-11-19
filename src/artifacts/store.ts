@@ -117,3 +117,11 @@ export function writeContinuationPrompt(sessionId: string, agentId: string, turn
 export function writeBootPlan(sessionId: string, project: string, body: string): string {
   return write(join(ARTIFACTS_DIR, sessionId, "boot", `${encodeURIComponent(project)}-${crypto.randomUUID()}.json`), body);
 }
+
+/** Persist the page and its bounded source separately from the database. */
+export function writeSessionReadme(id: string, html: string): string {
+  return write(join(ARTIFACTS_DIR, id, "readme", "readme.html"), html);
+}
+export function writeSessionReadmeDigest(id: string, digest: string): string {
+  return write(join(ARTIFACTS_DIR, id, "readme", "digest.md"), digest);
+}

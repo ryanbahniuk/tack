@@ -212,6 +212,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session approve <session>` | Approve a plan when the in-chat prompt didn't appear. |
 | `tack session follow <agentId>` | Stream an agent's live transcript. |
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
+| `tack session readme <session> [--no-publish] [--open]` | Generate a session README page; optionally keep it local or open it. |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
 | `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
 | `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
@@ -552,3 +553,6 @@ Session worktrees can run configured applications with `tack session boot <sessi
 use `tack session boot-status <session>` to inspect them and `tack session unboot
 <session>` to stop them. Define reusable `bootRecipes` and reference them from
 project `boot` settings; see SPEC.md §11 for details.
+
+
+Session READMEs are generated only when requested with `tack session readme` or the dashboard `D` key (after confirmation). `roles.readme` accepts a model key or non-empty list and defaults to `roles.supervisor`. Set `readme: { publisher: "local" }` to save locally, or `"claude-artifact"` to publish; the default uses Claude Artifact when Claude is configured or available, otherwise local. Publishing sends session information from the digest, including the contract, PR bodies and agent output excerpts, to claude.ai as a private artifact. Use `--no-publish` to keep the page local.

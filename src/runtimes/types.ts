@@ -46,6 +46,8 @@ export interface RunOptions {
    * never edits code. Adapters translate to their CLI's read-only sandbox/permissions.
    */
   readOnly?: boolean;
+  /** Tools explicitly permitted for a headless read-only run. */
+  allowTools?: string[];
   /** Optional writable page-source directories for attended read-only runs.
    * Adapters may ignore this; Claude requires `writeGuard` to enforce the scope. */
   writableDirs?: string[];
