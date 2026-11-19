@@ -14,20 +14,25 @@ import {
 /**
  * Programmatic edits to the user's `config.ts`. The config is a hand-authored TS
  * module we want to keep readable, so we do surgical text edits rather than
- * re-serializing the whole thing (which would drop the file's comments). Only the
- * `runtimes:` block is regenerated; everything else is preserved byte-for-byte.
+ * re-serializing the whole thing (which would drop the file's comments). Each
+ * writer regenerates only the top-level property it owns, through
+ * `replaceTopLevelProperty`; everything else is preserved byte-for-byte.
  */
 
 /**
- * Replaces line comments and string bodies with spaces, preserving length and
- * newlines. Brace-scanning then sees only structural braces — a `{` inside a
- * comment or string won't be miscounted — while character offsets still map back
- * onto the original source for replacement.
+ * Replaces comments and string bodies (quotes included) with filler, preserving
+ * length and newlines. Brace-scanning then sees only structural braces — a `{`
+ * inside a comment or string won't be miscounted — while character offsets still
+ * map back onto the original source for replacement. Comments become spaces, so
+ * they trim like whitespace; strings become `x`, so a string still reads as a token
+ * (a quoted key, a scalar value) and is never trimmed away.
  */
 function maskNonCode(src: string): string {
+  const stringFill = "x";
   let out = "";
   let inString: string | null = null;
   let inLineComment = false;
+  let inBlockComment = false;
   for (let i = 0; i < src.length; i++) {
     const c = src[i]!;
     const n = src[i + 1];
@@ -35,14 +40,24 @@ function maskNonCode(src: string): string {
       out += c === "\n" ? ((inLineComment = false), "\n") : " ";
       continue;
     }
+    if (inBlockComment) {
+      if (c === "*" && n === "/") {
+        inBlockComment = false;
+        out += "  ";
+        i++;
+        continue;
+      }
+      out += c === "\n" ? "\n" : " ";
+      continue;
+    }
     if (inString) {
       if (c === "\\") {
-        out += "  "; // blank the escape + escaped char, keeping length aligned
+        out += stringFill + stringFill; // blank the escape + escaped char, keeping length aligned
         i++;
         continue;
       }
       if (c === inString) inString = null;
-      out += c === "\n" ? "\n" : " ";
+      out += c === "\n" ? "\n" : stringFill;
       continue;
     }
     if (c === "/" && n === "/") {
@@ -51,9 +66,15 @@ function maskNonCode(src: string): string {
       i++;
       continue;
     }
+    if (c === "/" && n === "*") {
+      inBlockComment = true;
+      out += "  ";
+      i++;
+      continue;
+    }
     if (c === '"' || c === "'" || c === "`") {
       inString = c;
-      out += " ";
+      out += stringFill;
       continue;
     }
     out += c;
@@ -71,9 +92,205 @@ function matchDelimiter(masked: string, open: number, openCh: string, closeCh: s
   return -1;
 }
 
-/** Index of the `}` that closes the `{` at `open`, or -1 if unbalanced. */
-function matchBrace(masked: string, open: number): number {
-  return matchDelimiter(masked, open, "{", "}");
+const OPENERS: Record<string, string> = { "{": "}", "[": "]", "(": ")" };
+const IDENT = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * Locates the braces of the exported config object: `export default {…}`,
+ * `export default defineConfig({…})` / `({…})`, `export default config` naming a
+ * `const config = {…}` declared earlier, or `export const config = {…}` (the two
+ * shapes `loadConfig` accepts). Returns `[open, close]` offsets of the braces.
+ */
+function findConfigObject(masked: string): [number, number] {
+  // Optional parens / a single call wrapper (e.g. `defineConfig(`) before the `{`.
+  const objectAt = (from: number): number => {
+    const m = /^[\s(]*(?:[A-Za-z_$][\w$.]*\s*\(\s*)?\{/.exec(masked.slice(from));
+    return m ? from + m[0].length - 1 : -1;
+  };
+  let open = -1;
+  const def = /export\s+default\s+/.exec(masked);
+  if (def) {
+    const at = def.index + def[0].length;
+    open = objectAt(at);
+    const named = open < 0 ? /^([A-Za-z_$][\w$]*)\s*(?:;|\n|$)/.exec(masked.slice(at)) : null;
+    if (named) {
+      const decl = new RegExp(`(?:const|let|var)\\s+${named[1]!.replace(/\$/g, "\\$")}\\s*(?::[^=]*)?=\\s*`).exec(masked);
+      if (decl) open = objectAt(decl.index + decl[0].length);
+    }
+  }
+  if (open < 0) {
+    const named = /export\s+const\s+config\s*(?::[^=]*)?=\s*/.exec(masked);
+    if (named) open = objectAt(named.index + named[0].length);
+  }
+  if (open < 0) throw new Error("Could not find the exported config object.");
+  const close = matchDelimiter(masked, open, "{", "}");
+  if (close < 0) throw new Error("Unbalanced braces in the exported config object.");
+  return [open, close];
+}
+
+/** A top-level property's location: the key's start, the value's [start, end). */
+interface PropertySpan {
+  key: string;
+  keyStart: number;
+  valueStart: number;
+  valueEnd: number;
+}
+
+/**
+ * Lists the exported object's top-level properties (depth 1 only — a nested
+ * `models:` inside some other block is never mistaken for the real one). `masked`
+ * must come from `maskNonCode(src)` so quoted keys and string values are
+ * visible as tokens. Spreads and shorthand properties are skipped: they can't be
+ * rewritten as text, and validation catches any edit they would shadow.
+ */
+function topLevelProperties(src: string, masked: string, open: number, close: number): PropertySpan[] {
+  const props: PropertySpan[] = [];
+  let i = open + 1;
+  while (i < close) {
+    while (i < close && /[\s,]/.test(masked[i]!)) i++;
+    if (i >= close) break;
+    const token = /^[\w$]+/.exec(masked.slice(i, close));
+    let j = i + (token ? token[0].length : 0);
+    while (j < close && /\s/.test(masked[j]!)) j++;
+    const isKey = token && masked[j] === ":";
+    const keyStart = i;
+    let valueStart = i;
+    if (isKey) {
+      const raw = src.slice(i, i + token[0].length);
+      const key = /^["']/.test(raw) ? raw.slice(1, -1) : raw;
+      valueStart = j + 1;
+      while (valueStart < close && /\s/.test(masked[valueStart]!)) valueStart++;
+      props.push({ key, keyStart, valueStart, valueEnd: valueStart });
+    }
+    // Walk to the end of this property: the next depth-0 comma or the closing brace.
+    let k = valueStart;
+    while (k < close && masked[k] !== ",") {
+      const closer = OPENERS[masked[k]!];
+      if (closer) {
+        const end = matchDelimiter(masked, k, masked[k]!, closer);
+        if (end < 0) throw new Error("Unbalanced brackets in the config.");
+        k = end + 1;
+      } else k++;
+    }
+    let end = k;
+    while (end > valueStart && /\s/.test(masked[end - 1]!)) end--; // drop trailing whitespace/comments
+    if (isKey) props[props.length - 1]!.valueEnd = end;
+    i = k + 1;
+  }
+  return props;
+}
+
+/** Renders an object key: bare when it's an identifier, quoted otherwise. */
+function formatKey(key: string): string {
+  return IDENT.test(key) ? key : JSON.stringify(key);
+}
+
+/** Leading whitespace of the line `pos` is on, or null if code precedes `pos` on it. */
+function lineIndent(src: string, pos: number): string | null {
+  const lead = src.slice(src.lastIndexOf("\n", pos - 1) + 1, pos);
+  return /^[^\S\n]*$/.test(lead) ? lead : null;
+}
+
+/**
+ * Rewrites one top-level property of the exported config object, preserving every
+ * other byte of the file (comments, blank lines, other blocks, the property's own
+ * trailing comma and comment). `literal` is the new value text, or a function of
+ * the property's indentation for multi-line values whose closing bracket must line
+ * up with the key. When the property is absent it is inserted just before the
+ * object's closing brace, at the other top-level keys' indentation. `null` removes
+ * the property (with its comma, and its line when nothing else is on it).
+ */
+export function replaceTopLevelProperty(
+  src: string,
+  key: string,
+  literal: string | null | ((indent: string) => string),
+): string {
+  const masked = maskNonCode(src);
+  const [open, close] = findConfigObject(masked);
+  const props = topLevelProperties(src, masked, open, close);
+  const render = (indent: string) => (typeof literal === "function" ? literal(indent) : literal!);
+  const hit = props.find((p) => p.key === key);
+
+  if (hit && literal === null) {
+    let from = hit.keyStart;
+    let to = hit.valueEnd;
+    let k = to;
+    while (k < close && /[^\S\n]/.test(masked[k]!)) k++;
+    if (masked[k] === ",") to = k + 1;
+    const lineStart = src.lastIndexOf("\n", from - 1) + 1;
+    const nl = src.indexOf("\n", to);
+    const lineEnd = nl < 0 ? src.length : nl;
+    // Alone on its line (no other code, no trailing comment): drop the whole line.
+    if (lineIndent(src, from) !== null && /^[^\S\n]*$/.test(src.slice(to, lineEnd)) && nl >= 0) {
+      from = lineStart;
+      to = lineEnd + 1;
+    } else {
+      while (to < src.length && /[^\S\n]/.test(src[to]!)) to++;
+    }
+    return src.slice(0, from) + src.slice(to);
+  }
+  if (hit) {
+    const indent = lineIndent(src, hit.keyStart) ?? "";
+    return src.slice(0, hit.keyStart) + `${formatKey(key)}: ${render(indent)}` + src.slice(hit.valueEnd);
+  }
+  if (literal === null) return src;
+
+  // Insert before the closing brace, matching the first top-level key's indentation.
+  const indent = (props[0] && lineIndent(src, props[0].keyStart)) ?? "  ";
+  let last = close - 1;
+  while (last > open && /\s/.test(masked[last]!)) last--;
+  const comma = last > open && masked[last] !== "," ? "," : "";
+  const property = `${indent}${formatKey(key)}: ${render(indent)},\n`;
+  const closeLine = src.lastIndexOf("\n", close - 1) + 1;
+  if (closeLine > last && lineIndent(src, close) !== null) {
+    // The `}` sits on its own line: insert a full line above it, after any comments.
+    return src.slice(0, last + 1) + comma + src.slice(last + 1, closeLine) + property + src.slice(closeLine);
+  }
+  return src.slice(0, last + 1) + comma + src.slice(last + 1, close).trimEnd() + "\n" + property + src.slice(close);
+}
+
+/** Rewrites one top-level property of the config file in place (see `replaceTopLevelProperty`). */
+function writeTopLevelProperty(configPath: string, key: string, literal: (indent: string) => string): void {
+  const src = readFileSync(configPath, "utf8");
+  writeFileSync(configPath, replaceTopLevelProperty(src, key, literal), "utf8");
+}
+
+/** Single-line TS literal for `value`: `{ a: 1, b: ["x"] }`. */
+export function inlineTsLiteral(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(inlineTsLiteral).join(", ")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) return "{}";
+    return `{ ${entries.map(([k, v]) => `${formatKey(k)}: ${inlineTsLiteral(v)}`).join(", ")} }`;
+  }
+  return value === undefined ? "undefined" : JSON.stringify(value);
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Generic TS literal for config values without a dedicated serializer, styled like
+ * the hand-authored file: identifier keys bare, strings via `JSON.stringify`,
+ * arrays of objects one element per line (as projects and models are written),
+ * nested objects multi-line, and short primitive arrays inline. `indent` is the
+ * indentation of the line the value starts on, so closers line up with the key.
+ */
+export function toTsLiteral(value: unknown, indent: string): string {
+  const inner = indent + "  ";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    if (value.every((v) => !v || typeof v !== "object")) return inlineTsLiteral(value);
+    const lines = value.map((v) => `${inner}${isPlainObject(v) ? inlineTsLiteral(v) : toTsLiteral(v, inner)},`);
+    return `[\n${lines.join("\n")}\n${indent}]`;
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) return "{}";
+    const lines = entries.map(([k, v]) => `${inner}${formatKey(k)}: ${toTsLiteral(v, inner)},`);
+    return `{\n${lines.join("\n")}\n${indent}}`;
+  }
+  return inlineTsLiteral(value);
 }
 
 /** Serializes one runtime's settings to a single-line object literal. */
@@ -85,15 +302,15 @@ function serializeRuntimeSettings(s: RuntimeSettings): string {
   return `{ ${parts.join(", ")} }`;
 }
 
-/** Serializes the whole `runtimes:` block at the given base indentation. */
-function serializeRuntimes(runtimes: Record<string, RuntimeSettings | undefined>, indent: string): string {
+/** Serializes the `runtimes:` value at the given base indentation. */
+export function serializeRuntimes(runtimes: Record<string, RuntimeSettings | undefined>, indent: string): string {
   const entries = Object.entries(runtimes).filter(
     (e): e is [string, RuntimeSettings] => Boolean(e[1] && (e[1].bin || e[1].version || e[1].versionPolicy)),
   );
-  if (entries.length === 0) return "runtimes: {}";
+  if (entries.length === 0) return "{}";
   const inner = indent + "  ";
   const lines = entries.map(([k, v]) => `${inner}${k}: ${serializeRuntimeSettings(v)},`);
-  return `runtimes: {\n${lines.join("\n")}\n${indent}}`;
+  return `{\n${lines.join("\n")}\n${indent}}`;
 }
 
 /**
@@ -109,19 +326,7 @@ export async function pinRuntimeInConfig(configPath: string, kind: RuntimeKind, 
 
   const runtimes: Record<string, RuntimeSettings | undefined> = { ...parsed.runtimes };
   runtimes[kind] = { ...runtimes[kind], version };
-
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)runtimes[^\S\n]*:[^\S\n]*\{/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`runtimes:\` block in ${configPath}.`);
-  // Keep the original indentation in the preserved prefix; the serialized block's
-  // first line ("runtimes: {") carries no leading indent and sits right after it.
-  const start = m.index + m[1]!.length + m[2]!.length; // start of the `runtimes` keyword
-  const open = m.index + m[0].length - 1; // index of the opening `{`
-  const close = matchBrace(masked, open);
-  if (close < 0) throw new Error(`Unbalanced braces in the \`runtimes:\` block in ${configPath}.`);
-
-  const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, next, "utf8");
+  writeFileSync(configPath, replaceTopLevelProperty(src, "runtimes", (indent) => serializeRuntimes(runtimes, indent)), "utf8");
 }
 
 /**
@@ -145,22 +350,13 @@ export async function setRuntimeVersionsInConfig(
   }
   if (changed.length === 0) return [];
 
-  const src = readFileSync(configPath, "utf8");
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)runtimes[^\S\n]*:[^\S\n]*\{/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`runtimes:\` block in ${configPath}.`);
-  const start = m.index + m[1]!.length + m[2]!.length;
-  const open = m.index + m[0].length - 1;
-  const close = matchBrace(masked, open);
-  if (close < 0) throw new Error(`Unbalanced braces in the \`runtimes:\` block in ${configPath}.`);
-  const next = src.slice(0, start) + serializeRuntimes(runtimes, m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, next, "utf8");
+  writeTopLevelProperty(configPath, "runtimes", (indent) => serializeRuntimes(runtimes, indent));
   return changed;
 }
 
-/** Serializes the whole `roles:` block at the given base indentation, one role per
+/** Serializes the `roles:` value at the given base indentation, one role per
  * line in the object's existing key order. */
-function serializeRoles(roles: Roles, indent: string): string {
+export function serializeRoles(roles: Roles, indent: string): string {
   const inner = indent + "  ";
   const lines = (Object.keys(roles) as (keyof Roles)[]).map((k) => {
     const value = roles[k];
@@ -168,7 +364,7 @@ function serializeRoles(roles: Roles, indent: string): string {
     const literal = keys.length === 1 ? JSON.stringify(keys[0]) : `[${keys.map((key) => JSON.stringify(key)).join(", ")}]`;
     return `${inner}${k}: ${literal},`;
   });
-  return `roles: {\n${lines.join("\n")}\n${indent}}`;
+  return `{\n${lines.join("\n")}\n${indent}}`;
 }
 
 /**
@@ -187,18 +383,7 @@ export async function setRoleInConfig(
   const parsed = await loadParsedConfig(configPath);
   const previous = parsed.roles[role];
   const next: Roles = { ...parsed.roles, [role]: keyOrKeys };
-
-  const src = readFileSync(configPath, "utf8");
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)roles[^\S\n]*:[^\S\n]*\{/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`roles:\` block in ${configPath}.`);
-  const start = m.index + m[1]!.length + m[2]!.length; // start of the `roles` keyword
-  const open = m.index + m[0].length - 1; // index of the opening `{`
-  const close = matchBrace(masked, open);
-  if (close < 0) throw new Error(`Unbalanced braces in the \`roles:\` block in ${configPath}.`);
-
-  const out = src.slice(0, start) + serializeRoles(next, m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, out, "utf8");
+  writeTopLevelProperty(configPath, "roles", (indent) => serializeRoles(next, indent));
   return previous;
 }
 
@@ -208,7 +393,20 @@ function serializeMetadata(m: ProjectMetadata): string {
   return `{ language: ${JSON.stringify(m.language)}, frameworks: [${frameworks}] }`;
 }
 
-/** Serializes one project to a single-line object literal. */
+/**
+ * Fields a row serializer doesn't write by name (a project's `boot`, anything a
+ * later schema adds), rendered inline after the known ones. Without this a rewrite
+ * of the `projects:` block silently dropped every project's boot recipe.
+ */
+function extraFields(row: object, known: readonly string[]): string[] {
+  return Object.entries(row)
+    .filter(([k, v]) => !known.includes(k) && v !== undefined)
+    .map(([k, v]) => `${formatKey(k)}: ${inlineTsLiteral(v)}`);
+}
+
+const PROJECT_FIELDS = ["name", "path", "description", "metadata"] as const;
+
+/** Serializes one project to a single-line object literal, keeping every field. */
 function serializeProject(p: Project): string {
   const parts = [
     `name: ${JSON.stringify(p.name)}`,
@@ -216,15 +414,16 @@ function serializeProject(p: Project): string {
     `description: ${JSON.stringify(p.description)}`,
   ];
   if (p.metadata) parts.push(`metadata: ${serializeMetadata(p.metadata)}`);
+  parts.push(...extraFields(p, PROJECT_FIELDS));
   return `{ ${parts.join(", ")} }`;
 }
 
-/** Serializes the whole `projects:` array at the given base indentation. */
-function serializeProjects(projects: Project[], indent: string): string {
-  if (projects.length === 0) return "projects: []";
+/** Serializes the `projects:` value at the given base indentation. */
+export function serializeProjects(projects: Project[], indent: string): string {
+  if (projects.length === 0) return "[]";
   const inner = indent + "  ";
   const lines = projects.map((p) => `${inner}${serializeProject(p)},`);
-  return `projects: [\n${lines.join("\n")}\n${indent}]`;
+  return `[\n${lines.join("\n")}\n${indent}]`;
 }
 
 /**
@@ -246,16 +445,7 @@ async function loadParsedConfig(configPath: string): Promise<ReturnType<typeof C
  * from the parsed config so hand-authored ordering of untouched entries is kept.
  */
 function writeProjectsBlock(configPath: string, next: Project[]): void {
-  const src = readFileSync(configPath, "utf8");
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)projects[^\S\n]*:[^\S\n]*\[/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`projects:\` block in ${configPath}.`);
-  const start = m.index + m[1]!.length + m[2]!.length; // start of the `projects` keyword
-  const open = m.index + m[0].length - 1; // index of the opening `[`
-  const close = matchDelimiter(masked, open, "[", "]");
-  if (close < 0) throw new Error(`Unbalanced brackets in the \`projects:\` block in ${configPath}.`);
-  const out = src.slice(0, start) + serializeProjects(next, m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, out, "utf8");
+  writeTopLevelProperty(configPath, "projects", (indent) => serializeProjects(next, indent));
 }
 
 /** True if `p` is the project identified by `target` (its name or home-expanded path). */
@@ -326,7 +516,9 @@ function serializePricing(p: Pricing): string {
   return `{ ${parts.join(", ")} }`;
 }
 
-/** Serializes one model to a single-line object literal. */
+const MODEL_FIELDS = ["key", "provider", "name", "version", "runtime", "id", "effort", "pricing"] as const;
+
+/** Serializes one model to a single-line object literal, keeping every field. */
 function serializeModel(m: Model): string {
   const parts = [
     `key: ${JSON.stringify(m.key)}`,
@@ -338,15 +530,16 @@ function serializeModel(m: Model): string {
   ];
   if (m.effort) parts.push(`effort: ${JSON.stringify(m.effort)}`);
   if (m.pricing) parts.push(`pricing: ${serializePricing(m.pricing)}`);
+  parts.push(...extraFields(m, MODEL_FIELDS));
   return `{ ${parts.join(", ")} }`;
 }
 
-/** Serializes the whole `models:` array at the given base indentation. */
-function serializeModels(models: Model[], indent: string): string {
-  if (models.length === 0) return "models: []";
+/** Serializes the `models:` value at the given base indentation. */
+export function serializeModels(models: Model[], indent: string): string {
+  if (models.length === 0) return "[]";
   const inner = indent + "  ";
   const lines = models.map((m) => `${inner}${serializeModel(m)},`);
-  return `models: [\n${lines.join("\n")}\n${indent}]`;
+  return `[\n${lines.join("\n")}\n${indent}]`;
 }
 
 /**
@@ -355,16 +548,7 @@ function serializeModels(models: Model[], indent: string): string {
  * `writeProjectsBlock`.
  */
 function writeModelsBlock(configPath: string, next: Model[]): void {
-  const src = readFileSync(configPath, "utf8");
-  const masked = maskNonCode(src);
-  const m = /(^|\n)([^\S\n]*)models[^\S\n]*:[^\S\n]*\[/.exec(masked);
-  if (!m) throw new Error(`Could not find a \`models:\` block in ${configPath}.`);
-  const start = m.index + m[1]!.length + m[2]!.length; // start of the `models` keyword
-  const open = m.index + m[0].length - 1; // index of the opening `[`
-  const close = matchDelimiter(masked, open, "[", "]");
-  if (close < 0) throw new Error(`Unbalanced brackets in the \`models:\` block in ${configPath}.`);
-  const out = src.slice(0, start) + serializeModels(next, m[2]!) + src.slice(close + 1);
-  writeFileSync(configPath, out, "utf8");
+  writeTopLevelProperty(configPath, "models", (indent) => serializeModels(next, indent));
 }
 
 /**
