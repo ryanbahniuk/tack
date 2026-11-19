@@ -21,6 +21,16 @@ export function agentLive(a: AgentRow): boolean {
   return a.status === "running" && isAlive(a.pid);
 }
 
+/** A session has running agents when a non-manual agent is live. */
+export function sessionAgentsRunning(agents: AgentRow[]): boolean {
+  return agents.some((a) => a.kind !== "manual" && agentLive(a));
+}
+
+/** A session is active while its supervisor or any agent is live. */
+export function sessionActive(s: SessionRow, agents: AgentRow[]): boolean {
+  return sessionLive(s) || sessionAgentsRunning(agents);
+}
+
 /**
  * Whether a session needs the human's attention — either the supervisor is blocked
  * on a decision (a plan awaiting approval, a question it asked, etc.) or there's completed agent work the

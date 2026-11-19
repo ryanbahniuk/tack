@@ -46,7 +46,7 @@ import {
 } from "../src/db";
 import { endsWithQuestion, finalAssistantText } from "../src/cli/question";
 import { readArtifact } from "../src/artifacts/store";
-import { sessionLive, sessionNeedsInput } from "../src/cli/liveness";
+import { sessionAgentsRunning, sessionLive, sessionNeedsInput } from "../src/cli/liveness";
 import { executeAgent } from "../src/agent/execute";
 import { runAgentToCompletion, spawnSupervisorRunner } from "../src/agent/detached";
 import { checkModelOffered } from "../src/runtimes/availability";
@@ -1312,7 +1312,7 @@ const sessionShow = defineCommand({
     const tickets = listSessionJiraTickets(id);
     const cost = sessionTotalCost(id);
 
-    const live = sessionLive(s) ? pc.green("● live") : pc.gray("○ idle");
+    const live = sessionLive(s) ? pc.green("● live") : sessionAgentsRunning(agents) ? pc.green("● agents running") : pc.gray("○ idle");
     const needs = sessionNeedsInput(s, agents) ? `  ${pc.yellow("◆ needs input")}` : "";
     console.log(`${pc.bold(s.id)}  ${live}  ${pc.dim(s.status)}${needs}`);
     if (s.title) console.log(`  ${s.title}`);
