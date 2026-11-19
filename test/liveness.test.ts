@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { agentDisplayStatus, sessionNeedsInput, sessionWorking } from "../src/cli/liveness";
+import { agentDisplayStatus, sessionActive, sessionAgentsRunning, sessionNeedsInput, sessionWorking } from "../src/cli/liveness";
 import type { AgentRow, SessionRow } from "../src/db";
 
 const before = "2026-11-14T10:00:00.000Z";
@@ -14,6 +14,21 @@ const session = {
 function agent(status: AgentRow["status"], finished_at: string | null = null, pid: number | null = null): AgentRow {
   return { status, finished_at, pid } as unknown as AgentRow;
 }
+
+describe("session activity", () => {
+  test("only live non-manual agents count as running", () => {
+    expect(sessionAgentsRunning([agent("running", null, process.pid)])).toBe(true);
+    expect(sessionAgentsRunning([agent("running", null, 2147483646)])).toBe(false);
+    expect(sessionAgentsRunning([agent("done", null, process.pid)])).toBe(false);
+    expect(sessionAgentsRunning([{ ...agent("running", null, process.pid), kind: "manual" }])).toBe(false);
+  });
+
+  test("a live supervisor or agent makes a session active", () => {
+    expect(sessionActive({ ...session, pid: process.pid }, [])).toBe(true);
+    expect(sessionActive({ ...session, pid: null }, [agent("running", null, process.pid)])).toBe(true);
+    expect(sessionActive({ ...session, pid: null }, [])).toBe(false);
+  });
+});
 
 describe("sessionWorking", () => {
   const working = { ...session, pid: process.pid, supervisor_turn_started_at: after };

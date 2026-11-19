@@ -30,7 +30,7 @@ import {
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { agentDisplayStatus, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
+import { agentDisplayStatus, sessionActive, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { REFRESH_MESSAGE, refreshAllStaleSessions, refreshSession, staleSessionIds } from "../session/refresh";
 import { describeReconnect, parkReconnectedSupervisor, reconnectSession, selectAgentsToRevive } from "../session/reconnect";
 import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
@@ -63,6 +63,7 @@ interface View {
   tickets: SessionJiraTicketRow[];
   cost: number;
   live: boolean;
+  active: boolean;
   working: boolean;
   stale: boolean;
   needsInput: boolean;
@@ -77,7 +78,7 @@ interface View {
  * the state that actually needs you is never scrolled off. Equal weights keep the
  * `listSessions` order (created_at DESC), which `Array.prototype.sort` preserves. */
 function rank(v: View): number {
-  return (v.needsInput ? 2 : 0) + (v.live ? 1 : 0);
+  return (v.needsInput ? 2 : 0) + (v.active ? 1 : 0);
 }
 
 /** One read per table for every listed session (not N+1 per session), and one
@@ -108,6 +109,7 @@ function snapshot(showArchived: boolean): View[] {
         // Same sum as `sessionTotalCost`: the supervisor's own cost plus its agents'.
         cost: (session.cost ?? 0) + (agentCost.get(session.id) ?? 0),
         live: sessionLive(session),
+        active: sessionActive(session, agents),
         working: sessionWorking(session),
         stale: stale.has(session.id),
         // Waiting on the human: a plan to approve, or unread completed agent work
@@ -146,7 +148,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.session.readme_url ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.session.readme_url ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.active ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -288,7 +290,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
     <Box key={v.session.id} flexDirection="column">
       <Text>
         <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
-        <Text color={v.live ? "green" : "gray"}>{v.live ? "●" : "○"} </Text>
+        <Text color={v.needsInput ? "yellow" : v.active ? "green" : "gray"}>{v.needsInput || v.active ? "●" : "○"} </Text>
         <Text bold>{v.session.id}</Text>
         <Text dimColor> {v.session.status} </Text>
         <Text color="green">{usd(v.cost)}</Text>
@@ -1351,6 +1353,7 @@ function sessionBadge(v: View): React.ReactElement {
   if (v.needsInput) return <Text color="yellow">◆ needs input</Text>;
   if (v.working) return <Text color="cyan">working</Text>;
   if (v.live) return <Text color="green">● live</Text>;
+  if (v.active) return <Text color="green">● agents running</Text>;
   return <Text color="gray">○ <Text dimColor>{v.session.status}</Text></Text>;
 }
 
@@ -1359,7 +1362,7 @@ function sessionBadge(v: View): React.ReactElement {
  * still live (or waiting on you) keeps a dim `archived` marker beside its badge. */
 function ticketSessionBadge(e: TicketEntry): React.ReactElement {
   const archived = e.session.status === "archived";
-  if (e.view && (e.view.needsInput || e.view.working || e.view.live)) {
+  if (e.view && (e.view.needsInput || e.view.working || e.view.active)) {
     return <Text>{sessionBadge(e.view)}{archived ? <Text dimColor> archived</Text> : null}</Text>;
   }
   return <Text color="gray">○ <Text dimColor>{e.session.status}</Text></Text>;
