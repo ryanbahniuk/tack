@@ -185,7 +185,7 @@ export async function setRoleInConfig(
   keyOrKeys: string | string[],
 ): Promise<string | string[]> {
   const parsed = await loadParsedConfig(configPath);
-  const previous = parsed.roles[role];
+  const previous = parsed.roles[role] ?? parsed.roles.supervisor;
   const next: Roles = { ...parsed.roles, [role]: keyOrKeys };
 
   const src = readFileSync(configPath, "utf8");

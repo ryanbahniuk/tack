@@ -400,6 +400,11 @@ const migrations: Migration[] = [
       error TEXT, started_at TEXT, updated_at TEXT
     );
   ` },
+  { version: 23, name: "session_readme", sql: ``, addColumns: [
+    { table: "sessions", column: "readme_ref", type: "TEXT" },
+    { table: "sessions", column: "readme_url", type: "TEXT" },
+    { table: "sessions", column: "readme_at", type: "TEXT" },
+  ] },
 ];
 
 /** Applies any pending migrations in a single transaction. */

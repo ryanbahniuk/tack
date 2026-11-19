@@ -37,7 +37,10 @@ export default ({
     supervisor: "opus-5",
     agent: "gpt-6.1-sol",
     summary: "sonnet-5",
+    // readme: "opus-5", // defaults to supervisor
   },
+
+  // readme: { publisher: "local" }, // defaults to claude-artifact when available
 
   // Personas have a unique name and description (review instructions). Humans
   // explicitly request reviews. Optional model accepts a key or non-empty
