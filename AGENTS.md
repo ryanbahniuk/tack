@@ -50,7 +50,7 @@ src/session/readme.ts    bounded session digest and README authoring
 src/publish/             pluggable local and Claude Artifact page publishers
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    per-session auto-fix toggle
-src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback, latch readiness)
+src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback (fix_pr includeExisting reopens it), latch readiness)
 src/session/auto-link-prs.ts  autoLinkPrs: link PR URLs from the human's messages (prompt hook / before launch)
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
 src/session/reconnect.ts post-sleep/network-loss recovery: supervisor restart + agent revive

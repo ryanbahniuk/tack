@@ -160,7 +160,7 @@ export function autoLinkNote(outcomes: AutoLinkOutcome[]): string | null {
   if (linked.length) {
     parts.push(
       `Tack auto-linked PR URLs from the human's message: ${linked.map(describe).join(", ")}.`,
-      "They're session PRs now: change them with fix_pr, never spawn_agent + open_pr.",
+      "They're session PRs now: change them with fix_pr, never spawn_agent + open_pr. To address existing review comments, call fix_pr with includeExisting: true.",
     );
   }
   if (skipped.length) {
