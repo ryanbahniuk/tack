@@ -204,6 +204,7 @@ export interface PrFeedbackRow {
   reply_url: string | null;
   created_at: string;
   handled_at: string | null;
+  baselined_at: string | null;
 }
 
 /** A JIRA ticket a session is tracking (see migration v5). Track-only: everything
@@ -1078,8 +1079,8 @@ export function insertBaselinePrFeedback(input: Parameters<typeof insertPrFeedba
   const r = getDb().prepare(
     `INSERT OR IGNORE INTO pr_feedback
        (id, session_pr_id, source_id, source_kind, author, author_is_bot, url, path, line, in_reply_to, body_ref,
-        decision, created_at, handled_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_applicable', ?, ?)`,
+        decision, created_at, handled_at, baselined_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_applicable', ?, ?, ?)`,
   ).run(
     shortId("fb"),
     input.sessionPrId,
@@ -1094,8 +1095,30 @@ export function insertBaselinePrFeedback(input: Parameters<typeof insertPrFeedba
     input.bodyRef ?? null,
     now,
     now,
+    now,
   );
   return r.changes > 0;
+}
+
+/** Reopen only untouched link baselines; retain their origin for display and rollback. */
+export function reopenBaselinedPrFeedback(sessionPrId: string, sourceIds: string[]): string[] {
+  const db = getDb();
+  const update = db.prepare(`UPDATE pr_feedback SET decision = 'pending', handled_at = NULL
+    WHERE session_pr_id = ? AND source_id = ? AND baselined_at IS NOT NULL
+      AND decision = 'not_applicable' AND handled_at IS NOT NULL AND fix_agent_id IS NULL
+      AND reply_ref IS NULL AND reply_url IS NULL RETURNING id`);
+  return sourceIds.flatMap(id => {
+    const row = update.get(sessionPrId, id) as { id: string } | null;
+    return row ? [row.id] : [];
+  });
+}
+
+/** Undo a failed claim without disturbing feedback that acquired a verdict. */
+export function rebaselinePrFeedback(ids: string[]): void {
+  const update = getDb().prepare(`UPDATE pr_feedback SET decision = 'not_applicable', handled_at = baselined_at
+    WHERE id = ? AND baselined_at IS NOT NULL AND decision = 'pending' AND fix_agent_id IS NULL
+      AND reply_ref IS NULL AND reply_url IS NULL`);
+  for (const id of ids) update.run(id);
 }
 
 /** All feedback ingested for a PR, oldest first. */

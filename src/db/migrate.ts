@@ -5,6 +5,7 @@ interface Migration {
   version: number;
   name: string;
   sql: string;
+  postSql?: string;
   /** Columns to add only when missing, after `sql` runs. SQLite has no
    * `ADD COLUMN IF NOT EXISTS`; this keeps a re-applied migration (tests rewind
    * `_migrations`) a no-op instead of a "duplicate column" error. */
@@ -405,6 +406,12 @@ const migrations: Migration[] = [
     { table: "sessions", column: "readme_url", type: "TEXT" },
     { table: "sessions", column: "readme_at", type: "TEXT" },
   ] },
+  { version: 24, name: "pr_feedback_baselined_at", sql: ``, postSql: `
+    UPDATE pr_feedback SET baselined_at = handled_at
+      WHERE decision = 'not_applicable' AND fix_agent_id IS NULL AND reply_ref IS NULL
+        AND reply_url IS NULL AND handled_at IS NOT NULL AND handled_at = created_at
+        AND session_pr_id IN (SELECT id FROM session_prs WHERE linked_at IS NOT NULL);
+  `, addColumns: [{ table: "pr_feedback", column: "baselined_at", type: "TEXT" }] },
 ];
 
 /** Applies any pending migrations in a single transaction. */
@@ -435,6 +442,7 @@ export function migrate(db: Database): void {
         const cols = db.prepare(`PRAGMA table_info(${c.table})`).all() as Array<{ name: string }>;
         if (!cols.some((col) => col.name === c.column)) db.exec(`ALTER TABLE ${c.table} ADD COLUMN ${c.column} ${c.type}`);
       }
+      if (m.postSql?.trim()) db.exec(m.postSql);
       record.run(m.version, m.name, nowIso());
     }
   })();

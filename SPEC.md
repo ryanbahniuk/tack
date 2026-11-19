@@ -646,7 +646,7 @@ refresh tick.
   Existing PRs adopted with `link_pr` (`src/session/link-pr.ts`) are ordinary rows with
   `linked_at` set (discovery never clobbers or drops them): `ready_promoted_at` is latched so they
   are never auto-promoted, and pre-link feedback/CI is baselined as handled
-  `not_applicable`. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
+  `not_applicable`. Use `fix_pr` with `includeExisting: true` to address existing comments; live failing CI is included when enabled. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
   With `autoLinkPrs` (default `true`), PR URLs in the human's messages are linked the
   same way without the supervisor (`src/session/auto-link-prs.ts`): the attended claude
   `UserPromptSubmit` hook (`__approve-prompt`, ~20s budget) does it per prompt and adds a

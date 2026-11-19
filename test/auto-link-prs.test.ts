@@ -141,7 +141,7 @@ describe("autoLinkNote", () => {
     expect(autoLinkNote([linked, already, skipped])).toBe(
       "Tack auto-linked PR URLs from the human's message: acme/app#12 in project \"app\" (\"Fix \\\"it\\\"\"), " +
       "acme/app#2 in project \"app\" (\"Old\"). They're session PRs now: change them with fix_pr, never " +
-      "spawn_agent + open_pr. Not linked: acme/app#9 (already merged).",
+      "spawn_agent + open_pr. To address existing review comments, call fix_pr with includeExisting: true. Not linked: acme/app#9 (already merged).",
     );
   });
 

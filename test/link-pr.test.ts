@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { TackConfig } from "../src/config/schema";
 import {
   createAgent, createSession, getSessionPr, insertPrFeedback, listPrFeedback, listSessionPrs,
-  prFeedbackSourceIds, upsertSessionPr,
+  prFeedbackSourceIds, upsertSessionPr, reopenBaselinedPrFeedback, rebaselinePrFeedback, listUnassignedPrFeedback, getDb,
 } from "../src/db";
 import * as prs from "../src/projects/prs";
 import { normalizeFeedback, parseGithubPrUrl, type PrStatus, type ReviewThread } from "../src/projects/prs";
+import { liveBaselineSourceIds } from "../src/mcp/supervisor-server";
 import { readyToPromote } from "../src/prwatch/watch";
 import { linkSessionPr, resolveLinkProject, unlinkSessionPr } from "../src/session/link-pr";
 import { composeSessionSummary } from "../src/session/summary";
@@ -106,7 +107,7 @@ describe("linkSessionPr / unlinkSessionPr", () => {
     expect(result).toMatchObject({
       ok: true, pr: 42, url, project: "app", title: "Human PR", state: "draft",
       headBranch: "feature/x", baseBranch: "main", baselined: 5,
-      next: "Use fix_pr with this PR to add changes; don't open a new PR.",
+      next: "Use fix_pr with this PR to add changes; pass includeExisting: true to address existing comments. Don't open a new PR.",
     });
     expect(result.baselineWarning).toBeUndefined();
     const row = listSessionPrs(session.id)[0]!;
@@ -114,7 +115,19 @@ describe("linkSessionPr / unlinkSessionPr", () => {
       head_sha: "sha1", linked_at: expect.any(String), ready_promoted_at: expect.any(String) });
     const feedback = listPrFeedback(row.id);
     expect(feedback.map((f) => f.source_id).sort()).toEqual(["101", "102", "IC_1", "R_1", "ci:sha1:CI/test"]);
-    expect(feedback.every((f) => f.decision === "not_applicable" && f.handled_at && !f.reply_ref && !f.fix_agent_id)).toBe(true);
+    expect(feedback.every((f) => f.decision === "not_applicable" && f.handled_at && f.baselined_at === f.handled_at && !f.reply_ref && !f.fix_agent_id)).toBe(true);
+
+    const eligible = liveBaselineSourceIds(feedback, [thread, resolved], new Set(["ci:sha1:CI/test"]), true);
+    expect(eligible.sort()).toEqual(["101", "IC_1", "R_1", "ci:sha1:CI/test"]);
+    expect(liveBaselineSourceIds(feedback, [thread, resolved], new Set(), true)).not.toContain("ci:sha1:CI/test");
+    const reopened = reopenBaselinedPrFeedback(row.id, eligible);
+    expect(reopened).toHaveLength(4);
+    expect(listUnassignedPrFeedback(row.id)).toHaveLength(4);
+    rebaselinePrFeedback(reopened);
+    expect(listUnassignedPrFeedback(row.id)).toHaveLength(0);
+    getDb().prepare("UPDATE pr_feedback SET decision = 'fixed' WHERE session_pr_id = ? AND source_id = ?").run(row.id, "101");
+    expect(reopenBaselinedPrFeedback(row.id, ["101"])).toEqual([]);
+    getDb().prepare("UPDATE pr_feedback SET decision = 'not_applicable' WHERE session_pr_id = ? AND source_id = ?").run(row.id, "101");
 
     // The watcher's view: nothing pending from history, CI already seen for this head…
     const known = prFeedbackSourceIds(row.id);

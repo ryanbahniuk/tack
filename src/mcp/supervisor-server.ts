@@ -72,6 +72,22 @@ import { setPrFix } from "../session/pr-fix";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 import { linkSessionPr, unlinkSessionPr } from "../session/link-pr";
 
+/** Select untouched baselines still actionable in the current GitHub snapshot. */
+export function liveBaselineSourceIds(
+  rows: ReturnType<typeof listPrFeedback>,
+  threads: Awaited<ReturnType<typeof fetchReviewThreads>> | null,
+  ciIds: Set<string>,
+  fixCi: boolean,
+): string[] {
+  const resolved = new Set(threads?.filter(t => t.isResolved).flatMap(t =>
+    (t.comments?.nodes ?? []).map(c => String(c.databaseId))) ?? []);
+  return rows.filter(r => r.baselined_at && r.decision === "not_applicable" && r.handled_at &&
+    !r.fix_agent_id && !r.reply_ref && !r.reply_url &&
+    (r.source_kind !== "review_thread" || (threads !== null && !resolved.has(r.source_id))) &&
+    (r.source_kind !== "ci_check" || (fixCi && ciIds.has(r.source_id))))
+    .map(r => r.source_id);
+}
+
 const TERMINAL: AgentStatus[] = ["done", "failed", "stopped"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -608,8 +624,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "automatically gets a merge step if GitHub reports a conflict and any pending review feedback or failing CI checks. " +
         "Runs one fix at a time per PR: refuses while another fix is running or awaiting its push. " +
         "Supervisor fix_pr runs are not subject to the watcher's daily cap and do not count toward it. " +
-        "Returns immediately with the agent id.",
+        "For existing linked PR comments, pass includeExisting: true; fix agents cannot fetch GitHub feedback themselves. Returns immediately with the agent id.",
       inputSchema: {
+        includeExisting: z.boolean().optional().describe("Also hand the fix agent feedback and failing CI that predate link_pr (recorded as already handled when the PR was linked). Use when the human asks to review/address a linked PR's existing comments."),
         fresh: z.boolean().optional().describe("Force a new conversation instead of continuing the eligible PR lineage"),
         pr: z
           .union([z.number().int(), z.string()])
@@ -621,7 +638,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         model: z.string().optional().describe("Model key; defaults to roles.agent (picked at random when several are set)"),
       },
     },
-    async ({ pr: ref, prompt, model, fresh: forceFresh }) => {
+    async ({ pr: ref, prompt, model, fresh: forceFresh, includeExisting }) => {
       const session = requireSession();
       // Same plan-gate as spawn_agent: a fix run is an agent run.
       if (!session.plan_approved_at)
@@ -660,8 +677,10 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       // too, rather than a second run right after. Best-effort: the fix still runs
       // on the conflict / guidance / already-pending items if gh can't list threads.
       let fresh: ReturnType<typeof normalizeFeedback> = [];
+      let threads: Awaited<ReturnType<typeof fetchReviewThreads>> | null = null;
+      let ciIds = new Set<string>();
       try {
-        const threads = await fetchReviewThreads(project.path, pr.number);
+        threads = await fetchReviewThreads(project.path, pr.number);
         fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
       } catch {
         /* the watcher's next tick picks them up */
@@ -670,6 +689,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (config.prWatch.fixCi) {
         try {
           const checks = await fetchPrChecks(project.path, pr.number);
+          ciIds = new Set(normalizeCiFailures(checks, status.headRefOid, new Set()).map(item => item.sourceId));
           fresh.push(...await enrichCiLogs(project.path,
             normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
         } catch {
@@ -677,8 +697,11 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         }
       }
 
+      const baselines = listPrFeedback(pr.id);
+      const reopen = includeExisting ? liveBaselineSourceIds(baselines, threads, ciIds, config.prWatch.fixCi) : [];
       const spawned = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
+        reopen,
         conflict,
         baseBranch: status.baseRefName,
         title: status.title,
@@ -700,6 +723,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         pr: pr.number,
         conflict,
         feedbackItems: spawned.items,
+        reopenedExisting: spawned.reopenedExisting,
+        existingFeedbackHint: !includeExisting && spawned.items === 0 && baselines.some(f => f.baselined_at && f.decision === "not_applicable" && !f.fix_agent_id && !f.reply_ref && !f.reply_url)
+          ? `${baselines.filter(f => f.baselined_at && f.decision === "not_applicable" && !f.fix_agent_id && !f.reply_ref && !f.reply_url).length} pre-link items exist; pass includeExisting: true to hand them to the agent.` : undefined,
         lineage: spawned.lineage,
         lineageNote: prFixLineageLabel(spawned),
         continued: spawned.continued,
@@ -750,6 +776,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         prs: listSessionPrs(sessionId).map((pr) => {
           const feedback = listPrFeedback(pr.id);
           const brief = (f: (typeof feedback)[number]) => ({
+            baseline: f.baselined_at ? true : undefined,
             sourceId: f.source_id,
             kind: f.source_kind,
             author: f.author,
@@ -859,7 +886,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "Adopt an existing GitHub PR (e.g. a PR URL in the problem) in one of your projects into this session, so " +
         "check_prs, the PR watcher and fix_pr cover it. Read-only on GitHub. Refuses merged/closed and fork PRs. " +
         "Feedback and failing CI that predate the link are recorded as already handled; only newer feedback is " +
-        "acted on, and the watcher never auto-promotes a linked draft. Idempotent. To change the PR afterwards " +
+        "acted on by default; use fix_pr with includeExisting: true when asked to address existing comments. The watcher never auto-promotes a linked draft. Idempotent. To change the PR afterwards " +
         "use fix_pr (never spawn_agent + open_pr, which creates a second PR).",
       inputSchema: {
         url: z.string().describe("The PR URL, e.g. https://github.com/<owner>/<repo>/pull/<n>"),

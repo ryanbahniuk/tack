@@ -22,7 +22,7 @@ import { prFixBusy } from "../prwatch/watch";
  * read-only `gh` calls: nothing is ever written to GitHub.
  */
 
-export const LINK_PR_NEXT = "Use fix_pr with this PR to add changes; don't open a new PR.";
+export const LINK_PR_NEXT = "Use fix_pr with this PR to add changes; pass includeExisting: true to address existing comments. Don't open a new PR.";
 
 export interface LinkPrResult {
   ok: true;
