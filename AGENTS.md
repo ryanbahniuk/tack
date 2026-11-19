@@ -46,6 +46,8 @@ src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix ag
 src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/manual.ts    manual workspaces (kind "manual"): project resolution, creation, live diff
+src/session/readme.ts    bounded session digest and README authoring
+src/publish/             pluggable local and Claude Artifact page publishers
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    per-session auto-fix toggle
 src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback, latch readiness)

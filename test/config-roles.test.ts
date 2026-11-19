@@ -26,10 +26,22 @@ afterEach(() => {
 describe("role config", () => {
   test("normalizes legacy strings for every role", async () => {
     const config = await loadConfig(configFile({ supervisor: "a", agent: "b", summary: "c" }));
-    expect(config.roles).toEqual({ supervisor: ["a"], agent: ["b"], summary: ["c"] });
+    expect(config.roles).toEqual({ supervisor: ["a"], agent: ["b"], summary: ["c"], readme: ["a"] });
     expect(config.draftPrs).toBe(true);
     expect(config.prWatch.autoReady).toBe(true);
     expect(roleModelKeys(config, "agent")).toEqual(["b"]);
+  });
+
+  test("README role and publisher defaults and overrides", async () => {
+    const path = configFile({ supervisor: ["a", "b"], agent: "b", summary: "c" });
+    let config = await loadConfig(path);
+    expect(config.roles.readme).toEqual(["a", "b"]);
+    expect(config.readme?.publisher).toBe(Bun.which("claude") ? "claude-artifact" : "local");
+    writeFileSync(path, readFileSync(path, "utf8").replace("export default {", 'export default { readme: { publisher: "local" },'));
+    config = await loadConfig(path);
+    expect(config.readme?.publisher).toBe("local");
+    await setRoleInConfig(path, "readme", "c");
+    expect((await loadConfig(path)).roles.readme).toEqual(["c"]);
   });
 
   test("loads explicit draft and auto-ready opt-outs", async () => {
@@ -42,7 +54,7 @@ describe("role config", () => {
 
   test("normalizes arrays and removes duplicates in order", async () => {
     const config = await loadConfig(configFile({ supervisor: ["a"], agent: ["b", "a", "b", "c"], summary: ["c", "c"] }));
-    expect(config.roles).toEqual({ supervisor: ["a"], agent: ["b", "a", "c"], summary: ["c"] });
+    expect(config.roles).toEqual({ supervisor: ["a"], agent: ["b", "a", "c"], summary: ["c"], readme: ["a"] });
   });
 
   test("rejects empty lists and empty keys", async () => {

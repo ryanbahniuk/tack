@@ -93,6 +93,7 @@ export const RolesSchema = z.object({
   supervisor: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
   agent: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
   summary: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  readme: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
 });
 export type Roles = z.infer<typeof RolesSchema>;
 export type ResolvedRoles = Record<keyof Roles, string[]>;
@@ -204,6 +205,7 @@ export const ConfigSchema = z.object({
   bootRecipes: z.record(z.string(), BootRecipeSchema).default({}),
   models: z.array(ModelSchema).default([]),
   roles: RolesSchema,
+  readme: z.object({ publisher: z.enum(["claude-artifact", "local"]).optional() }).optional(),
   personas: z.array(PersonaSchema).default([]),
   /** Per-runtime binary path + pinned version. */
   runtimes: RuntimesSchema,
@@ -248,6 +250,7 @@ export interface TackConfig {
   bootRecipes: Record<string, BootRecipe>;
   models: Model[];
   roles: ResolvedRoles;
+  readme?: { publisher: "claude-artifact" | "local" };
   personas: ResolvedPersona[];
   runtimes: Runtimes;
   readAllowlist: string[];
