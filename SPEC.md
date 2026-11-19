@@ -727,6 +727,26 @@ live legacy processes count as stale; `unknown` versions never do. Watchers stam
 their own code and config versions at startup. Config versions are SHA-256 hashes
 of `CONFIG_PATH` contents, read fresh on every check. A live component is stale when
 either code or config differs; missing/unreadable config returns `unknown`.
+
+Supervisor config edits: `read_config` returns the raw authored config (with
+`supervisorMcpServers[].env` values redacted), the effective scalar settings, and
+the denylist. `update_config` takes ordered `set`/`unset` changes on segment paths;
+`projects`/`personas` entries are addressed by `name` and `models` by `key`, since
+keys like `gpt-5.1` contain dots. It edits the raw export, so defaults are never
+written, and rewrites only the touched top-level properties, keeping comments and
+the other blocks byte for byte. The candidate is written to a temp file beside the
+config and validated by `loadConfig`. The human then confirms through MCP
+elicitation, which shows the reason, the paths and the unified diff. Only an accept
+writes. Missing elicitation, decline, cancel or error fail closed, and the
+supervisor is told to send the human to `tack config edit`. The write is an atomic
+rename, done only if the file's SHA-256 still matches the one the diff was computed
+from. `supervisorMcpServers`, `runtimes`, `readAllowlist`, `bootRecipes` and project
+`boot` blocks are refused because they run commands or widen access. Replacing a
+project keeps its `boot`. A write changes the config hash, so every live session is
+marked stale; this is not restamped. Launch-time settings (`autoOpenPrs`,
+`autoLinkPrs`, `draftPrs`, `roles.supervisor`, `personas`, `jira`) need a refresh.
+Per-call settings (`roles.agent`, `projects`, `models`) apply in the editing
+session at once, because it reloads its in-process config.
 Dashboard `C` opens config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`) in every layout,
 even with no sessions. Unchanged config shows a notice; invalid edits retain the
 previous config without refreshing sessions. Valid changes reload dashboard config

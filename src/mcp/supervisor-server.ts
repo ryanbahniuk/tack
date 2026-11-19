@@ -8,6 +8,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { loadConfig, modelForRole, resolveModel } from "../config/load";
+import type { TackConfig } from "../config/schema";
+import {
+  CONFIG_DENYLIST,
+  ConfigChangeSchema,
+  commitConfigChange,
+  prepareConfigChange,
+  readAuthoredConfig,
+  redactConfig,
+  type ConfigChange,
+} from "../config/mutate";
+import { CONFIG_PATH } from "../paths";
 import { getSession } from "../db";
 import {
   addSharedContext,
@@ -199,13 +210,123 @@ export async function requestPlanApproval(
 }
 
 /**
+ * What `read_config` returns: the raw authored config (so the supervisor edits
+ * what the human actually wrote, not defaults) with MCP server `env` values
+ * redacted — they routinely hold credentials and nothing here needs them — plus
+ * the effective resolved values of the scalar settings, and the denylist so the
+ * supervisor knows up front what it must send the human to `tack config edit` for.
+ */
+export async function readConfigView(configPath = CONFIG_PATH) {
+  const authored = redactConfig(await readAuthoredConfig(configPath));
+  let effective: Record<string, unknown>;
+  try {
+    const c = await loadConfig(configPath);
+    effective = {
+      prWatch: c.prWatch, baseCache: c.baseCache, agentReuse: c.agentReuse, dashboard: c.dashboard,
+      autoOpenPrs: c.autoOpenPrs, autoLinkPrs: c.autoLinkPrs, draftPrs: c.draftPrs, roles: c.roles,
+    };
+  } catch (err) {
+    effective = { error: `The config doesn't load: ${(err as Error).message}` };
+  }
+  return {
+    path: configPath,
+    authored,
+    effective,
+    denylisted: CONFIG_DENYLIST,
+    note: "Change settings with update_config only when the human asks. Denylisted paths can be changed only by the human with `tack config edit`.",
+  };
+}
+
+// A config diff deserves the same unhurried review window as a plan.
+const CONFIG_ELICITATION_TIMEOUT_MS = PLAN_ELICITATION_TIMEOUT_MS;
+
+export function configUpdateMessage(reason: string, changedPaths: string[], diff: string): string {
+  return [
+    "The supervisor wants to change your Tack config. Accept to write it; decline to leave the config as it is.",
+    "",
+    `Reason: ${reason.trim() || "(none given)"}`,
+    "",
+    "Changes:",
+    ...changedPaths.map((p) => `- ${p}`),
+    "",
+    diff,
+  ].join("\n");
+}
+
+/**
+ * Settings the supervisor or PR watcher read once at launch only take effect after
+ * a refresh; the rest are read per tool call. Writing the file changes its hash, so
+ * every live session (this one included) is now marked stale — deliberately left
+ * visible rather than restamped, since stale processes really do run the old values.
+ */
+const CONFIG_WRITTEN_NOTE =
+  "Config written. Every live session, including this one (supervisor and PR watcher), is now marked stale. " +
+  "autoOpenPrs, autoLinkPrs, draftPrs, roles.supervisor, personas and jira take full effect only after " +
+  "`tack session refresh <id>` (or `r` in the dashboard). roles.agent, projects and models apply " +
+  "immediately to this session's tool calls. Tell the human which of their changes need a refresh.";
+
+/**
+ * Computes, confirms and writes a config change. The human's accepted elicitation is
+ * the only gate: it shows the reason, changed paths and exact diff, so this tool is
+ * neither plan-gated nor in SUPERVISOR_APPROVAL_TOOLS (that would ask twice, the
+ * first time without the diff). Invalid or denylisted changes error before any
+ * prompt. Everything other than an explicit accept — decline, cancel, no
+ * elicitation capability (background or pre-approved sessions, runtimes without
+ * it), a timeout or error — writes nothing: fail closed.
+ */
+export async function requestConfigUpdate(
+  client: Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">,
+  changes: ConfigChange[],
+  reason: string,
+  configPath = CONFIG_PATH,
+) {
+  const fallback = "Nothing was written. Ask the human to make this change themselves with `tack config edit`.";
+  let prepared;
+  try {
+    prepared = await prepareConfigChange(configPath, changes);
+  } catch (err) {
+    return { written: false, error: (err as Error).message, note: "Nothing was written." };
+  }
+  const { changedPaths, diff } = prepared;
+  try {
+    if (!client.getClientCapabilities()?.elicitation) {
+      return { written: false, changedPaths, diff, note: `Confirmation prompt unavailable in this session. ${fallback}` };
+    }
+    const result = await client.elicitInput({
+      message: configUpdateMessage(reason, changedPaths, diff),
+      requestedSchema: {
+        type: "object",
+        properties: {
+          confirm: { type: "boolean", title: "Write this change to config.ts", default: true },
+        },
+      },
+    }, { timeout: CONFIG_ELICITATION_TIMEOUT_MS });
+    if (result.action !== "accept" || result.content?.confirm === false) {
+      return { written: false, action: result.action, changedPaths, note: `The human did not confirm the change. ${fallback}` };
+    }
+  } catch (err) {
+    return { written: false, changedPaths, error: (err as Error).message, note: fallback };
+  }
+  try {
+    await commitConfigChange(prepared);
+  } catch (err) {
+    return { written: false, changedPaths, error: (err as Error).message, note: "Nothing was written." };
+  }
+  return { written: true, changedPaths, note: CONFIG_WRITTEN_NOTE };
+}
+
+/**
  * The supervisor's tool server. The supervisor is itself a runtime session
  * (claude|codex) running read-only; these tools are how it plans, delegates to
  * agents, waits on them, reads their results, and adjudicates amendments — the
  * whole coordination loop, runtime-agnostic.
  */
 export async function runSupervisorServer(sessionId: string): Promise<void> {
-  const config = await loadConfig();
+  // Reassignable: `update_config` reloads it after a write, and every tool closure
+  // reads it at call time, so per-call settings (roles.agent, projects, models)
+  // take effect in this session immediately. Launch-time consumers (the base-cache
+  // refresher below, the supervisor's own flags) keep their values until refresh.
+  let config: TackConfig = await loadConfig();
   const stopBaseCache = startBaseCacheRefresher(config);
   const server = new McpServer({ name: "tack-supervisor", version: "1.0.0" });
 
@@ -742,6 +863,41 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             : "prWatch.autoPush is off, so the agent's commits will stay on its own branch rather than being " +
               `pushed to ${pr.head_branch}. ${after}`,
       });
+    },
+  );
+
+  server.registerTool(
+    "read_config",
+    {
+      description:
+        "Show the human's Tack config: the raw authored config (MCP server env values redacted), the effective " +
+        "values of scalar settings, and the denylisted paths update_config can't change.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => text(await readConfigView()),
+  );
+
+  server.registerTool(
+    "update_config",
+    {
+      description:
+        "Change the human's Tack config, only when the human asks. The human sees the diff and must confirm; " +
+        "nothing is written otherwise. Paths are segment lists; in projects/personas a segment names the entry " +
+        "by `name`, in models by `key` (e.g. [\"models\",\"gpt-5.1\",\"effort\"]). Setting a new name/key " +
+        "appends a full entry. unset deletes a key (back to its default) or removes an entry. Denylisted paths " +
+        "(see read_config) must be changed by the human with `tack config edit`.",
+      inputSchema: {
+        changes: z.array(ConfigChangeSchema).min(1).describe("Applied in order, all or nothing."),
+        reason: z.string().describe("Why, in the human's terms; shown in the confirmation."),
+      },
+    },
+    async ({ changes, reason }) => {
+      const result = await requestConfigUpdate(server.server, changes, reason);
+      if (result.written) {
+        try { config = await loadConfig(); } catch { /* validated before the write; keep the old copy */ }
+      }
+      return text(result);
     },
   );
 
