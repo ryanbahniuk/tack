@@ -7,7 +7,7 @@ import * as repositories from "../src/db/repositories";
 import * as refresh from "../src/session/refresh";
 import * as tmux from "../src/session/tmux";
 import * as supervisor from "../src/supervisor/supervise";
-import { RECONNECT_MESSAGE, parkReconnectedSupervisor, reconnectAllSessions, reconnectSession, selectAgentsToRevive } from "../src/session/reconnect";
+import { RESTART_MESSAGE, parkRestartedSupervisor, restartAllSessions, restartSession, selectAgentsToRevive } from "../src/session/restart";
 
 const LIVE = 4242;
 const probes = { alive: (pid: number | null | undefined) => pid === LIVE };
@@ -51,7 +51,7 @@ describe("isTransientError", () => {
   });
 });
 
-describe("reconnectSession", () => {
+describe("restartSession", () => {
   const config = {} as TackConfig;
   test("resets the revived cohort to pending, clears attempts, and isolates spawn failures", async () => {
     const session = createSession({});
@@ -70,8 +70,8 @@ describe("reconnectSession", () => {
       return 1;
     });
     try {
-      const result = await reconnectSession(session.id, config);
-      expect(result).toEqual({ supervisorRestarted: false, planPending: false, revivedAgents: [orphan.id], failedAgents: [flaky.id], watcherRestarted: false });
+      const result = await restartSession(session.id, config);
+      expect(result).toEqual({ supervisorRestarted: false, wasStale: false, wasMidTurn: false, planPending: false, revivedAgents: [orphan.id], failedAgents: [flaky.id], watcherRestarted: false });
       expect(seen[`${orphan.id}:${flaky.id}`]).toBe("pending");
       expect(spawn).toHaveBeenCalledWith(session.id, orphan.id, { resume: true });
       expect(getAgent(flaky.id)).toMatchObject({ status: "failed", error: "spawn boom", attempt: 0 });
@@ -85,25 +85,25 @@ describe("reconnectSession", () => {
     const session = createSession({});
     getDb().prepare(`UPDATE sessions SET awaiting_input_at = ?, awaiting_reason = 'plan', supervisor_turn_started_at = ? WHERE id = ?`).run("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", session.id);
     try {
-      expect((await reconnectSession(session.id, config)).planPending).toBe(true);
+      expect((await restartSession(session.id, config)).planPending).toBe(true);
       setSessionStatus(session.id, "archived");
-      await expect(reconnectSession(session.id, config)).rejects.toThrow("archived");
+      await expect(restartSession(session.id, config)).rejects.toThrow("archived");
     } finally { deleteSession(session.id); }
   });
 });
 
-describe("parkReconnectedSupervisor", () => {
+describe("parkRestartedSupervisor", () => {
   const config = {} as TackConfig;
   test("needs a resume handle and tmux, and never falls back to a foreground TUI", async () => {
     const session = createSession({});
     const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(false);
     const launch = spyOn(supervisor, "superviseInteractive").mockResolvedValue({ code: 0, detached: true });
     try {
-      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-resume-ref" });
+      expect(await parkRestartedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-resume-ref" });
       setSessionResumeRef(session.id, "ref-1");
-      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-tmux" });
+      expect(await parkRestartedSupervisor(session.id, config)).toEqual({ parked: false, reason: "no-tmux" });
       expect(launch).not.toHaveBeenCalled();
-      await expect(parkReconnectedSupervisor("ses_missing", config)).rejects.toThrow("Unknown session");
+      await expect(parkRestartedSupervisor("ses_missing", config)).rejects.toThrow("Unknown session");
     } finally {
       avail.mockRestore(); launch.mockRestore();
       deleteSession(session.id);
@@ -116,10 +116,10 @@ describe("parkReconnectedSupervisor", () => {
     let detached = true;
     const launch = spyOn(supervisor, "superviseInteractive").mockImplementation(async () => ({ code: detached ? 0 : 1, detached }));
     try {
-      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: true });
-      expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: session.id, resume_ref: "ref-1" }, prompt: RECONNECT_MESSAGE, resume: true, config, park: true });
+      expect(await parkRestartedSupervisor(session.id, config)).toEqual({ parked: true });
+      expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: session.id, resume_ref: "ref-1" }, prompt: RESTART_MESSAGE, resume: true, config, park: true });
       detached = false;
-      expect(await parkReconnectedSupervisor(session.id, config)).toEqual({ parked: false, reason: "park-failed" });
+      expect(await parkRestartedSupervisor(session.id, config)).toEqual({ parked: false, reason: "park-failed" });
     } finally {
       avail.mockRestore(); launch.mockRestore();
       deleteSession(session.id);
@@ -127,7 +127,7 @@ describe("parkReconnectedSupervisor", () => {
   });
 });
 
-describe("reconnectAllSessions", () => {
+describe("restartAllSessions", () => {
   test("parks only supervisors that were running", async () => {
     const running = createSession({});
     const idle = createSession({});
@@ -137,8 +137,8 @@ describe("reconnectAllSessions", () => {
     const avail = spyOn(tmux, "tmuxAvailable").mockReturnValue(true);
     const launch = spyOn(supervisor, "superviseInteractive").mockResolvedValue({ code: 0, detached: true });
     try {
-      const results = await reconnectAllSessions({} as TackConfig);
-      expect(results.map(r => [r.session.id, r.status === "reconnected" && r.parked])).toEqual([[running.id, true], [idle.id, false]]);
+      const results = await restartAllSessions({} as TackConfig);
+      expect(results.map(r => [r.session.id, r.status === "restarted" && r.parked])).toEqual([[running.id, true], [idle.id, false]]);
       expect(launch).toHaveBeenCalledTimes(1);
       expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: running.id }, park: true });
     } finally {
@@ -147,3 +147,36 @@ describe("reconnectAllSessions", () => {
     }
   });
 });
+
+test("restarts a current live supervisor even while a turn and plan are pending", async () => {
+  const session = createSession({});
+  getDb().prepare(`UPDATE sessions SET awaiting_input_at = 'now', awaiting_reason = 'plan', supervisor_turn_started_at = 'now' WHERE id = ?`).run(session.id);
+  const stale = spyOn(refresh, "isSessionStale").mockReturnValue({ stale: false, supervisor: false, watcher: false, supervisorLive: true, watcherLive: false });
+  const stop = spyOn(refresh, "stopSupervisorProcess").mockResolvedValue(true);
+  try {
+    expect(await restartSession(session.id, {} as TackConfig)).toMatchObject({ supervisorRestarted: true, wasStale: false, wasMidTurn: true, planPending: true });
+    expect(stop).toHaveBeenCalledTimes(1);
+  } finally { stale.mockRestore(); stop.mockRestore(); deleteSession(session.id); }
+});
+
+for (const liveInitially of [true, false]) {
+  test(`restart respawns a ${liveInitially ? "stale live" : "dead"} watcher`, async () => {
+    const { setSessionPrWatchPid, upsertSessionPr } = await import("../src/db");
+    const self = await import("../src/process/self");
+    const watcher = await import("../src/prwatch/watch");
+    const session = createSession({});
+    const pid = 987654;
+    setSessionPrWatchPid(session.id, pid);
+    upsertSessionPr({ sessionId: session.id, url: `https://example.com/${session.id}`, state: "open" });
+    let live = liveInitially;
+    const stale = spyOn(refresh, "isSessionStale").mockReturnValue({ stale: live, supervisor: false, watcher: live, supervisorLive: false, watcherLive: live });
+    const alive = spyOn(self, "isAlive").mockImplementation(p => p === pid && live);
+    const signal = spyOn(process, "kill").mockImplementation(() => { live = false; return true; });
+    const spawn = spyOn(watcher, "spawnPrWatcher").mockReturnValue(123);
+    try {
+      expect((await restartSession(session.id, {} as TackConfig)).watcherRestarted).toBe(true);
+      expect(signal).toHaveBeenCalledTimes(liveInitially ? 1 : 0);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { stale.mockRestore(); alive.mockRestore(); signal.mockRestore(); spawn.mockRestore(); deleteSession(session.id); }
+  });
+}

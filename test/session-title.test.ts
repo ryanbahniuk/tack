@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { createSession, getSession } from "../src/db";
 import { titleFromFirstPrompt } from "../src/session/title";
-import { REFRESH_MESSAGE } from "../src/session/refresh-message";
+import { RESTART_MESSAGE } from "../src/session/refresh-message";
 import { APPROVE_PROMPT_MARKER } from "../src/supervisor/approve-prompt";
 import { supervisorPromptPath, writeSupervisorPrompt } from "../src/supervisor/prompt";
 
@@ -58,8 +58,8 @@ describe("titleFromFirstPrompt", () => {
     const session = createSession({});
     const spawned: string[] = [];
     for (const prompt of ["", " \n\t ", "/approve", "  /help ", APPROVE_PROMPT_MARKER,
-      `Instructions\n${APPROVE_PROMPT_MARKER}\nProceed.`, REFRESH_MESSAGE,
-      `  ${REFRESH_MESSAGE}\n\nHuman follow-up`]) {
+      `Instructions\n${APPROVE_PROMPT_MARKER}\nProceed.`, RESTART_MESSAGE,
+      `  ${RESTART_MESSAGE}\n\nHuman follow-up`]) {
       expect(titleFromFirstPrompt(session.id, prompt, id => { spawned.push(id); })).toBe(false);
       expect(getSession(session.id)?.title).toBeNull();
       expect(existsSync(supervisorPromptPath(session.id))).toBe(false);
