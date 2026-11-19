@@ -169,6 +169,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `w` | Wake: reconnect a session broken by sleep or network loss (asks first). The supervisor is parked in tmux and the dashboard stays open; `enter` attaches |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
+| `h` | Toggle hold; on-hold sessions remain visible below other sessions and keep running |
 | `d` | Delete (asks first) |
 | `z` | Show or hide archived sessions |
 | `C` | Edit the Tack config, then reload it and refresh stale sessions |
@@ -217,6 +218,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
 | `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
 | `tack session stop <session>` | Stop the session and its agents. |
+| `tack session hold <session>` / `unhold <session>` | Organize a session on hold or return it to active without stopping work. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
 | `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
 | `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |

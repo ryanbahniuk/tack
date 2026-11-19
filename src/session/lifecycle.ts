@@ -53,6 +53,17 @@ export function stopSession(sessionId: string): void {
   for (const a of listAgents(sessionId)) stopAgent(a.id);
 }
 
+/** Holding only changes organization; running processes continue unchanged. */
+function setHold(sessionId: string, status: "active" | "on_hold"): void {
+  const session = getSession(sessionId);
+  if (!session) throw new Error(`Session ${sessionId} not found`);
+  if (session.status === "archived") throw new Error(`Session ${sessionId} is archived; unarchive it instead`);
+  setSessionStatus(sessionId, status);
+}
+
+export function holdSession(sessionId: string): void { setHold(sessionId, "on_hold"); }
+export function unholdSession(sessionId: string): void { setHold(sessionId, "active"); }
+
 /** Stops and hides a session, remembering unfinished work so unarchive can resume it. */
 export function archiveSession(sessionId: string): void {
   try { for (const result of unbootSession(null, sessionId)) if (result.error) console.error(result.error); } catch (error) { console.error(error); }

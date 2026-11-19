@@ -66,6 +66,8 @@ import { AUTO_LINK_BUDGET_MS, autoLinkNote, autoLinkPromptPrs, autoLinkablePromp
 import { summarizeProject } from "../src/projects/summarize";
 import {
   archiveSession,
+  holdSession,
+  unholdSession,
   deleteSession,
   stopSession,
   unarchiveSession,
@@ -922,6 +924,24 @@ const archive = defineCommand({
   },
 });
 
+const hold = defineCommand({
+  meta: { name: "hold", description: "Put a session on hold" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id); holdSession(id);
+    console.log(pc.dim(`put ${id} on hold`));
+  },
+});
+
+const unhold = defineCommand({
+  meta: { name: "unhold", description: "Take a session off hold" },
+  args: { session: { type: "positional", description: "Session id" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id); unholdSession(id);
+    console.log(pc.dim(`${id} off hold`));
+  },
+});
+
 const unarchive = defineCommand({
   meta: { name: "unarchive", description: "Restore an archived session" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1649,9 +1669,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, refresh, reconnect, show, boot, unboot, boot-status, edit, context, retitle, readme, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, refresh, reconnect, show, boot, unboot, boot-status, edit, context, retitle, readme, poll-prs, review, pr-fix, list, approve, archive, unarchive, hold, unhold, stop, delete)",
   },
-  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, refresh: sessionRefresh, reconnect: sessionReconnect, show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, hold, unhold, stop, delete: del },
   default: "list",
 });
 

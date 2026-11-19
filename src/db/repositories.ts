@@ -7,7 +7,7 @@ import type { RuntimeKind } from "../config/schema";
 // Row types (mirror the schema in migrate.ts). Text refs are filesystem paths.
 // ---------------------------------------------------------------------------
 
-export type SessionStatus = "active" | "archived";
+export type SessionStatus = "active" | "on_hold" | "archived";
 export type AgentStatus = "pending" | "running" | "done" | "failed" | "stopped";
 export type CostSource = "runtime" | "pricing";
 /** NULL = a normal worker; PR-fix agents update an open PR, while review agents
@@ -246,10 +246,14 @@ export function getSession(id: string): SessionRow | null {
   return (getDb().prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) as SessionRow) ?? null;
 }
 
+export function isSessionOpen(session: { status: SessionStatus }): boolean {
+  return session.status !== "archived";
+}
+
 export function listSessions(includeArchived = false): SessionRow[] {
   const sql = includeArchived
     ? `SELECT * FROM sessions ORDER BY created_at DESC`
-    : `SELECT * FROM sessions WHERE status = 'active' ORDER BY created_at DESC`;
+    : `SELECT * FROM sessions WHERE status != 'archived' ORDER BY created_at DESC`;
   return getDb().prepare(sql).all() as SessionRow[];
 }
 

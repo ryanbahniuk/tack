@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, migrate, setAgentStatus } from "../src/db";
+import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, listSessions, migrate, setAgentStatus } from "../src/db";
 import * as detached from "../src/agent/detached";
 import * as tmux from "../src/session/tmux";
-import { archiveSession, stopSession, unarchiveSession } from "../src/session/lifecycle";
+import { archiveSession, holdSession, unholdSession, stopSession, unarchiveSession } from "../src/session/lifecycle";
 
 const sessions: string[] = [];
 const mocks: Array<{ mockRestore(): void }> = [];
@@ -23,6 +23,27 @@ function fixture() {
   mocks.push(spyOn(tmux, "tmuxKillSession").mockImplementation(() => {}));
   return { session, agents };
 }
+
+test("hold and unhold preserve work and archived sessions refuse both", () => {
+  const { session, agents } = fixture();
+  const before = listAgents(session.id);
+  holdSession(session.id);
+  expect(getSession(session.id)?.status).toBe("on_hold");
+  expect(listSessions().some(s => s.id === session.id)).toBe(true);
+  expect(listAgents(session.id)).toEqual(before);
+  unholdSession(session.id);
+  expect(getSession(session.id)?.status).toBe("active");
+  expect(listAgents(session.id)).toEqual(before);
+  holdSession(session.id);
+  archiveSession(session.id);
+  expect(listSessions().some(s => s.id === session.id)).toBe(false);
+  expect(() => holdSession(session.id)).toThrow("is archived; unarchive it instead");
+  expect(() => unholdSession(session.id)).toThrow("is archived; unarchive it instead");
+  expect(listInterruptedAgents(session.id).map(a => a.id)).toEqual(agents.slice(0, 2).map(a => a.id));
+  mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  unarchiveSession(session.id);
+  expect(getSession(session.id)?.status).toBe("active");
+});
 
 describe("archive restoration", () => {
   test("archive stamps running/pending agents before stopping, preserving terminal agents", () => {

@@ -1,3 +1,4 @@
+import { isSessionOpen } from "../db";
 import { hasUnresolvedDependencies } from "../db";
 import type { TackConfig } from "../config/schema";
 import { getSession, listAgents, listSessionPrs, listSessions, resetAgentAttempt, setAgentError, setAgentStatus, setSessionPrWatchPid, type AgentRow, type SessionRow } from "../db";
@@ -136,7 +137,7 @@ export type BulkReconnectResult = { session: SessionRow } & (
  * session cannot keep the others from reconnecting. */
 export async function reconnectAllSessions(config: TackConfig): Promise<BulkReconnectResult[]> {
   const results: BulkReconnectResult[] = [];
-  for (const session of listSessions().filter(s => s.status === "active")) {
+  for (const session of listSessions().filter(s => isSessionOpen(s))) {
     try {
       const result = await reconnectSession(session.id, config);
       const parked = result.supervisorRestarted && (await parkReconnectedSupervisor(session.id, config)).parked;
