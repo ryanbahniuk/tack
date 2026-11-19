@@ -126,7 +126,7 @@ test("short dashboard fits split, list and insights frames while navigating over
     await app.waitUntilRenderFlush();
     const first = checkFrame();
     expect(first.split("\n")[0]).toContain("│");
-    expect(first).toContain(`❯ ○ ${sessions[0]!.id}`);
+    expect(first).toContain(`❯ ● ${sessions[0]!.id}`);
     expect(first).toContain("↓ 44 more");
     expect(first).toContain("Insights");
     for (let i = 0; i < 25; i++) await press("j");

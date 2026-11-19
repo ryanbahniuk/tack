@@ -6,6 +6,9 @@ import { render } from "ink";
 import { Dashboard } from "../src/cli/dashboard";
 import { createAgent, createSession, deleteSession, setAgentPid, setAgentStatus } from "../src/db";
 import * as repositories from "../src/db/repositories";
+import * as tmux from "../src/session/tmux";
+import * as prs from "../src/projects/prs";
+import * as jira from "../src/projects/jira";
 
 test("session dot tracks agent activity and input requests", async () => {
   const session = createSession({});
@@ -13,7 +16,12 @@ test("session dot tracks agent activity and input requests", async () => {
   setAgentPid(agent.id, process.pid);
   setAgentStatus(agent.id, "running");
   let row = { ...session, pid: null, awaiting_input_at: null as string | null };
-  const list = spyOn(repositories, "listSessions").mockImplementation(() => [row]);
+  const spies = [
+    spyOn(repositories, "listSessions").mockImplementation(() => [row]),
+    spyOn(tmux, "tmuxListSessions").mockReturnValue(new Set()),
+    spyOn(prs, "refreshSessionPrs").mockImplementation(async () => ({ ghMissing: true }) as never),
+    spyOn(jira, "refreshSessionJiraTickets").mockImplementation(async () => ({ unavailable: false }) as never),
+  ];
   const output = new PassThrough();
   Object.assign(output, { columns: 120, rows: 30, isTTY: false });
   const input = new PassThrough();
@@ -39,7 +47,7 @@ test("session dot tracks agent activity and input requests", async () => {
     expect(sessionLine()).toContain("◆ needs input");
   } finally {
     app.unmount();
-    list.mockRestore();
+    for (const spy of spies) spy.mockRestore();
     deleteSession(session.id);
   }
-});
+}, 15_000);
