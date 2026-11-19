@@ -107,6 +107,11 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
   `resolve.ts`, and add its install package to `PACKAGE` in `install.ts` (or make
   the install path a no-op if it isn't a package-manager install). Keep it behind
   the `AgentEvent` contract.
+- **Edit config programmatically:** use `prepareConfigChange` / `commitConfigChange`
+  (`src/config/mutate.ts`, behind `read_config` / `update_config`): segment paths,
+  raw-authored edits, temp-file `loadConfig` validation, hash-checked atomic rename,
+  and a denylist for anything that runs commands or widens access. Block writers in
+  `src/config/edit.ts` rewrite one top-level property via `replaceTopLevelProperty`.
 - **Add a supervisor capability:** add a tool to
   `src/mcp/supervisor-server.ts` and document it in the supervisor context
   (`src/supervisor/context.ts`).
