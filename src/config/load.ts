@@ -22,7 +22,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
 
   // Normalize once so all consumers see ordered, distinct candidate keys.
   const roles = Object.fromEntries(
-    Object.entries(parsed.roles).map(([role, value]) => [role, [...new Set(Array.isArray(value) ? value : [value])]]),
+    Object.entries({ ...parsed.roles, readme: parsed.roles.readme ?? parsed.roles.supervisor }).map(([role, value]) => [role, [...new Set(Array.isArray(value) ? value : [value])]]),
   ) as ResolvedRoles;
   const byKey = new Map(parsed.models.map((m) => [m.key, m]));
   for (const [role, keys] of Object.entries(roles)) {
@@ -66,6 +66,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
     models: parsed.models,
     roles,
+    readme: { publisher: parsed.readme?.publisher ?? (parsed.runtimes.claude || parsed.models.some(m => m.runtime === "claude") || Bun.which("claude") ? "claude-artifact" : "local") },
     personas,
     runtimes: {
       claude: expandBin(parsed.runtimes.claude),

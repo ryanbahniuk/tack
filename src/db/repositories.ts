@@ -56,6 +56,9 @@ export interface SessionRow {
   pr_watch_code_version: string | null;
   supervisor_turn_started_at: string | null;
   /** The composed session-summary markdown (see `src/session/summary.ts`); null = none written yet. */
+  readme_ref: string | null;
+  readme_url: string | null;
+  readme_at: string | null;
   summary_ref: string | null;
   /** When `summary_ref` was last (re)written. */
   summary_at: string | null;
@@ -281,6 +284,10 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
 }
 
 /** Replaces the session's display title (set by the auto-titler, `src/session/title.ts`). */
+export function setSessionReadme(id: string, value: { ref: string; url?: string | null }): void {
+  getDb().prepare(`UPDATE sessions SET readme_ref = ?, readme_url = ?, readme_at = ?, updated_at = ? WHERE id = ?`).run(value.ref, value.url ?? null, nowIso(), nowIso(), id);
+}
+
 export function setSessionTitle(id: string, title: string): void {
   getDb().prepare(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`).run(title, nowIso(), id);
 }

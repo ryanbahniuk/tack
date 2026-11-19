@@ -70,6 +70,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
+import { generateSessionReadme } from "../src/session/readme";
 import { generateSessionTitle, spawnSessionTitler, titleFromFirstPrompt } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
@@ -1315,6 +1316,7 @@ const sessionShow = defineCommand({
     const needs = sessionNeedsInput(s, agents) ? `  ${pc.yellow("◆ needs input")}` : "";
     console.log(`${pc.bold(s.id)}  ${live}  ${pc.dim(s.status)}${needs}`);
     if (s.title) console.log(`  ${s.title}`);
+    if (s.readme_url) console.log(`  README: ${s.readme_url}`);
     console.log(
       pc.dim(`  ${s.supervisor_model ?? "?"} (${s.runtime ?? "?"})  ·  ${s.created_at}`),
     );
@@ -1416,6 +1418,20 @@ const sessionContext = defineCommand({
       }
       console.log(pc.dim(`\nThe supervisor adjudicates these automatically (surfaced to it via wait_for_agents).`));
     }
+  },
+});
+
+const sessionReadme = defineCommand({
+  meta: { name: "readme", description: "Generate a session README page" },
+  args: { session: { type: "positional", required: true, description: "Session id" }, publish: { type: "boolean", default: true, description: "Publish the page (use --no-publish to keep it local)" }, open: { type: "boolean", description: "Open the page" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    const config = await loadConfig(); const spin = startSpinner(`Generating README for ${id}`);
+    try {
+      const result = await generateSessionReadme(config, id, { publish: args.publish });
+      spin.succeed("done"); console.log(`  ${result.file}`); if (result.url) console.log(`  ${result.url}`);
+      if (args.open) execFileSync(process.platform === "darwin" ? "open" : "xdg-open", [result.url ?? result.file]);
+    } catch (err) { spin.fail("failed"); console.error(pc.red((err as Error).message)); process.exit(1); }
   },
 });
 
@@ -1596,9 +1612,9 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
+    description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, readme, poll-prs, review, pr-fix, list, approve, archive, unarchive, stop, delete)",
   },
-  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
+  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, stop, delete: del },
   default: "list",
 });
 
@@ -1710,6 +1726,10 @@ if (hidden === "__mcp") {
   const config = await loadConfig();
   await runPrWatcher(sessionId!, config);
   process.exit(0);
+} else if (hidden === "__readme-session") {
+  const sessionId = process.argv[3]!;
+  try { await generateSessionReadme(await loadConfig(), sessionId); }
+  catch (err) { console.error(`readme-session ${sessionId}: ${(err as Error).message}`); }
 } else if (hidden === "__title-session") {
   // Detached auto-titler (spawnSessionTitler). Best-effort: stdio is title.runner.log,
   // so a failure is logged there and never surfaces to the session.

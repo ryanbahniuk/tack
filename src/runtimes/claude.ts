@@ -383,10 +383,13 @@ export class ClaudeRuntime implements Runtime {
     // a nested Claude subagent only adds a full extra agent loop of latency —
     // e.g. `tack projects refresh` spawning an Explore agent to read a README.
     if (opts.readOnly) {
-      cmd.push("--permission-mode", "plan", "--permission-prompts", "none");
+      // Plan mode can deny non-edit publishing tools; explicit allows need default
+      // mode, with edit and shell tools denied and all prompts disabled.
+      cmd.push("--permission-mode", opts.allowTools?.length ? "default" : "plan", "--permission-prompts", "none");
       // `disallowShell` also forbids Bash so a delegate-only run can't shell out to
       // write files; plain read-only runs keep Bash for read investigation.
-      cmd.push("--disallowedTools", readOnlyDisallowed(opts));
+      cmd.push("--disallowedTools", opts.allowTools?.length ? "Task,Agent,Bash,Edit,Write,MultiEdit,NotebookEdit" : readOnlyDisallowed(opts));
+      for (const tool of opts.allowTools ?? []) cmd.push("--allowedTools", tool);
     } else {
       cmd.push(...PERMISSION_ARGS);
       // Sandbox the worktree agent so Bash (and its subprocesses) can't read past

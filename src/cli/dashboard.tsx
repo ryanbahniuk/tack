@@ -1,3 +1,5 @@
+import { spawnSessionReadmer } from "../session/readme";
+import { selectPublisher } from "../publish";
 import { hasUnresolvedDependencies, listPrDependencies } from "../db";
 import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
@@ -144,7 +146,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.session.readme_url ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -207,10 +209,11 @@ type Confirm =
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number }
   | { action: "restart"; id: string; count: number; planPending: boolean; stale: boolean; midTurn: boolean }
+  | { action: "readme"; id: string; label: string; local: boolean }
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · D README · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -302,6 +305,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
         <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
       </Text>
+      {selected && v.session.readme_url ? <Text>    README: {v.session.readme_url}</Text> : null}
       {selected &&
         v.agents.map((a) => {
           const display = agentDisplayStatus(a);
@@ -652,7 +656,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     // worktrees and artifacts irreversibly.
     if (confirm) {
       if (input === "y" || input === "Y" || (key.return && (confirm.action === "delete" || confirm.action === "stop"))) {
-        if (confirm.action === "unboot" || confirm.action === "steal") {
+        if (confirm.action === "readme") {
+          spawnSessionReadmer(confirm.id);
+          setNotice(`generating README for ${confirm.id} · tack session show ${confirm.id} for the link`);
+        } else if (confirm.action === "unboot" || confirm.action === "steal") {
           const pending = confirm; setConfirm(null);
           if (pending.action === "unboot") runBootWorker(pending.id, "unboot");
           else runBootWorker(pending.id, "boot", pending.agents, pending.projects, true);
@@ -887,6 +894,10 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       exit();
     } else if (!selected) {
       return;
+    } else if (input === "D") {
+      if (!config) { setNotice("Configuration unavailable"); return; }
+      const publisher = selectPublisher(config);
+      setConfirm({ action: "readme", id: selected.session.id, label: publisher.label, local: publisher.kind === "local" });
     } else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
       // launching the session happens in `runDashboard` once this unmounts — we just
@@ -980,7 +991,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     }
   });
 
-  const confirmText = confirm ? (confirm.action === "edit"
+  const confirmText = confirm ? (confirm.action === "readme"
+    ? `Generate a README for ${confirm.id} ${confirm.local ? "and save it locally" : `and publish it as a private ${confirm.label} page`}? (y/N)`
+    : confirm.action === "edit"
     ? `Agent ${confirm.agentId} is still running. Edit its worktree anyway? (y/N)`
     : confirm.action === "unboot"
       ? `Unboot ${confirm.id}? (y/N)`
