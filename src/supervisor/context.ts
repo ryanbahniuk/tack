@@ -93,7 +93,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "- `set_pr_fix` — change session auto-fix only when the human asks.",
     "- `fix_pr` — update an open session PR (including one adopted with `link_pr`) whenever the human asks for changes, or to",
     "  address a persistent conflict, failing CI or failed fix run (optionally with `model`",
-    "  and guidance in `prompt`). For existing linked PR comments pass `includeExisting: true`; fix agents cannot fetch GitHub feedback.",
+    "  and guidance in `prompt`). For existing linked PR comments pass `includeExisting: true`; never tell fix agents to fetch comments with `gh` or the GitHub API.",
     "  It reuses the PR's existing `pr_fix` agent (same id and",
     "  conversation) when its last run succeeded and is still resumable, else starts a new",
     "  `pr_fix` agent continuing the PR lineage or fresh; returns `lineage`",
