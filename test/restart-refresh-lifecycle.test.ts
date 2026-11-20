@@ -4,7 +4,7 @@ import * as tmux from "../src/session/tmux";
 import * as version from "../src/process/version";
 import * as repositories from "../src/db/repositories";
 import * as supervisor from "../src/supervisor/supervise";
-import { refreshAllStaleSessions, REFRESH_MESSAGE, refreshSession } from "../src/session/refresh";
+import { refreshAllStaleSessions, RESTART_MESSAGE, refreshSession } from "../src/session/refresh";
 import * as self from "../src/process/self";
 import * as watcher from "../src/prwatch/watch";
 import type { TackConfig } from "../src/config/schema";
@@ -93,7 +93,7 @@ for (const available of [true, false]) {
       expect(request).toHaveBeenCalledTimes(1);
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(launch).toHaveBeenCalledTimes(available ? 1 : 0);
-      if (available) expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: ready.id }, config, park: true, resume: true, prompt: REFRESH_MESSAGE });
+      if (available) expect(launch.mock.calls[0]?.[0]).toMatchObject({ session: { id: ready.id }, config, park: true, resume: true, prompt: RESTART_MESSAGE });
     } finally {
       current.mockRestore(); configVersion.mockRestore(); has.mockRestore(); request.mockRestore(); avail.mockRestore();
       alive.mockRestore(); signal.mockRestore(); spawn.mockRestore(); launch.mockRestore();

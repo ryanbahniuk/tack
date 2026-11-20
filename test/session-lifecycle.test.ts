@@ -118,7 +118,7 @@ test("v8 upgrades an existing database, preserves agents, and is idempotent", ()
   db.exec("INSERT INTO agents (id, session_id, project_name, status, created_at, updated_at) VALUES ('a', 's', 'test', 'stopped', 'then', 'then')");
   migrate(db);
   expect(db.query("SELECT id, interrupted_at FROM agents").all()).toEqual([{ id: "a", interrupted_at: null }]);
-  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 23 });
+  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 24 });
   migrate(db);
   db.close();
 });

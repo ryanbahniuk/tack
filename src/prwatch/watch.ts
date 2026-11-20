@@ -10,6 +10,8 @@ import type { Model, Project, TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import {
   assignPrFeedback,
+  reopenBaselinedPrFeedback,
+  rebaselinePrFeedback,
   listPrDependencies, updatePrDependency, hasUnresolvedDependencies,
   claimPrFixAgentForReuse,
   countPrFixRunsSince,
@@ -658,13 +660,14 @@ export async function spawnPrFixAgent(
     baseBranch: string | null;
     title: string | null;
     fresh?: PrFeedbackItem[];
+    reopen?: string[];
     model?: Model;
     guidance?: string;
     forceFresh?: boolean;
   },
 ): Promise<{
   agent: AgentRow; items: number; continued: string | null; lineage: PrFixLineage;
-  fallbackReason?: string; reuseFallbackReason?: string;
+  fallbackReason?: string; reuseFallbackReason?: string; reopenedExisting: number;
 }> {
   if (prFixBusy(pr.id)) throw new Error("A PR fix is already running or awaiting post-fix.");
   const model = opts.model ?? modelForRole(config, "agent");
@@ -696,6 +699,7 @@ export async function spawnPrFixAgent(
       }
       feedbackRecorded = true;
     }
+    const reopened = reopenBaselinedPrFeedback(pr.id, opts.reopen ?? []);
     const rows = listUnassignedPrFeedback(pr.id).filter(r => opts.origin === "dependency" ? r.source_kind === "dependency_release" : r.source_kind !== "dependency_release");
     const prompt = buildPrFixPrompt({
       pr: { number: pr.number, title: opts.title ?? pr.title, url: pr.url, head_branch: pr.head_branch },
@@ -729,7 +733,7 @@ export async function spawnPrFixAgent(
     // The launcher owns this pending row during the bounded fetch. Watchers use
     // this pid to distinguish preparation from a dead detached runner.
     setAgentPid(agentId, process.pid);
-    return { agentId, rows, reused, notReused: candidate && !candidate.agent ? candidate.reason : undefined };
+    return { agentId, rows, reopened, reused, notReused: candidate && !candidate.agent ? candidate.reason : undefined };
   }).immediate();
 
   const launch = () => {
@@ -747,6 +751,7 @@ export async function spawnPrFixAgent(
     const rollback = () => getDb().transaction(() => {
       restorePrFixAgent(snapshot);
       unassignPrFeedback(first.rows.map((r) => r.id), snapshot.id);
+      rebaselinePrFeedback(first.reopened);
       deletePrFixRun(runId);
     }).immediate();
     const row = getAgent(snapshot.id)!;
@@ -765,7 +770,7 @@ export async function spawnPrFixAgent(
         rollback();
         throw err;
       }
-      return { agent: getAgent(snapshot.id)!, items: first.rows.length, continued: snapshot.id, lineage: "reused" };
+      return { agent: getAgent(snapshot.id)!, items: first.rows.length, continued: snapshot.id, lineage: "reused", reopenedExisting: first.reopened.length };
     }
     rollback();
     reuseFallbackReason = ff.reason;
@@ -784,12 +789,16 @@ export async function spawnPrFixAgent(
     }
     launch();
     return {
-      agent: getAgent(agentId)!, items: first.rows.length, continued: decision.head?.id ?? null,
+      agent: getAgent(agentId)!, items: first.rows.length, reopenedExisting: first.reopened.length, continued: decision.head?.id ?? null,
       lineage: decision.head ? "continued" : "fresh",
       ...(decision.head ? {} : { fallbackReason: decision.reason }),
       ...(reuseFallbackReason ? { reuseFallbackReason } : {}),
     };
   } catch (err) {
+    getDb().transaction(() => {
+      unassignPrFeedback(first.reopened, agentId);
+      rebaselinePrFeedback(first.reopened);
+    }).immediate();
     setAgentError(agentId, (err as Error).message);
     setAgentStatus(agentId, "failed");
     throw err;

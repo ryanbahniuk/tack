@@ -10,9 +10,9 @@ import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
 import { recoverSupervisorCost, superviseInteractive } from "../supervisor/supervise";
 import { tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxListSessions, tmuxRequestExit, tmuxSessionName } from "./tmux";
 
-import { REFRESH_MESSAGE } from "./refresh-message";
+import { RESTART_MESSAGE } from "./refresh-message";
 
-export { REFRESH_MESSAGE } from "./refresh-message";
+export { RESTART_MESSAGE } from "./refresh-message";
 
 /** Probe injection keeps the policy testable without real processes or tmux. */
 export function isSessionStale(session: SessionRow, probes = {
@@ -71,8 +71,8 @@ export async function waitUntilGone(alive: () => boolean): Promise<boolean> {
 /** Stop a session's supervisor so a caller can launch its replacement: ask a tmux
  * TUI to exit (killing it if it lingers), otherwise SIGTERM a live headless runner
  * or launcher. Then bank the cost the dying turn accrued and clear the turn flag,
- * which a killed turn's Stop hook never got to clear. Shared by refresh and
- * reconnect; it applies no guards of its own. Returns whether anything was live. */
+ * which a killed turn's Stop hook never got to clear. Shared by automatic refresh and
+ * restart; it applies no guards of its own. Returns whether anything was live. */
 export async function stopSupervisorProcess(session: SessionRow, config: TackConfig): Promise<boolean> {
   const id = session.id;
   const tmuxAlive = () => tmuxHasSession(tmuxSessionName(id));
@@ -128,7 +128,7 @@ export async function refreshAllStaleSessions(config: TackConfig, opts: { force?
         continue;
       }
       if (result.refreshed && result.supervisor && tmuxAvailable()) {
-        await superviseInteractive({ session: getSession(session.id)!, prompt: REFRESH_MESSAGE, resume: true, config, park: true });
+        await superviseInteractive({ session: getSession(session.id)!, prompt: RESTART_MESSAGE, resume: true, config, park: true });
       }
       results.push({ session, status: result.refreshed ? "refreshed" : "current" });
     } catch (err) {

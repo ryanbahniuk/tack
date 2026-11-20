@@ -135,7 +135,7 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 - **Auth:** Tack passes no tokens. The server inherits your environment and reuses the OAuth cache that the `chime-atlassian` plugin keeps at `~/.cache/chime-atlassian-mcp/`. Seed that cache once from an interactive client (the plugin, or an interactive Tack supervisor, which can answer the OAuth prompt). After that, headless runs reuse it. Never put tokens in `config.ts`.
 - **Permissions:** a mounted server's tools are auto-allowed under the supervisor's read-only posture, including any write tools the server exposes. Only mount servers you're comfortable with it calling.
 - **Tickets:** with `jira` set, the supervisor links the tickets a session works on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now, `J` opens a session's tickets, `t` lists every session's tickets, archived included) and `tack session show` lists them. `cloudId` is optional and falls back to the server's `CONFLUENCE_CLOUD_ID`.
-- **Existing PRs:** paste a GitHub PR URL (in one of your configured projects) into any message to the supervisor and Tack adopts it into the session automatically (`autoLinkPrs`, default on), telling the supervisor what it linked; the supervisor calls `link_pr` only for URLs that weren't auto-linked, and never opens a second PR; follow-up changes go onto that PR's branch via `fix_pr`. Like ticket linking it's local bookkeeping (read-only `gh` calls, never a write to GitHub). Feedback and failing CI that predate the link count as already handled, the watcher never auto-promotes a linked draft, and fork or merged/closed PRs are refused. `unlink_pr` drops one linked by mistake; the dashboard tags linked PRs `linked`.
+- **Existing PRs:** paste a GitHub PR URL (in one of your configured projects) into any message to the supervisor and Tack adopts it into the session automatically (`autoLinkPrs`, default on), telling the supervisor what it linked; the supervisor calls `link_pr` only for URLs that weren't auto-linked, and never opens a second PR; follow-up changes go onto that PR's branch via `fix_pr`. Like ticket linking it's local bookkeeping (read-only `gh` calls, never a write to GitHub). Feedback and failing CI that predate the link count as already handled; use `fix_pr` with `includeExisting: true` to address existing comments. The watcher never auto-promotes a linked draft, and fork or merged/closed PRs are refused. `unlink_pr` drops one linked by mistake; the dashboard tags linked PRs `linked`.
 
 ---
 
@@ -165,8 +165,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `R` | Start a persona review |
 | `F` | Toggle PR auto-fix for the session |
-| `r` | Refresh the session onto current Tack code (asks first) |
-| `w` | Wake: reconnect a session broken by sleep or network loss (asks first). The supervisor is parked in tmux and the dashboard stays open; `enter` attaches |
+| `r` | Restart a session when it is `stale` or broken after sleep or network loss. Restarts the supervisor (parked in tmux; `enter` attaches), revives dropped agents, and restarts a dead or stale PR watcher (asks first) |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
 | `h` | Toggle hold; on-hold sessions remain visible below other sessions and keep running |
@@ -177,7 +176,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `[` / `]` | Insights range: 7d · 30d (default) · 90d · 1y · all |
 | `q` | Quit |
 
-Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale`.
+Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale` (press `r` to restart).
 
 <details>
 <summary>Insights details</summary>
@@ -215,8 +214,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
 | `tack session readme <session> [--no-publish] [--open]` | Generate a session README page; optionally keep it local or open it. |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
-| `tack session refresh <session> \| --all [--force]` | Move stale supervisor and watcher processes onto updated Tack code without stopping agents. |
-| `tack session reconnect <session> \| --all` | After sleep or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive agents the outage killed, restart a dead PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. |
+| `tack session restart <session> \| --all` | Get a session healthy and current after a Tack update (`stale`), sleep, or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive dropped agents, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. `refresh` and `reconnect` remain available as deprecated aliases. |
 | `tack session stop <session>` | Stop the session and its agents. |
 | `tack session hold <session>` / `unhold <session>` | Organize a session on hold or return it to active without stopping work. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
@@ -224,8 +222,8 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |
 
 `tack session resume` refreshes stale Tack processes automatically when the session
-is idle. `refresh --all` parks the replacement supervisors detached in tmux;
-without tmux they stay stopped until you resume them.
+is idle. Dashboard config saves also refresh idle stale processes; without tmux,
+replacement supervisors stay stopped until you resume them.
 
 ### tmux: detach, reattach, new session, bug report
 
@@ -522,8 +520,8 @@ See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 | PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
 | PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
 | Session seems stuck or its supervisor exited | `tack session resume <session>`. |
-| Session or agents died after the laptop slept or the network dropped | `tack session reconnect <session>` (or `--all`), or dashboard `w`. |
-| `stale` badge after updating Tack | `tack session refresh <session>` (or `--all`), or dashboard `r`. Add `--force` if it's mid-turn or a plan is pending. |
+| Session or agents died after the laptop slept or the network dropped | `tack session restart <session>` (or `--all`), or dashboard `r`. |
+| `stale` badge after updating Tack | `tack session restart <session>` (or `--all`), or dashboard `r`. |
 | `jira unavailable` in the dashboard | Check that the `supervisorMcpServers` entry runs (`uvx` on PATH) and its OAuth cache is seeded. |
 | `J` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
 | `Config has errors` | `tack config edit`; the message names the failing key. |

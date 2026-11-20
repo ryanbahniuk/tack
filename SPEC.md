@@ -377,7 +377,7 @@ Adapter specifics, hidden behind the interface:
   once answered. Plain-text questions are caught at turn end (below). The next
   submitted prompt clears a question too. None of these paths overwrites or clears
   a pending `"plan"` flag, which keeps the lifecycle above, so only `"plan"` blocks
-  `session refresh`.
+  `session restart`.
   With `autoOpenPrs: false`, `open_pr` is excluded from the allow hook and backed
   by a `permissions.ask` rule; its ask hook supplies the prompt wording.
   Attended runs create `<TACK_HOME>/supervisor/<sessionId>/artifacts` for
@@ -646,7 +646,7 @@ refresh tick.
   Existing PRs adopted with `link_pr` (`src/session/link-pr.ts`) are ordinary rows with
   `linked_at` set (discovery never clobbers or drops them): `ready_promoted_at` is latched so they
   are never auto-promoted, and pre-link feedback/CI is baselined as handled
-  `not_applicable`. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
+  `not_applicable`. Use `fix_pr` with `includeExisting: true` to address existing comments; live failing CI is included when enabled. Changes go through `fix_pr`; `unlink_pr` removes only linked rows.
   With `autoLinkPrs` (default `true`), PR URLs in the human's messages are linked the
   same way without the supervisor (`src/session/auto-link-prs.ts`): the attended claude
   `UserPromptSubmit` hook (`__approve-prompt`, ~20s budget) does it per prompt and adds a
@@ -698,28 +698,20 @@ the diff stays cumulative, and cost/usage accumulate with streaming updates
 replacing only the current invocation's contribution. The active prompt persists
 across interruption, unarchive and transient retry.
 
-### Refresh onto updated Tack code or config
+### Restart session processes
 
-`session refresh <id>` gracefully exits a stale supervisor TUI (bounded `/exit`,
-then tmux kill), recovers its cost, restarts a stale PR watcher if watchable PRs
-remain, and resumes the same conversation. Agents are never stopped. `--all`
-targets stale active sessions and parks replacement supervisors detached in tmux;
-without tmux, supervisors stay stopped until the next resume. `--force` bypasses
-the plan-approval, turn-marker, and live headless-runner guards. Dashboard `r`
-asks y/N and hands off to resume; stale sessions show a `stale` badge.
+`session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or with a
+pending plan, revives dropped agents, and restarts a dead or stale PR watcher when
+there are watchable PRs or unresolved dependencies. It parks the replacement in
+tmux with a restart seed; `session resume` attaches. Without tmux it stays stopped
+until resume. `--all` covers active sessions and parks only supervisors that were
+running. Archived sessions cannot be restarted. The deprecated `refresh` and
+`reconnect` commands remain hidden aliases.
 
 Interactive `session resume` automatically refreshes stale idle processes before
-reattaching. A blocked supervisor stays live with a notice to refresh once idle;
-a stale watcher can still be refreshed independently. Refreshed supervisors get
-a seed telling them tools/permissions may have changed and to re-run `sync_projects`.
-
-`session reconnect <id>` (dashboard `w`) recovers from sleep or a network drop: it
-always stops the supervisor (no mid-turn or pending-plan guard), revives agents
-the outage killed, restarts a dead PR watcher, and relaunches the supervisor parked
-in tmux with a reconnect seed. It never opens a foreground TUI, so the CLI returns
-and the dashboard stays open; `session resume` attaches. Without tmux the
-supervisor stays stopped until resume. `--all` parks only supervisors that were
-running.
+reattaching, without reviving agents. A pending plan, mid-turn supervisor, or live
+headless runner blocks automatic supervisor refresh; a stale watcher can still be
+refreshed independently. The replacement receives the restart seed.
 
 Code versions are memoized per process: content hashes of the entry script's Tack
 source tree (`bin`/`src` TypeScript, package manifest and lockfile), including
@@ -751,7 +743,7 @@ session at once, because it reloads its in-process config.
 Dashboard `C` opens config in `$VISUAL` / `$EDITOR` (fallback `vim`, else `vi`) in every layout,
 even with no sessions. Unchanged config shows a notice; invalid edits retain the
 previous config without refreshing sessions. Valid changes reload dashboard config
-and use the same bulk refresh as `session refresh --all`, reporting refreshed,
+and use guarded bulk refresh of stale processes, reporting refreshed,
 blocked, and failed counts. Claude's prompt-submit hook stamps the best-effort
 turn marker; Stop and Notification (`idle_prompt`) hooks clear it. The idle
 notification covers Esc interruptions, which do not fire Stop. On Stop, `__turn-end` also

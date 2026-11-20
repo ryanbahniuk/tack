@@ -6,7 +6,7 @@ import { Dashboard } from "../src/cli/dashboard";
 import type { TackConfig } from "../src/config/schema";
 import { createAgent, createSession, deleteSession, getDb, getSession, setAgentPid, setAgentStatus, setSessionStatus } from "../src/db";
 import * as repositories from "../src/db/repositories";
-import * as reconnect from "../src/session/reconnect";
+import * as reconnect from "../src/session/restart";
 
 async function mount(config: TackConfig) {
   const prs = await import("../src/projects/prs");
@@ -47,23 +47,23 @@ for (const [plan, park] of [[false, { parked: true }], [true, { parked: true }],
     const done = createAgent({ sessionId: session.id, projectName: "p" });
     setAgentStatus(done.id, "done");
     const list = spyOn(repositories, "listSessions").mockImplementation(() => [getSession(session.id)!]);
-    const result = { supervisorRestarted: true, planPending: plan, revivedAgents: [orphan.id], failedAgents: [], watcherRestarted: false };
-    const run = spyOn(reconnect, "reconnectSession").mockResolvedValue(result);
-    const parkSpy = spyOn(reconnect, "parkReconnectedSupervisor").mockResolvedValue(park);
+    const result = { supervisorRestarted: true, wasStale: false, wasMidTurn: false, planPending: plan, revivedAgents: [orphan.id], failedAgents: [], watcherRestarted: false };
+    const run = spyOn(reconnect, "restartSession").mockResolvedValue(result);
+    const parkSpy = spyOn(reconnect, "parkRestartedSupervisor").mockResolvedValue(park);
     const ui = await mount(config);
     try {
-      await ui.press("w");
-      expect(ui.frame()).toContain(`Reconnect ${session.id}? Restarts the supervisor detached in tmux and revives 1 dropped agent(s).${plan ? " Pending plan will be re-presented." : ""} (y/N)`);
+      await ui.press("r");
+      expect(ui.frame()).toContain(`Restart ${session.id}? Restarts the supervisor detached in tmux, revives 1 dropped agent(s)${plan ? " · pending plan will be re-presented" : ""}. (y/N)`);
       await ui.press("n");
       expect(run).not.toHaveBeenCalled();
-      await ui.press("w");
+      await ui.press("r");
       await ui.press("y");
       await new Promise(resolve => setTimeout(resolve, 25));
       await ui.app.waitUntilRenderFlush();
       expect(run).toHaveBeenCalledWith(session.id, config);
       expect(parkSpy).toHaveBeenCalledWith(session.id, config);
       expect(ui.launches).toEqual([]);
-      const summary = `${session.id}: ${reconnect.describeReconnect(result)}`;
+      const summary = `${session.id}: ${reconnect.describeRestart(result)}`;
       expect(ui.frame()).toContain(park.parked ? `${summary} · parked in tmux · enter to attach` : `${summary} · tmux unavailable, supervisor stopped · enter to resume`);
     } finally {
       ui.app.unmount();
@@ -80,12 +80,12 @@ test("dashboard w refuses archived sessions", async () => {
   const session = createSession({});
   setSessionStatus(session.id, "archived");
   const list = spyOn(repositories, "listSessions").mockImplementation(() => [getSession(session.id)!]);
-  const run = spyOn(reconnect, "reconnectSession");
+  const run = spyOn(reconnect, "restartSession");
   const ui = await mount(config);
   try {
-    await ui.press("w");
+    await ui.press("r");
     expect(ui.frame()).toContain(`${session.id} is archived`);
-    expect(ui.frame()).not.toContain("Reconnect ");
+    expect(ui.frame()).not.toContain("Restart ");
     expect(run).not.toHaveBeenCalled();
   } finally {
     ui.app.unmount();
@@ -94,4 +94,20 @@ test("dashboard w refuses archived sessions", async () => {
     run.mockRestore();
     deleteSession(session.id);
   }
+});
+
+test("dashboard w does nothing and r shows only applicable restart clauses", async () => {
+  const session = createSession({});
+  getDb().prepare(`UPDATE sessions SET supervisor_turn_started_at = 'now' WHERE id = ?`).run(session.id);
+  const list = spyOn(repositories, "listSessions").mockImplementation(() => [getSession(session.id)!]);
+  const ui = await mount(config);
+  try {
+    await ui.press("w");
+    expect(ui.frame()).not.toContain(`Restart ${session.id}?`);
+    await ui.press("r");
+    expect(ui.frame()).toContain("interrupts the current turn");
+    expect(ui.frame()).not.toContain("revives ");
+    expect(ui.frame()).not.toContain("pending plan will be re-presented");
+    expect(ui.frame()).not.toContain("onto new Tack code (stale)");
+  } finally { ui.app.unmount(); ui.restore(); list.mockRestore(); deleteSession(session.id); }
 });

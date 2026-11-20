@@ -11,7 +11,7 @@ import { selfInvocation } from "../process/self";
 import { parseSupervisorCommand } from "../supervisor/command-prompt";
 import { isApprovePrompt } from "../supervisor/approve-prompt";
 import { supervisorPromptPath, writeSupervisorPrompt } from "../supervisor/prompt";
-import { REFRESH_MESSAGE } from "./refresh-message";
+import { RESTART_MESSAGE } from "./refresh-message";
 import { tidy } from "../projects/summarize";
 
 /** How much source text the titler sends the model — a title needs the gist, not
@@ -39,7 +39,7 @@ export function titleFromFirstPrompt(
   spawnTitler: (sessionId: string) => void = spawnSessionTitler,
 ): boolean {
   const trimmed = prompt.trim();
-  if (!trimmed || trimmed.startsWith("/") || isApprovePrompt(prompt) || parseSupervisorCommand(prompt) || trimmed.startsWith(REFRESH_MESSAGE)) return false;
+  if (!trimmed || trimmed.startsWith("/") || isApprovePrompt(prompt) || parseSupervisorCommand(prompt) || trimmed.startsWith(RESTART_MESSAGE)) return false;
   const session = getSession(sessionId);
   if (!session || session.title?.trim()) return false;
   const promptFile = supervisorPromptPath(sessionId);

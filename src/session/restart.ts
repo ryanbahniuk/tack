@@ -1,16 +1,15 @@
-import { isSessionOpen } from "../db";
-import { hasUnresolvedDependencies } from "../db";
+import { hasUnresolvedDependencies, isSessionOpen } from "../db";
 import type { TackConfig } from "../config/schema";
 import { getSession, listAgents, listSessionPrs, listSessions, resetAgentAttempt, setAgentError, setAgentStatus, setSessionPrWatchPid, type AgentRow, type SessionRow } from "../db";
 import { isTransientError, spawnAgentRunner } from "../agent/detached";
 import { isAlive } from "../process/self";
 import { isWatchablePr, spawnPrWatcher } from "../prwatch/watch";
 import { superviseInteractive } from "../supervisor/supervise";
-import { stopSupervisorProcess } from "./refresh";
-import { RECONNECT_MESSAGE } from "./refresh-message";
+import { isSessionStale, stopSupervisorProcess, waitUntilGone } from "./refresh";
+import { RESTART_MESSAGE } from "./refresh-message";
 import { tmuxAvailable } from "./tmux";
 
-export { RECONNECT_MESSAGE } from "./refresh-message";
+export { RESTART_MESSAGE } from "./refresh-message";
 
 /**
  * Which agents a lost connection or a sleeping laptop killed, and so are worth
@@ -41,31 +40,27 @@ export function selectAgentsToRevive(agents: AgentRow[], probes: { alive: (pid: 
   });
 }
 
-export type ReconnectResult = {
+export type RestartResult = {
   /** A live supervisor (tmux TUI, launcher, or headless runner) was stopped. */
   supervisorRestarted: boolean;
   /** A plan was awaiting approval; the resumed supervisor is asked to re-present it. */
   planPending: boolean;
+  wasStale: boolean;
+  wasMidTurn: boolean;
   revivedAgents: string[];
   /** Agents whose relaunch failed; each is marked failed with the spawn error. */
   failedAgents: string[];
   watcherRestarted: boolean;
 };
 
-/**
- * One-shot recovery after sleep or a network drop. Unlike refresh it always stops
- * the supervisor, even when it runs current code: a TUI whose connection dropped
- * is exactly what is broken, and a turn wedged mid-request is the whole case, so
- * neither the mid-turn guard nor a pending plan blocks it. Agents killed by the
- * outage are relaunched and a dead PR watcher is restarted.
- *
- * Relaunching the supervisor is a separate step (`parkReconnectedSupervisor`) so
- * `--all` can skip sessions whose supervisor was not running; this never opens a TUI.
- */
-export async function reconnectSession(id: string, config: TackConfig): Promise<ReconnectResult> {
+/** Restart session processes and revive dropped agents without guarding a turn.
+ * Parking is separate so bulk restart can leave stopped supervisors stopped. */
+export async function restartSession(id: string, config: TackConfig): Promise<RestartResult> {
   const session = getSession(id);
   if (!session) throw new Error(`Unknown session ${id}`);
   if (session.status === "archived") throw new Error(`Session ${id} is archived; unarchive it instead`);
+  const stale = isSessionStale(session);
+  const wasMidTurn = Boolean(session.supervisor_turn_started_at);
   const planPending = Boolean(session.awaiting_input_at && session.awaiting_reason === "plan");
 
   const supervisorRestarted = await stopSupervisorProcess(session, config);
@@ -93,13 +88,19 @@ export async function reconnectSession(id: string, config: TackConfig): Promise<
 
   let watcherRestarted = false;
   const fresh = getSession(id) ?? session;
+  if (stale.watcher && isAlive(fresh.pr_watch_pid)) {
+    try { process.kill(fresh.pr_watch_pid!, "SIGTERM"); } catch { /* exited */ }
+    if (!await waitUntilGone(() => isAlive(fresh.pr_watch_pid))) throw new Error(`PR watcher ${id} did not exit`);
+  }
   if (!isAlive(fresh.pr_watch_pid) && (listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) {
-    if (fresh.pr_watch_pid) setSessionPrWatchPid(id, null);
-    spawnPrWatcher(id, config);
-    watcherRestarted = true;
+    if (fresh.pr_watch_pid && getSession(id)?.pr_watch_pid === fresh.pr_watch_pid) setSessionPrWatchPid(id, null);
+    if (!isAlive(getSession(id)?.pr_watch_pid)) {
+      spawnPrWatcher(id, config);
+      watcherRestarted = true;
+    }
   }
 
-  return { supervisorRestarted, planPending, revivedAgents, failedAgents, watcherRestarted };
+  return { supervisorRestarted, wasStale: stale.stale, wasMidTurn, planPending, revivedAgents, failedAgents, watcherRestarted };
 }
 
 export type ParkResult =
@@ -108,40 +109,31 @@ export type ParkResult =
    * nothing to park it in. `park-failed`: tmux could not create the session. */
   | { parked: false; reason: "no-resume-ref" | "no-tmux" | "park-failed" };
 
-/**
- * Relaunch a reconnected session's supervisor detached in tmux, resuming its
- * conversation with the reconnect message, and hand control straight back. Every
- * reconnect path parks rather than opening a foreground TUI: reconnect is a
- * recovery chore, often run across sessions or from the dashboard, and the user
- * rejoins with `tack session resume` (which attaches) when they want the
- * conversation. Without tmux there is no foreground fallback; the supervisor
- * stays stopped until resume. Re-reads the session because reconnecting may have
- * changed it.
- */
-export async function parkReconnectedSupervisor(id: string, config: TackConfig): Promise<ParkResult> {
+/** Park the replacement supervisor without opening a foreground TUI. */
+export async function parkRestartedSupervisor(id: string, config: TackConfig): Promise<ParkResult> {
   const session = getSession(id);
   if (!session) throw new Error(`Unknown session ${id}`);
   if (!session.resume_ref) return { parked: false, reason: "no-resume-ref" };
   if (!tmuxAvailable()) return { parked: false, reason: "no-tmux" };
-  const { detached } = await superviseInteractive({ session, prompt: RECONNECT_MESSAGE, resume: true, config, park: true });
+  const { detached } = await superviseInteractive({ session, prompt: RESTART_MESSAGE, resume: true, config, park: true });
   return detached ? { parked: true } : { parked: false, reason: "park-failed" };
 }
 
-export type BulkReconnectResult = { session: SessionRow } & (
-  | ({ status: "reconnected"; parked: boolean } & ReconnectResult)
+export type BulkRestartResult = { session: SessionRow } & (
+  | ({ status: "restarted"; parked: boolean } & RestartResult)
   | { status: "error"; error: string });
 
-/** Reconnect every active session without opening a foreground TUI. Only a
+/** Restart every active session without opening a foreground TUI. Only a
  * supervisor that was actually running is replaced, parked detached in tmux;
  * without tmux it stays stopped until resume. Failures stay local so one broken
- * session cannot keep the others from reconnecting. */
-export async function reconnectAllSessions(config: TackConfig): Promise<BulkReconnectResult[]> {
-  const results: BulkReconnectResult[] = [];
+ * session cannot keep the others from restarting. */
+export async function restartAllSessions(config: TackConfig): Promise<BulkRestartResult[]> {
+  const results: BulkRestartResult[] = [];
   for (const session of listSessions().filter(s => isSessionOpen(s))) {
     try {
-      const result = await reconnectSession(session.id, config);
-      const parked = result.supervisorRestarted && (await parkReconnectedSupervisor(session.id, config)).parked;
-      results.push({ session, status: "reconnected", parked, ...result });
+      const result = await restartSession(session.id, config);
+      const parked = result.supervisorRestarted && (await parkRestartedSupervisor(session.id, config)).parked;
+      results.push({ session, status: "restarted", parked, ...result });
     } catch (err) {
       results.push({ session, status: "error", error: err instanceof Error ? err.message : String(err) });
     }
@@ -149,12 +141,13 @@ export async function reconnectAllSessions(config: TackConfig): Promise<BulkReco
   return results;
 }
 
-/** One-line human summary of a reconnect, shared by the CLI's single and bulk forms. */
-export function describeReconnect(r: ReconnectResult): string {
+/** One-line human summary of a restart, shared by the CLI's single and bulk forms. */
+export function describeRestart(r: RestartResult): string {
   const parts = [
     r.supervisorRestarted ? "supervisor restarted" : "supervisor was not running",
     `${r.revivedAgents.length} agent(s) revived`,
   ];
+  if (r.wasStale) parts.push("moved onto new Tack code");
   if (r.failedAgents.length) parts.push(`failed to relaunch ${r.failedAgents.join(", ")}`);
   if (r.watcherRestarted) parts.push("PR watcher restarted");
   if (r.planPending) parts.push("pending plan will be re-presented");
