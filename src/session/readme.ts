@@ -4,12 +4,13 @@ import { dirname, join } from "node:path";
 import { agentArtifactPath, writeSessionReadme, writeSessionReadmeDigest } from "../artifacts/store";
 import { modelForRole } from "../config/load";
 import type { TackConfig } from "../config/schema";
-import { getSession, latestSharedContext, listAgents, listSessionJiraTickets, listSessionPrs, setSessionReadme, type SessionRow } from "../db";
+import { clearSessionReadme, getSession, latestSharedContext, listAgents, listSessionJiraTickets, listSessionPrs, setSessionReadme, type SessionRow } from "../db";
 import { LOGS_DIR } from "../paths";
 import { selfInvocation } from "../process/self";
 import { resolveRuntime, selectRuntime } from "../runtimes";
 import type { AgentEvent, RunOptions } from "../runtimes/types";
 import { selectPublisher } from "../publish";
+import { parseArtifactUrl } from "../publish/claude-artifact";
 import type { PagePublisher } from "../publish/types";
 import { claudeReportTranscriptPath, extractReportTranscript, readReportFile, reportExcerpt } from "./bug-report";
 
@@ -57,6 +58,27 @@ export function extractReadmeHtml(raw: string): string {
   if (html) return html[0];
   throw new Error("Author returned no HTML document");
 }
+export function normalizeReadmeLink(raw: string): string {
+  const url = raw.trim();
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error("README link must be a valid HTTP or HTTPS URL"); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("README link must be an HTTP or HTTPS URL");
+  if (parsed.hostname === "claude.ai" && parseArtifactUrl(url) !== url) throw new Error("Claude README link must be an artifact URL");
+  return url;
+}
+export function linkSessionReadme(sessionId: string, raw: string): { url: string; previousUrl: string | null } {
+  const session = getSession(sessionId);
+  if (!session) throw new Error(`Session ${sessionId} not found`);
+  const url = normalizeReadmeLink(raw);
+  setSessionReadme(sessionId, { ref: null, url });
+  return { url, previousUrl: session.readme_url };
+}
+export function unlinkSessionReadme(sessionId: string): { removedUrl: string | null } {
+  const session = getSession(sessionId);
+  if (!session) throw new Error(`Session ${sessionId} not found`);
+  clearSessionReadme(sessionId);
+  return { removedUrl: session.readme_url };
+}
 export async function generateSessionReadme(config: TackConfig, sessionId: string, opts: { publish?: boolean; runAuthor?: (opts: RunOptions) => AsyncIterable<AgentEvent>; publisher?: PagePublisher } = {}): Promise<{ file: string; url?: string; publisher: string }> {
   const session = getSession(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
@@ -77,7 +99,7 @@ export async function generateSessionReadme(config: TackConfig, sessionId: strin
   const publisher = opts.publisher ?? selectPublisher(config);
   const title = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || session.title || "Session README";
   const url = opts.publish === false ? undefined : (await publisher.publish({ file, title, description: `README for session ${sessionId}`, existingUrl: session.readme_url })).url;
-  setSessionReadme(sessionId, { ref: file, url });
+  setSessionReadme(sessionId, { ref: file, url: opts.publish === false ? session.readme_url : url });
   return { file, url, publisher: publisher.kind };
 }
 /** Detached and best-effort, so the dashboard remains responsive. */

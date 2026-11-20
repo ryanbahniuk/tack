@@ -72,7 +72,7 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import { generateSessionReadme } from "../src/session/readme";
+import { generateSessionReadme, linkSessionReadme, unlinkSessionReadme } from "../src/session/readme";
 import { generateSessionTitle, spawnSessionTitler, titleFromFirstPrompt } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
@@ -1442,10 +1442,28 @@ const sessionContext = defineCommand({
 });
 
 const sessionReadme = defineCommand({
-  meta: { name: "readme", description: "Generate a session README page" },
-  args: { session: { type: "positional", required: true, description: "Session id" }, publish: { type: "boolean", default: true, description: "Publish the page (use --no-publish to keep it local)" }, open: { type: "boolean", description: "Open the page" } },
+  meta: { name: "readme", description: "Generate, link or unlink a session README page" },
+  args: { session: { type: "positional", required: true, description: "Session id" }, link: { type: "string", description: "Link an existing page URL (e.g. a claude.ai artifact) as the README instead of generating one" }, unlink: { type: "boolean", description: "Remove the session's README link" }, publish: { type: "boolean", default: true, description: "Publish the page (use --no-publish to keep it local)" }, open: { type: "boolean", description: "Open the page" } },
   async run({ args }) {
-    const id = String(args.session); requireSession(id);
+    const id = String(args.session);
+    if ([args.link !== undefined, !!args.unlink, args.publish === false].filter(Boolean).length > 1) {
+      console.error(pc.red("--link, --unlink and --no-publish are mutually exclusive")); process.exit(1);
+    }
+    if (args.link !== undefined || args.unlink) {
+      try {
+        if (args.link !== undefined) {
+          const result = linkSessionReadme(id, args.link);
+          console.log(`  ${result.url}`);
+          if (result.previousUrl && result.previousUrl !== result.url) console.log(`  replaced ${result.previousUrl}`);
+          if (args.open) execFileSync(process.platform === "darwin" ? "open" : "xdg-open", [result.url]);
+        } else {
+          const result = unlinkSessionReadme(id);
+          console.log(result.removedUrl ? `  removed ${result.removedUrl}` : "No README linked");
+        }
+      } catch (err) { console.error(pc.red((err as Error).message)); process.exit(1); }
+      return;
+    }
+    requireSession(id);
     const config = await loadConfig(); const spin = startSpinner(`Generating README for ${id}`);
     try {
       const result = await generateSessionReadme(config, id, { publish: args.publish });
@@ -1632,7 +1650,7 @@ const session = defineCommand({
   meta: {
     name: "session",
     alias: "sessions",
-    description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, readme, poll-prs, review, pr-fix, list, approve, archive, unarchive, hold, unhold, stop, delete)",
+    description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, readme (generate/link/unlink), poll-prs, review, pr-fix, list, approve, archive, unarchive, hold, unhold, stop, delete)",
   },
   subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, hold, unhold, stop, delete: del },
   default: "list",

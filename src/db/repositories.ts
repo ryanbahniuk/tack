@@ -288,11 +288,16 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
     .run(status, nowIso(), id);
 }
 
-/** Replaces the session's display title (set by the auto-titler, `src/session/title.ts`). */
-export function setSessionReadme(id: string, value: { ref: string; url?: string | null }): void {
+/** Records the session README and its publication URL. */
+export function setSessionReadme(id: string, value: { ref: string | null; url?: string | null }): void {
   getDb().prepare(`UPDATE sessions SET readme_ref = ?, readme_url = ?, readme_at = ?, updated_at = ? WHERE id = ?`).run(value.ref, value.url ?? null, nowIso(), nowIso(), id);
 }
 
+export function clearSessionReadme(id: string): void {
+  getDb().prepare(`UPDATE sessions SET readme_ref = NULL, readme_url = NULL, readme_at = NULL, updated_at = ? WHERE id = ?`).run(nowIso(), id);
+}
+
+/** Replaces the session's display title (set by the auto-titler, `src/session/title.ts`). */
 export function setSessionTitle(id: string, title: string): void {
   getDb().prepare(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`).run(title, nowIso(), id);
 }
