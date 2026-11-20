@@ -46,7 +46,7 @@ src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix ag
 src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/manual.ts    manual workspaces (kind "manual"): project resolution, creation, live diff
-src/session/readme.ts    bounded session digest and README authoring
+src/session/readme.ts    bounded session digest, README authoring and link management
 src/publish/             pluggable local and Claude Artifact page publishers
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    per-session auto-fix toggle
@@ -164,3 +164,5 @@ refresh of stale processes without reviving agents. Logic lives in
 `src/session/restart.ts` and `src/session/refresh.ts`.
 
 Release-gated dependencies use `open_pr` with `awaitsRelease` after opening the upstream PR. PR watch waits for a containing GitHub release or tag, queues an uncapped dependency fix, and blocks draft promotion while it waits. No package registry or configuration setting determines publication.
+
+Session READMEs can be linked or unlinked with `tack session readme <id> --link <url>` / `--unlink` or supervisor tools `link_readme` / `unlink_readme`. Regeneration republishes into and overwrites the linked URL; `--no-publish` keeps the link.

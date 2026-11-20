@@ -82,6 +82,7 @@ import { startPersonaReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
 import { JIRA_KEY_RE, jiraTicketUrl } from "../projects/jira";
 import { linkSessionPr, unlinkSessionPr } from "../session/link-pr";
+import { linkSessionReadme, unlinkSessionReadme } from "../session/readme";
 
 /** Select untouched baselines still actionable in the current GitHub snapshot. */
 export function liveBaselineSourceIds(
@@ -1030,6 +1031,24 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const k = key.trim().toUpperCase();
       return text({ ok: true, key: k, removed: unlinkSessionJiraTicket(sessionId, k) });
     },
+  );
+
+  // README links are local bookkeeping, neither plan-gated nor approval-gated.
+  server.registerTool(
+    "link_readme",
+    {
+      description: "Set or replace this session's README link to an existing page URL (e.g. a claude.ai artifact) when the human asks, or for a page just published at their request. Local only; no network or model call. A later tack session readme regenerate republishes into that URL.",
+      inputSchema: { url: z.string().describe("Existing page URL to link as this session's README") },
+    },
+    async ({ url }) => { requireSession(); return text({ ok: true, ...linkSessionReadme(sessionId, url) }); },
+  );
+  server.registerTool(
+    "unlink_readme",
+    {
+      description: "Clear this session's README link when the human asks. Local only; no network or model call. A linked URL would otherwise be republished into by a later tack session readme regenerate.",
+      inputSchema: {},
+    },
+    async () => { requireSession(); return text({ ok: true, ...unlinkSessionReadme(sessionId) }); },
   );
 
   // Adopting an existing PR is local bookkeeping plus read-only `gh` calls — nothing
