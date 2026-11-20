@@ -28,7 +28,7 @@ const migrations: Migration[] = [
         supervisor_model TEXT,              -- model NAME (config handle)
         runtime          TEXT,              -- supervisor runtime: claude | codex
         resume_ref       TEXT,              -- runtime session id, to resume the supervisor
-        status           TEXT NOT NULL,     -- active | archived (liveness = pid + heartbeat)
+        status           TEXT NOT NULL,     -- active | on_hold | archived (liveness = pid + heartbeat)
         cost             REAL NOT NULL DEFAULT 0,  -- supervisor-conversation cost only
         pid              INTEGER,
         heartbeat_at     TEXT,

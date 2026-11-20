@@ -1,4 +1,4 @@
-import { hasUnresolvedDependencies } from "../db";
+import { hasUnresolvedDependencies, isSessionOpen } from "../db";
 import type { TackConfig } from "../config/schema";
 import { getSession, listAgents, listSessionPrs, listSessions, resetAgentAttempt, setAgentError, setAgentStatus, setSessionPrWatchPid, type AgentRow, type SessionRow } from "../db";
 import { isTransientError, spawnAgentRunner } from "../agent/detached";
@@ -129,7 +129,7 @@ export type BulkRestartResult = { session: SessionRow } & (
  * session cannot keep the others from restarting. */
 export async function restartAllSessions(config: TackConfig): Promise<BulkRestartResult[]> {
   const results: BulkRestartResult[] = [];
-  for (const session of listSessions().filter(s => s.status === "active")) {
+  for (const session of listSessions().filter(s => isSessionOpen(s))) {
     try {
       const result = await restartSession(session.id, config);
       const parked = result.supervisorRestarted && (await parkRestartedSupervisor(session.id, config)).parked;

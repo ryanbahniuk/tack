@@ -1,3 +1,4 @@
+import { isSessionOpen } from "../db";
 import { hasUnresolvedDependencies } from "../db";
 import type { TackConfig } from "../config/schema";
 import { resolveModel } from "../config/load";
@@ -117,7 +118,7 @@ export type BulkRefreshResult = {
  * tmux the next resume starts the replacement supervisor. Failures stay local so
  * one busy or broken session cannot prevent the others from refreshing. */
 export async function refreshAllStaleSessions(config: TackConfig, opts: { force?: boolean } = {}): Promise<BulkRefreshResult[]> {
-  const sessions = listSessions().filter(s => s.status === "active" && isSessionStale(s).stale);
+  const sessions = listSessions().filter(s => isSessionOpen(s) && isSessionStale(s).stale);
   const results: BulkRefreshResult[] = [];
   for (const session of sessions) {
     try {

@@ -1,3 +1,4 @@
+import { isSessionOpen } from "../db";
 import { computePreflight } from "../agent/preflight";
 import { commitSubject } from "../worktree/commit-message";
 import { spawn } from "node:child_process";
@@ -187,7 +188,7 @@ export function readyToPromote(input: {
 export function spawnPrWatcher(sessionId: string, config: TackConfig): number | null {
   if (!config.prWatch.enabled) return null;
   const session = getSession(sessionId);
-  if (!session || session.status !== "active") return null;
+  if (!session || !isSessionOpen(session)) return null;
   if (isAlive(session.pr_watch_pid)) return null;
 
   mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
@@ -225,7 +226,7 @@ export async function triggerPrWatch(
 ): Promise<PrWatchTrigger> {
   if (!config.prWatch.enabled) return { kind: "disabled" };
   const session = getSession(sessionId);
-  if (!session || session.status !== "active") return { kind: "inactive" };
+  if (!session || !isSessionOpen(session)) return { kind: "inactive" };
   await Promise.allSettled(listSessionPrs(sessionId).filter(isWatchablePr).map(async (pr) => {
     const project = config.projects.find((p) => p.name === pr.project_name);
     if (pr.number !== null && project) await deps.poll(pr, project);
@@ -297,7 +298,7 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
   try {
     for (;;) {
       const session = getSession(sessionId);
-      if (!session || session.status !== "active") {
+      if (!session || !isSessionOpen(session)) {
         log("session gone or no longer active; exiting");
         break;
       }

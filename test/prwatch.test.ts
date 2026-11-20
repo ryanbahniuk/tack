@@ -771,6 +771,13 @@ describe("triggerPrWatch", () => {
     expect(calls).toEqual([]);
   });
 
+  test("on-hold sessions remain watchable", async () => {
+    const { session, calls, deps } = setup("open", 123);
+    setSessionStatus(session.id, "on_hold");
+    expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
+    expect(calls).toEqual(["signal 123"]);
+  });
+
   test("no-open-prs for no PRs or only closed/merged PRs, even with a live watcher", async () => {
     for (const state of [undefined, "closed", "merged"]) {
       const { session, calls, deps, polls } = setup(state, 123);

@@ -1,3 +1,4 @@
+import { isSessionOpen } from "../db";
 import { spawnSessionReadmer } from "../session/readme";
 import { selectPublisher } from "../publish";
 import { hasUnresolvedDependencies, listPrDependencies } from "../db";
@@ -33,7 +34,7 @@ import {
 import { agentDisplayStatus, sessionActive, sessionLive, sessionNeedsInput, sessionWorking } from "./liveness";
 import { refreshAllStaleSessions, staleSessionIds } from "../session/refresh";
 import { describeRestart, parkRestartedSupervisor, restartSession, selectAgentsToRevive } from "../session/restart";
-import { archiveSession, deleteSession, stopSession, unarchiveSession } from "../session/lifecycle";
+import { archiveSession, deleteSession, holdSession, stopSession, unarchiveSession, unholdSession } from "../session/lifecycle";
 import { CONFIG_PATH, collapseHome } from "../paths";
 import { editorInvocation } from "../util/editor";
 import { resolveEditTarget } from "../session/edit";
@@ -133,7 +134,7 @@ function snapshot(showArchived: boolean): View[] {
         ),
       };
     })
-    .sort((a, b) => rank(b) - rank(a));
+    .sort((a, b) => Number(a.session.status === "on_hold") - Number(b.session.status === "on_hold") || rank(b) - rank(a));
 }
 
 /** Background polls (gh, Jira) cover only active sessions, even while archived
@@ -215,7 +216,7 @@ type Confirm =
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · D README · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · D README · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · h hold/unhold · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -290,9 +291,10 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
     <Box key={v.session.id} flexDirection="column">
       <Text>
         <Text color={selected ? "cyan" : undefined}>{selected ? "❯ " : "  "}</Text>
+        <Text dimColor={v.session.status === "on_hold"}>
         <Text color={v.needsInput ? "yellow" : v.active ? "green" : "gray"}>{v.needsInput || v.active ? "●" : "○"} </Text>
         <Text bold>{v.session.id}</Text>
-        <Text dimColor> {v.session.status} </Text>
+        <Text dimColor> {v.session.status === "on_hold" ? "on hold" : v.session.status} </Text>
         <Text color="green">{usd(v.cost)}</Text>
         {v.boots.length > 0 ? <Text color="green"> booted: {v.boots.join(", ")}</Text> : null}
         {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
@@ -306,6 +308,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
         <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
+        </Text>
       </Text>
       {selected && v.session.readme_url ? <Text>    README: {v.session.readme_url}</Text> : null}
       {selected &&
@@ -976,6 +979,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
     } else if (input === "x") {
       setConfirm({ action: "stop", id: selected.session.id });
+    } else if (input === "h") {
+      const s = selected.session;
+      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
+      if (s.status === "on_hold") { unholdSession(s.id); setNotice(`${s.id} off hold`); }
+      else { holdSession(s.id); setNotice(`put ${s.id} on hold · h to resume`); }
+      refresh();
     } else if (input === "a") {
       if (selected.session.status === "archived") {
         setConfirm({ action: "unarchive", id: selected.session.id, count: listInterruptedAgents(selected.session.id).length });
@@ -1343,11 +1352,11 @@ function sessionBadge(v: View): React.ReactElement {
  * main list, else a static one from its stored status. An archived session that is
  * still live (or waiting on you) keeps a dim `archived` marker beside its badge. */
 function ticketSessionBadge(e: TicketEntry): React.ReactElement {
-  const archived = e.session.status === "archived";
+  const marker = e.session.status === "archived" ? "archived" : e.session.status === "on_hold" ? "on hold" : null;
   if (e.view && (e.view.needsInput || e.view.working || e.view.active)) {
-    return <Text>{sessionBadge(e.view)}{archived ? <Text dimColor> archived</Text> : null}</Text>;
+    return <Text>{sessionBadge(e.view)}{marker ? <Text dimColor> {marker}</Text> : null}</Text>;
   }
-  return <Text color="gray">○ <Text dimColor>{e.session.status}</Text></Text>;
+  return <Text color="gray">○ <Text dimColor>{e.session.status === "on_hold" ? "on hold" : e.session.status}</Text></Text>;
 }
 
 const TICKETS_HINT = "j/k move · enter/o open ticket · g go to session · f status · a archived · / search · P poll Jira · esc/q back";
@@ -1446,7 +1455,7 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
   if (!config.prWatch.enabled) return;
   for (const id of sessionIds) {
     const s = getSession(id);
-    if (!s || s.status !== "active" || isAlive(s.pr_watch_pid)) continue;
+    if (!s || !isSessionOpen(s) || isAlive(s.pr_watch_pid)) continue;
     if (!(listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) continue;
     try {
       spawnPrWatcher(id, config);

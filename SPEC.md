@@ -272,7 +272,7 @@ colliding on config or database.
 
 ```
 sessions(id, title, supervisor_model, runtime, resume_ref,
-         status[active|archived], cost, pid, heartbeat_at, created_at, updated_at,
+         status[active|on_hold|archived], cost, pid, heartbeat_at, created_at, updated_at,
          supervisor_code_version, pr_watch_code_version, supervisor_turn_started_at)
 
 agents(id, session_id→sessions, project_name, worktree_path, branch,
@@ -680,6 +680,7 @@ refresh tick.
   Without a handle they run the original prompt in the same worktree. Normal
   first runs stay fresh; continuation retries keep resuming the active conversation. Unarchive does not launch the
   supervisor: rejoin via `tack session resume <id>` or dashboard `enter/o`.
+  Hold/unhold changes only the status; on-hold sessions remain open and sort below other dashboard sessions. Dashboard `h` toggles hold.
   Dashboard `a` archives immediately, confirms unarchive with the interrupted
   count, and reports the resumed count; `z` reveals archived sessions.
 
