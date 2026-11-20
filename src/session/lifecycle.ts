@@ -12,12 +12,15 @@ import {
   clearAgentInterrupted,
   setAgentError,
   setAgentStatus,
+  setSessionPrFixEnabled,
   setSessionPrWatchPid,
   setSessionStatus,
 } from "../db";
 import { spawnAgentRunner } from "../agent/detached";
 import { isAlive } from "../process/self";
 import { tmuxKillSession } from "./tmux";
+import { setPrFix } from "./pr-fix";
+import type { TackConfig } from "../config/schema";
 import { purgeSessionWorktrees, sessionSnapshotsRoot } from "../worktree/worktree";
 
 function kill(pid: number | null | undefined): void {
@@ -53,7 +56,13 @@ export function stopSession(sessionId: string): void {
   for (const a of listAgents(sessionId)) stopAgent(a.id);
 }
 
-/** Holding only changes organization; running processes continue unchanged. */
+/** Hold is organizational plus an auto-fix pause: running agents, the supervisor
+ * and the PR watcher keep going (hold never stops processes), but the watcher stops
+ * spawning pr_fix agents because it skips sessions with `pr_fix_enabled` off.
+ * Unhold resumes auto-fix unconditionally — even if the human had turned it off
+ * before holding — since leaving hold means "pick this back up". The flag only
+ * flips at the transition; `F` / `set_pr_fix` still work while held. Archived
+ * sessions refuse both before anything is written. */
 function setHold(sessionId: string, status: "active" | "on_hold"): void {
   const session = getSession(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
@@ -61,8 +70,20 @@ function setHold(sessionId: string, status: "active" | "on_hold"): void {
   setSessionStatus(sessionId, status);
 }
 
-export function holdSession(sessionId: string): void { setHold(sessionId, "on_hold"); }
-export function unholdSession(sessionId: string): void { setHold(sessionId, "active"); }
+export function holdSession(sessionId: string): void {
+  setHold(sessionId, "on_hold");
+  setSessionPrFixEnabled(sessionId, false);
+}
+
+/** With a config, enabling goes through `setPrFix` so the watcher is nudged like
+ * the dashboard `F` key (trigger failures are swallowed there, so unhold never
+ * fails on them); without one, only the DB flag flips and the watcher picks it up
+ * on its next tick. */
+export async function unholdSession(sessionId: string, config?: TackConfig): Promise<void> {
+  setHold(sessionId, "active");
+  if (config) await setPrFix(sessionId, true, config);
+  else setSessionPrFixEnabled(sessionId, true);
+}
 
 /** Stops and hides a session, remembering unfinished work so unarchive can resume it. */
 export function archiveSession(sessionId: string): void {

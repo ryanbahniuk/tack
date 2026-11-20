@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, listSessions, migrate, setAgentStatus } from "../src/db";
+import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, listSessions, migrate, setAgentStatus, setSessionPrFixEnabled } from "../src/db";
 import * as detached from "../src/agent/detached";
 import * as tmux from "../src/session/tmux";
+import * as prwatch from "../src/prwatch/watch";
+import type { TackConfig } from "../src/config/schema";
 import { archiveSession, holdSession, unholdSession, stopSession, unarchiveSession } from "../src/session/lifecycle";
 
 const sessions: string[] = [];
@@ -24,25 +26,61 @@ function fixture() {
   return { session, agents };
 }
 
-test("hold and unhold preserve work and archived sessions refuse both", () => {
+test("hold and unhold preserve work and archived sessions refuse both", async () => {
   const { session, agents } = fixture();
   const before = listAgents(session.id);
   holdSession(session.id);
   expect(getSession(session.id)?.status).toBe("on_hold");
   expect(listSessions().some(s => s.id === session.id)).toBe(true);
   expect(listAgents(session.id)).toEqual(before);
-  unholdSession(session.id);
+  await unholdSession(session.id);
   expect(getSession(session.id)?.status).toBe("active");
   expect(listAgents(session.id)).toEqual(before);
   holdSession(session.id);
   archiveSession(session.id);
   expect(listSessions().some(s => s.id === session.id)).toBe(false);
   expect(() => holdSession(session.id)).toThrow("is archived; unarchive it instead");
-  expect(() => unholdSession(session.id)).toThrow("is archived; unarchive it instead");
+  await expect(unholdSession(session.id)).rejects.toThrow("is archived; unarchive it instead");
   expect(listInterruptedAgents(session.id).map(a => a.id)).toEqual(agents.slice(0, 2).map(a => a.id));
   mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
   unarchiveSession(session.id);
   expect(getSession(session.id)?.status).toBe("active");
+});
+
+describe("hold toggles PR auto-fix", () => {
+  test("hold turns auto-fix off and unhold turns it on, even if it was off before the hold", async () => {
+    const { session } = fixture();
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+    holdSession(session.id);
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(0);
+    await unholdSession(session.id);
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+    setSessionPrFixEnabled(session.id, false);
+    holdSession(session.id);
+    await unholdSession(session.id);
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+  });
+
+  test("unhold with a config enables through setPrFix and survives a failing watch trigger", async () => {
+    const { session } = fixture();
+    holdSession(session.id);
+    const trigger = spyOn(prwatch, "triggerPrWatch").mockRejectedValue(new Error("boom"));
+    mocks.push(trigger);
+    await unholdSession(session.id, {} as TackConfig);
+    expect(trigger).toHaveBeenCalledWith(session.id, {} as TackConfig);
+    expect(getSession(session.id)?.status).toBe("active");
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+  });
+
+  test("archived sessions refuse hold and unhold without touching the flag", async () => {
+    const { session } = fixture();
+    archiveSession(session.id);
+    expect(() => holdSession(session.id)).toThrow("is archived");
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+    setSessionPrFixEnabled(session.id, false);
+    await expect(unholdSession(session.id)).rejects.toThrow("is archived");
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(0);
+  });
 });
 
 describe("archive restoration", () => {

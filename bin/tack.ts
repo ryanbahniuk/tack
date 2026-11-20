@@ -929,7 +929,7 @@ const hold = defineCommand({
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
     const id = String(args.session); requireSession(id); holdSession(id);
-    console.log(pc.dim(`put ${id} on hold`));
+    console.log(pc.dim(`put ${id} on hold · PR auto-fix off`));
   },
 });
 
@@ -937,8 +937,10 @@ const unhold = defineCommand({
   meta: { name: "unhold", description: "Take a session off hold" },
   args: { session: { type: "positional", description: "Session id" } },
   async run({ args }) {
-    const id = String(args.session); requireSession(id); unholdSession(id);
-    console.log(pc.dim(`${id} off hold`));
+    const id = String(args.session); requireSession(id);
+    // A broken config shouldn't block leaving hold; without one only the flag flips.
+    await unholdSession(id, await requireConfig().catch(() => undefined));
+    console.log(pc.dim(`${id} off hold · PR auto-fix on`));
   },
 });
 
