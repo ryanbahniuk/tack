@@ -225,6 +225,20 @@ describe("watcher promotion", () => {
       } finally { status.mockRestore(); }
     });
   });
+  test("a PR's own auto-fix off leaves its conflict untouched while the session's is on", async () => {
+    await fixture(async ({ session, pr, config, logs }) => {
+      const db = await import("../src/db");
+      const prs = await import("../src/projects/prs");
+      db.setSessionPrFixEnabledForPr(pr.id, false);
+      expect(db.getSession(session.id)!.pr_fix_enabled).toBe(1);
+      const status = spyOn(prs, "fetchPrStatus").mockResolvedValue({ state: "OPEN", isDraft: true, mergeable: "CONFLICTING", baseRefName: "main", headRefOid: "current", headRefName: "pr", title: "Draft", url: pr.url, comments: [], reviews: [] });
+      try {
+        await watchPr(session, pr, config, msg => logs.push(msg));
+        expect(logs.some(msg => msg.includes("PR auto-fix is off for this PR"))).toBe(true);
+        expect(db.listPrFixAgents(pr.id)).toHaveLength(0);
+      } finally { status.mockRestore(); }
+    });
+  });
   test("failed promotion logs, leaves the latch unset and retries next tick", async () => {
     await fixture(async ({ session, pr, config, promote, logs }) => {
       promote.mockRejectedValueOnce(new Error("offline"));

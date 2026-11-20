@@ -642,7 +642,9 @@ refresh tick.
   vs the previous period, preserving meaning without color. A grouped read every
   5s catches archived changes too; identical stats never trigger a repaint.
 - **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
-  branches, upserted into `session_prs`. `O` opens the selected session's PRs.
+  branches, upserted into `session_prs`. `p` opens the PR actions menu: pick All PRs
+  or one PR (skipped for a single PR), then open, copy link (single PR), poll, review
+  with a persona, or toggle auto-fix for that target.
   Existing PRs adopted with `link_pr` (`src/session/link-pr.ts`) are ordinary rows with
   `linked_at` set (discovery never clobbers or drops them): `ready_promoted_at` is latched so they
   are never auto-promoted, and pre-link feedback/CI is baselined as handled
@@ -791,18 +793,25 @@ and a dead watcher. It exits when the session is archived/gone or no PR is
 open; `stop`/`archive` SIGTERM it.
 
 Out-of-cycle polling is available through `tack session poll-prs <session>`, dashboard
-`p`, or supervisor `check_prs` with `refresh: true` (read-only by default). These
+`p` → `p` (all PRs or one), or supervisor `check_prs` with `refresh: true` (read-only by default). These
 refresh each watchable PR's status first, persisting merged/closed states immediately.
 Only if any PRs remain open do they send SIGUSR1 to a live watcher or start a missing
 one; feedback handling happens asynchronously. Per-PR refresh failures retain the
-stored status and do not prevent other PRs from refreshing. SIGUSR1 interrupts its
+stored status and do not prevent other PRs from refreshing. Targeting one PR
+(`triggerPrWatch(..., { prId })`) refreshes only that PR's status; the woken pass
+is still session-wide, and `no-open-prs` then means that PR isn't watchable. SIGUSR1 interrupts its
 sleep; requests during a pass coalesce into one immediate extra pass. Passes never overlap and all normal fix guards still apply.
 
 The per-session auto-fix toggle defaults on. `tack session pr-fix <session> [on|off]`,
-dashboard `F`, `/pr-fix [on|off]`, and the supervisor tool `set_pr_fix` expose it.
-When off, the watcher continues polling, completing existing fixes and promoting
-ready drafts, but does not record new feedback or spawn automatic fixes. Turning it
-on wakes the watcher. Explicit `fix_pr` remains available.
+dashboard `p` → All PRs → `f`, `/pr-fix [on|off]`, and the supervisor tool `set_pr_fix`
+expose it. Each PR also has its own switch (`session_prs.pr_fix_enabled`, default on),
+set from dashboard `p` → that PR → `f` (`setPrFix(..., { prId })`). Effective auto-fix
+for a PR is `session && pr`; turning a PR on while the session is off still records it
+and says so. Hold/unhold drive only the session switch. When off for a PR, the watcher
+continues polling, completing existing fixes and promoting ready drafts, but does not
+record new feedback or spawn automatic fixes for it. Turning either on wakes the
+watcher (a PR switch polls just that PR first). `check_prs` reports each PR's
+`prFixEnabled`. Explicit `fix_pr` remains available.
 
 Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
 closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
@@ -991,12 +1000,13 @@ reviewer instructions; omitted models use `roles.agent`. Reviews prefer a model
 different from the author's when available; an explicit model overrides the choice.
 
 Persona reviews start only when the human explicitly requests them, using
-`tack session review`, dashboard session list `R`, `/review <persona>
+`tack session review`, dashboard `p` → `R` (all PRs or one), `/review <persona>
 [focus…]`, or the supervisor's `review_agent` tool. The supervisor reads finished
 reviews, raises blocker/major findings to the human, and notes verdicts in PR bodies.
 Opening a PR does not require a review.
 
-Human-initiated reviews create one agent per open session PR, checking out the remote
+Human-initiated reviews create one agent per open session PR (or only the PR
+named by `prId`, refused unless it is an open PR of the session), checking out the remote
 head and pinning its merge base with the remote base branch. `review_agent` instead
 reviews the author's local branch with its original baseline. In either case,
 `git diff <base>` shows the work under review. Resume/retry reuses the worktree.

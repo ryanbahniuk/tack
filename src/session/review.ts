@@ -35,12 +35,15 @@ export function startPersonaReview(config: TackConfig, sessionId: string, { agen
     return { agentId: agent.id, persona: name, model: m.key, reviews: target.id };
 }
 
-/** Start one independent review for each open session PR. */
-export function startRemoteReview(config: TackConfig, sessionId: string, { persona: name, prompt, model }: { persona: string; prompt?: string; model?: string }) {
+/** Start one independent review for each open session PR, or only `prId`'s when
+ * given (refused unless it is one of those reviewable open PRs). */
+export function startRemoteReview(config: TackConfig, sessionId: string, { persona: name, prompt, model, prId }: { persona: string; prompt?: string; model?: string; prId?: string }) {
     const session = getSession(sessionId);
     if (!session) throw new Error(`Unknown session ${sessionId}`);
     const persona = resolvePersona(config, name);
-    const prs = listSessionPrs(sessionId).filter(pr => !pr.merged_at && !["merged", "closed"].includes(pr.state?.toLowerCase() ?? "") && pr.head_branch && pr.project_name);
+    const open = listSessionPrs(sessionId).filter(pr => !pr.merged_at && !["merged", "closed"].includes(pr.state?.toLowerCase() ?? "") && pr.head_branch && pr.project_name);
+    const prs = prId ? open.filter(pr => pr.id === prId) : open;
+    if (prId && !prs.length) throw new Error(`PR ${prId} is not an open PR of this session; only open PRs can be reviewed.`);
     if (!prs.length) throw new Error("No open PRs to review in this session.");
     const reviews = prs.map(pr => {
       const project = config.projects.find(p => p.name === pr.project_name);

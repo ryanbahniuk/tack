@@ -110,7 +110,9 @@ Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does t
   - `prWatch.enabled: false`: no watcher at all.
   - `prWatch.fixCi: false`, `prWatch.reply: false`, `prWatch.autoPush: false` or
     `prWatch.autoReady: false`: turn off individual behaviours.
-  - Per session: `tack session pr-fix <session> off`, dashboard `F`, or `/pr-fix off`.
+  - Per session: `tack session pr-fix <session> off`, dashboard `p` → All PRs → `f`, or `/pr-fix off`.
+  - Per PR: dashboard `p` → pick the PR → `f`. A PR auto-fixes only when both its own
+    switch and the session's are on.
 
 ---
 
@@ -158,14 +160,11 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `c` | Create a new session |
 | `v` | Agents picker: `enter`/`o`/`v` shows output (a live follow for running agents), `e` edits a worktree, `n` creates a manual workspace |
 | `m` | View pending amendments (read-only) |
-| `O` | Open the session's PRs in the browser |
 | `J` | Open the session's Jira tickets in the browser |
 | `t` | Tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `esc`/`q` goes back |
-| `p` | Poll PRs now |
+| `p` | PR actions menu. First pick the target: `All PRs (N)` or one PR (skipped when the session has a single PR; PRs with their own auto-fix off say `pr-fix off`). Then pick an action: `o` open in the browser (every PR for All PRs), `c` copy the link (single PR only), `p` poll now, `R` review with a persona, `f` toggle auto-fix (the session switch for All PRs, that PR's own switch otherwise). `j`/`k` + `enter` also work; `esc`/`q` cancels |
 | `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
 | `D` | README menu: `r` refresh (regenerate, asks first), `o` open the README in the browser, `c` copy its link to the clipboard. Open and copy need an existing README |
-| `R` | Start a persona review |
-| `F` | Toggle PR auto-fix for the session |
 | `r` | Restart a session when it is `stale` or broken after sleep or network loss. Restarts the supervisor (parked in tmux; `enter` attaches), revives dropped agents, and restarts a dead or stale PR watcher (asks first) |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
@@ -274,7 +273,8 @@ tack session pr-fix <session> [on|off]           # show or set PR auto-fix for t
 ```
 
 Each review starts one independent review agent per open session PR. In the
-dashboard, use `R` (review) and `F` (auto-fix). In an attended Claude supervisor
+dashboard, open the `p` PR actions menu and use `R` (review) or `f` (auto-fix), on
+all of the session's PRs or just one. In an attended Claude supervisor
 chat, use `/review <persona> [focus…]` and `/pr-fix [on|off]`.
 
 <details>

@@ -19,7 +19,7 @@ import {
   type ConfigChange,
 } from "../config/mutate";
 import { CONFIG_PATH } from "../paths";
-import { getSession } from "../db";
+import { getSession, getSessionPr } from "../db";
 import {
   addSharedContext,
   agentTouches,
@@ -696,6 +696,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       if (baseSync.status === "conflict") {
         const prRow = listSessionPrs(sessionId).find((row) => row.url === pr.url);
         if (!getSession(sessionId)?.pr_fix_enabled) baseSync.prFixSkipped = "PR auto-fix is off for this session";
+        else if (prRow && !prRow.pr_fix_enabled) baseSync.prFixSkipped = "PR auto-fix is off for this PR";
         else if (!config.prWatch.enabled) baseSync.prFixSkipped = "PR watch is disabled";
         else if (!session.plan_approved_at) baseSync.prFixSkipped = "Session plan is not approved";
         else if (!prRow || !isWatchablePr(prRow) || prRow.number === null || !prRow.head_branch)
@@ -854,7 +855,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         fallbackReason: spawned.fallbackReason,
         reuseFallbackReason: spawned.reuseFallbackReason,
         model: m.name,
-        autoFixNote: !getSession(sessionId)?.pr_fix_enabled ? "PR auto-fix is off for this session; this explicit fix is allowed." : undefined,
+        autoFixNote: !getSession(sessionId)?.pr_fix_enabled ? "PR auto-fix is off for this session; this explicit fix is allowed."
+          : !getSessionPr(pr.id)?.pr_fix_enabled ? "PR auto-fix is off for this PR; this explicit fix is allowed." : undefined,
         note: !config.prWatch.enabled
           ? "PR watch is disabled (prWatch.enabled = false), so nothing will push this agent's commits onto " +
             `the PR; they'll stay on the agent's branch. ${after}`
@@ -952,6 +954,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             baseBranch: pr.base_branch,
             headBranch: pr.head_branch,
             checkedAt: pr.checked_at,
+            // This PR's own switch; the watcher auto-fixes only when it and the session's are both on.
+            prFixEnabled: !!pr.pr_fix_enabled,
             dependencies: listPrDependencies(sessionId).filter(d => d.downstream_pr_id === pr.id).map(d => ({ package: d.package, status: d.status, version: d.released_version, tag: d.release_tag, detail: d.detail })),
             pendingFeedback: feedback.filter((f) => !f.handled_at).map(brief),
             handledFeedback: feedback.filter((f) => f.handled_at).map(brief),

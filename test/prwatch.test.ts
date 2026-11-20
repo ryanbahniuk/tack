@@ -796,6 +796,23 @@ describe("triggerPrWatch", () => {
     }
   });
 
+  test("prId polls only that PR, and an unwatchable target is no-open-prs", async () => {
+    const { session, calls, deps, polls } = setup("open", 123);
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}/2`, state: "open", number: 8, projectName: "app" });
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}/3`, state: "merged", number: 9, projectName: "app" });
+    const [first, second, merged] = listSessionPrs(session.id).sort((a, b) => a.number! - b.number!);
+    expect(await triggerPrWatch(session.id, config, deps, { prId: second!.id })).toEqual({ kind: "signalled", pid: 123 });
+    expect(polls).toEqual([second!.id]);
+    expect(polls).not.toContain(first!.id);
+    expect(calls).toEqual(["signal 123"]);
+    for (const prId of [merged!.id, "missing"]) {
+      polls.length = 0; calls.length = 0;
+      expect(await triggerPrWatch(session.id, config, deps, { prId })).toEqual({ kind: "no-open-prs" });
+      expect(polls).toEqual([]);
+      expect(calls).toEqual([]);
+    }
+  });
+
   test("signals a live watcher without spawning", async () => {
     const { session, calls, deps } = setup("open", 123);
     expect(await triggerPrWatch(session.id, config, deps)).toEqual({ kind: "signalled", pid: 123 });
@@ -1106,6 +1123,24 @@ describe("postFix outcomes", () => {
   });
 });
 
+
+test("v25 defaults per-PR auto-fix on for existing PRs and is idempotent", () => {
+  const db = new Database(":memory:");
+  try {
+    migrate(db);
+    db.exec(`ALTER TABLE session_prs DROP COLUMN pr_fix_enabled; DELETE FROM _migrations WHERE version >= 25;
+      INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 'then', 'then');
+      INSERT INTO session_prs (id, session_id, url, created_at, updated_at) VALUES ('p', 's', 'u', 'then', 'then');`);
+    migrate(db);
+    expect(db.query("SELECT pr_fix_enabled FROM session_prs").get()).toEqual({ pr_fix_enabled: 1 });
+    db.exec(`INSERT INTO session_prs (id, session_id, url, created_at, updated_at) VALUES ('q', 's', 'v', 'now', 'now')`);
+    expect(db.query("SELECT pr_fix_enabled FROM session_prs WHERE id = 'q'").get()).toEqual({ pr_fix_enabled: 1 });
+    db.exec("DELETE FROM _migrations WHERE version >= 25");
+    migrate(db);
+  } finally {
+    db.close();
+  }
+});
 
 test("v12 adds nullable fix_origin to legacy agents and is idempotent", () => {
   const db = new Database(":memory:");
