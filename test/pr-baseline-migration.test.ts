@@ -6,7 +6,7 @@ test("migration marks only historical linked PR baselines", () => {
   const db = new Database(":memory:");
   migrate(db);
   db.exec(`ALTER TABLE pr_feedback DROP COLUMN baselined_at;
-    DELETE FROM _migrations WHERE version = 24;
+    DELETE FROM _migrations WHERE version >= 24;
     INSERT INTO sessions (id, status, created_at, updated_at) VALUES ('s', 'active', 't', 't');
     INSERT INTO session_prs (id, session_id, url, created_at, updated_at, linked_at) VALUES ('linked', 's', 'url1', 't', 't', 't');
     INSERT INTO session_prs (id, session_id, url, created_at, updated_at) VALUES ('opened', 's', 'url2', 't', 't');

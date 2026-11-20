@@ -222,6 +222,25 @@ test("remote reviews target each open session PR", async () => {
   expect(listSessionPrs(session.id)).toHaveLength(4);
 });
 
+test("remote review with prId targets only that open PR and refuses others", async () => {
+  const { startRemoteReview } = await import("../src/session/review");
+  const c = await config([{ name: "strict", description: "Find bugs", model: ["a", "b"] }]);
+  c.projects = [{ name: "app", path: "/tmp", description: "App" }];
+  const session = createSession({}); sessions.push(session.id);
+  const other = createSession({}); sessions.push(other.id);
+  mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
+  mocks.push(spyOn(availability, "checkModelOffered").mockReturnValue({ ok: true }));
+  for (const [number, state] of [[1, "OPEN"], [2, "OPEN"], [3, "CLOSED"]] as const)
+    upsertSessionPr({ sessionId: session.id, projectName: "app", number, url: `https://example.com/${session.id}/${number}`, state, headBranch: `pr-${number}` });
+  upsertSessionPr({ sessionId: other.id, projectName: "app", number: 4, url: `https://example.com/${other.id}/4`, state: "OPEN", headBranch: "pr-4" });
+  const byNumber = (n: number) => [...listSessionPrs(session.id), ...listSessionPrs(other.id)].find(pr => pr.number === n)!;
+  const result = startRemoteReview(c, session.id, { persona: "strict", prId: byNumber(2).id });
+  expect(result.reviews.map(r => r.number)).toEqual([2]);
+  expect(getAgent(result.reviews[0]!.agentId)).toMatchObject({ kind: "review", session_pr_id: byNumber(2).id });
+  for (const prId of [byNumber(3).id, byNumber(4).id, "missing"])
+    expect(() => startRemoteReview(c, session.id, { persona: "strict", prId })).toThrow("is not an open PR of this session");
+});
+
 test("remote review worktree pins merge base and reuses its checkout", () => {
   const repo = temp(); const remote = temp();
   const git = (cwd: string, ...args: string[]) => {

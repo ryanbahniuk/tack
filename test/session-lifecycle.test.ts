@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, listSessions, migrate, setAgentStatus, setSessionPrFixEnabled } from "../src/db";
+import { createAgent, createSession, deleteSession, getAgent, getSession, listAgents, listInterruptedAgents, listSessions, migrate, setAgentStatus, setSessionPrFixEnabled,
+  getSessionPr, listSessionPrs, setSessionPrFixEnabledForPr, upsertSessionPr } from "../src/db";
+import { setPrFix } from "../src/session/pr-fix";
 import * as detached from "../src/agent/detached";
 import * as tmux from "../src/session/tmux";
 import * as prwatch from "../src/prwatch/watch";
@@ -70,6 +72,36 @@ describe("hold toggles PR auto-fix", () => {
     expect(trigger).toHaveBeenCalledWith(session.id, {} as TackConfig);
     expect(getSession(session.id)?.status).toBe("active");
     expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+  });
+
+  test("hold and unhold never touch per-PR auto-fix flags", async () => {
+    const { session } = fixture();
+    upsertSessionPr({ sessionId: session.id, url: `https://example.com/${session.id}/1`, number: 1, state: "open" });
+    const pr = listSessionPrs(session.id)[0]!;
+    setSessionPrFixEnabledForPr(pr.id, false);
+    holdSession(session.id);
+    await unholdSession(session.id);
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+    expect(getSessionPr(pr.id)?.pr_fix_enabled).toBe(0);
+  });
+
+  test("setPrFix with prId sets only that PR's flag and polls just that PR when enabling", async () => {
+    const { session } = fixture();
+    const other = createSession({}); sessions.push(other.id);
+    for (const n of [1, 2]) upsertSessionPr({ sessionId: session.id, url: `https://example.com/${session.id}/${n}`, number: n, state: "open" });
+    upsertSessionPr({ sessionId: other.id, url: `https://example.com/${other.id}/3`, number: 3, state: "open" });
+    const [first, second] = listSessionPrs(session.id).sort((a, b) => a.number! - b.number!);
+    const trigger = spyOn(prwatch, "triggerPrWatch").mockRejectedValue(new Error("boom"));
+    mocks.push(trigger);
+    const config = {} as TackConfig;
+    await setPrFix(session.id, false, config, { prId: first!.id });
+    expect(trigger).not.toHaveBeenCalled();
+    expect([getSessionPr(first!.id)?.pr_fix_enabled, getSessionPr(second!.id)?.pr_fix_enabled]).toEqual([0, 1]);
+    expect(getSession(session.id)?.pr_fix_enabled).toBe(1);
+    await setPrFix(session.id, true, config, { prId: first!.id });
+    expect(trigger).toHaveBeenCalledWith(session.id, config, undefined, { prId: first!.id });
+    expect(getSessionPr(first!.id)?.pr_fix_enabled).toBe(1);
+    await expect(setPrFix(session.id, false, config, { prId: listSessionPrs(other.id)[0]!.id })).rejects.toThrow("is not in session");
   });
 
   test("archived sessions refuse hold and unhold without touching the flag", async () => {
@@ -156,7 +188,7 @@ test("v8 upgrades an existing database, preserves agents, and is idempotent", ()
   db.exec("INSERT INTO agents (id, session_id, project_name, status, created_at, updated_at) VALUES ('a', 's', 'test', 'stopped', 'then', 'then')");
   migrate(db);
   expect(db.query("SELECT id, interrupted_at FROM agents").all()).toEqual([{ id: "a", interrupted_at: null }]);
-  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 24 });
+  expect(db.query("SELECT MAX(version) AS v FROM _migrations").get()).toEqual({ v: 25 });
   migrate(db);
   db.close();
 });

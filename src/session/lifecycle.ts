@@ -76,7 +76,7 @@ export function holdSession(sessionId: string): void {
 }
 
 /** With a config, enabling goes through `setPrFix` so the watcher is nudged like
- * the dashboard `F` key (trigger failures are swallowed there, so unhold never
+ * the dashboard's All PRs auto-fix toggle (trigger failures are swallowed there, so unhold never
  * fails on them); without one, only the DB flag flips and the watcher picks it up
  * on its next tick. */
 export async function unholdSession(sessionId: string, config?: TackConfig): Promise<void> {

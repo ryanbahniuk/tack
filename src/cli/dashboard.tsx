@@ -159,7 +159,7 @@ function signature(views: View[]): string {
         v.prs
           .map((p) => {
             const w = v.prWatch[p.id];
-            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}/${w?.dependency ?? ""}`;
+            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${p.pr_fix_enabled}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}/${w?.dependency ?? ""}`;
           })
           .join(",") +
         ";" +
@@ -188,6 +188,31 @@ const README_ACTIONS = [
 ] as const;
 type ReadmeAction = (typeof README_ACTIONS)[number]["key"];
 
+/** The `p` PR actions menu: hotkey, label, and whether it needs a single-PR target.
+ * The auto-fix label is rendered from the target's current state instead. */
+const PR_ACTIONS = [
+  { key: "o", label: "Open in browser", single: false },
+  { key: "c", label: "Copy link", single: true },
+  { key: "p", label: "Poll now", single: false },
+  { key: "R", label: "Review with persona…", single: false },
+  { key: "f", label: "Toggle auto-fix", single: false },
+] as const;
+type PrAction = (typeof PR_ACTIONS)[number]["key"];
+
+/** The `p` menu's state. `target` is "all" or a session PR id; the PR rows
+ * themselves are re-read from the live view so flags and states stay current. */
+interface PrPick {
+  sessionId: string;
+  step: "target" | "action";
+  target: "all" | string;
+  cursor: number;
+}
+
+/** One target-step row: `#12 Title · project · state`, flagged when its own auto-fix is off. */
+function prTargetLabel(pr: SessionPrRow): string {
+  return `#${pr.number ?? "?"} ${pr.title ?? ""} · ${pr.project_name ?? "?"} · ${prStateDisplay(pr.state).label}${pr.pr_fix_enabled ? "" : " · pr-fix off"}`;
+}
+
 /** What the human asked for by leaving the dashboard: open the highlighted session,
  *  create a new one, page through output, or edit an agent's worktree. */
 type Launch =
@@ -211,7 +236,7 @@ type Confirm =
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · O open PR · p poll PRs · D README · R review · F auto-fix · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · h hold/unhold · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · p PR actions · D README · J open tickets · t tickets · P poll Jira · c new · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · h hold/unhold · d delete · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -362,7 +387,8 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
                 </Text>
               ) : null}
               {w?.dependency ? <Text color="yellow"> ⏳ {w.dependency} release</Text> : null}
-              {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}{" "}
+              {w?.fixing ? <Text color="cyan"> fixing…</Text> : null}
+              {!pr.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}{" "}
               <Text underline>{pr.url}</Text>
             </Text>
           );
@@ -462,7 +488,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [allTickets, setAllTickets] = useState<JiraTicketWithSessionRow[]>([]);
   const ticketsSigRef = useRef("");
   /** Persona chooser for the selected session. */
-  const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
+  const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string; prId?: string } | null>(null);
+  /** The `p` PR actions menu; null when closed. */
+  const [prPick, setPrPick] = useState<PrPick | null>(null);
   const [readmePick, setReadmePick] = useState<{ sessionId: string; url: string | null; cursor: number } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
   const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
@@ -634,6 +662,57 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     worker.postMessage({ config, session, action, agents, projects, steal });
   };
 
+  /** Run one `p` menu action on all of a session's PRs or on one of them. Notices
+   * name the target: the session for "all", `#N` for a single PR. */
+  const runPrAction = (view: View, target: "all" | string, action: PrAction) => {
+    const id = view.session.id;
+    const pr = target === "all" ? null : view.prs.find((p) => p.id === target);
+    if (target !== "all" && !pr) return setNotice("that PR is no longer in this session");
+    const label = pr ? `#${pr.number ?? "?"}` : id;
+    switch (action) {
+      case "o": {
+        const urls = pr ? [pr.url] : view.prs.map((p) => p.url);
+        for (const url of urls) openUrl(url);
+        return setNotice(pr ? `opened ${label} in browser` : `opened ${urls.length} PR${urls.length === 1 ? "" : "s"} in browser`);
+      }
+      case "c":
+        if (!pr) return setNotice("pick a single PR to copy its link");
+        void copyToClipboard(pr.url).then((ok) => setNotice(ok ? `copied link for ${label}` : `no clipboard tool found · ${pr.url}`));
+        return;
+      case "p":
+        if (!config) return setNotice("config is unavailable");
+        setNotice(`polling PRs for ${label}…`);
+        void triggerPrWatch(id, config, undefined, { prId: pr?.id }).then((result) => {
+          switch (result.kind) {
+            case "disabled": setNotice("PR watch is disabled"); break;
+            case "inactive": setNotice(`${id} is not active`); break;
+            case "no-open-prs": setNotice(pr ? `${label} is not open (status refreshed)` : `${id} has no open PRs (statuses refreshed)`); break;
+            case "signalled":
+            case "started": setNotice(`polling PRs for ${label} · ${result.kind} watcher pid ${result.pid}`); break;
+          }
+        }).catch((err) => {
+          setNotice(`PR poll failed: ${(err as Error).message}`);
+        }).finally(refresh);
+        return;
+      case "R":
+        if (!config) return setNotice("config is unavailable");
+        if (!config.personas.length) return setNotice("no personas configured");
+        return setPersonaPick({ options: config.personas.map((p) => p.name), cursor: 0, sessionId: id, prId: pr?.id });
+      case "f": {
+        if (!config) return setNotice("config is unavailable");
+        // "All PRs" is the session switch (today's semantics); a single PR flips
+        // only its own flag, which still needs the session's on to take effect.
+        const enabled = pr ? !pr.pr_fix_enabled : !view.session.pr_fix_enabled;
+        const done = pr && enabled && !view.session.pr_fix_enabled
+          ? `on for ${label}, but session auto-fix is off · toggle from All PRs`
+          : `PR auto-fix ${enabled ? "on" : "off"} for ${label}`;
+        void setPrFix(id, enabled, config, { prId: pr?.id }).then(() => setNotice(done))
+          .catch((err) => setNotice(`PR auto-fix failed: ${(err as Error).message}`)).finally(refresh);
+        return;
+      }
+    }
+  };
+
   useInput((input, key) => {
     // Quit is the one gesture that works from everywhere.
     if (key.ctrl && input === "c") return exit();
@@ -780,7 +859,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (key.upArrow || input === "k") return setPersonaPick({ ...personaPick, cursor: Math.max(personaPick.cursor - 1, 0) });
       if (key.return && config) {
         try {
-          const review = startRemoteReview(config, personaPick.sessionId, { persona: personaPick.options[personaPick.cursor]! });
+          const review = startRemoteReview(config, personaPick.sessionId, { persona: personaPick.options[personaPick.cursor]!, prId: personaPick.prId });
           setNotice(`started ${review.reviews.length} review(s)`); refresh();
         } catch (err) { setNotice(`review failed: ${(err as Error).message}`); }
         setPersonaPick(null);
@@ -808,6 +887,32 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       if (!url) return setNotice("no README yet · r to generate");
       if (action === "o") { openUrl(url); return setNotice(`opened README for ${id} in browser`); }
       void copyToClipboard(url).then(ok => setNotice(ok ? `copied README link for ${id}` : `no clipboard tool found · ${url}`));
+      return;
+    }
+
+    // PR actions menu: a target step (skipped for a single PR), then an action step.
+    // Like the README menu it swallows every key and closes after any action,
+    // including a refused one, so it never lingers behind a notice.
+    if (prPick) {
+      const view = rows.find((r) => r.session.id === prPick.sessionId);
+      if (input === "q" || key.escape || !view) { setPrPick(null); setNotice("cancelled"); return; }
+      if (prPick.step === "target") {
+        const last = view.prs.length; // row 0 is "All PRs"
+        if (key.downArrow || input === "j") return setPrPick({ ...prPick, cursor: Math.min(prPick.cursor + 1, last) });
+        if (key.upArrow || input === "k") return setPrPick({ ...prPick, cursor: Math.max(prPick.cursor - 1, 0) });
+        if (key.return) {
+          const pr = view.prs[prPick.cursor - 1];
+          setPrPick({ ...prPick, step: "action", target: pr ? pr.id : "all", cursor: 0 });
+        }
+        return;
+      }
+      if (key.downArrow || input === "j") return setPrPick({ ...prPick, cursor: Math.min(prPick.cursor + 1, PR_ACTIONS.length - 1) });
+      if (key.upArrow || input === "k") return setPrPick({ ...prPick, cursor: Math.max(prPick.cursor - 1, 0) });
+      const action: PrAction | undefined = key.return ? PR_ACTIONS[prPick.cursor]!.key
+        : PR_ACTIONS.find((a) => a.key === input)?.key;
+      if (!action) return;
+      setPrPick(null);
+      runPrAction(view, prPick.target, action);
       return;
     }
 
@@ -949,33 +1054,11 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setPickerId(selected.session.id);
       setAmendmentCursor(0);
       setMode("amendments");
-    } else if (input === "O") {
-      if (selected.prs.length === 0) {
-        setNotice(`${selected.session.id} has no PRs yet`);
-        return;
-      }
-      for (const pr of selected.prs) openUrl(pr.url);
-      setNotice(`opened ${selected.prs.length} PR${selected.prs.length === 1 ? "" : "s"} in browser`);
-    } else if (input === "F") {
-      if (!config) return setNotice("config is unavailable");
-      const id = selected.session.id;
-      const enabled = !selected.session.pr_fix_enabled;
-      void setPrFix(id, enabled, config).then(() => setNotice(`PR auto-fix ${enabled ? "on" : "off"} for ${id}`)).catch(err => setNotice(`PR auto-fix failed: ${(err as Error).message}`)).finally(refresh);
     } else if (input === "p") {
-      if (!config) return setNotice("config is unavailable");
-      const id = selected.session.id;
-      setNotice(`polling PRs for ${id}…`);
-      void triggerPrWatch(id, config).then((result) => {
-        switch (result.kind) {
-          case "disabled": setNotice("PR watch is disabled"); break;
-          case "inactive": setNotice(`${id} is not active`); break;
-          case "no-open-prs": setNotice(`${id} has no open PRs (statuses refreshed)`); break;
-          case "signalled":
-          case "started": setNotice(`polling PRs for ${id} · ${result.kind} watcher pid ${result.pid}`); break;
-        }
-      }).catch((err) => {
-        setNotice(`PR poll failed: ${(err as Error).message}`);
-      }).finally(refresh);
+      if (selected.prs.length === 0) return setNotice(`${selected.session.id} has no PRs yet`);
+      // One PR is its own target, so skip straight to the actions.
+      const only = selected.prs.length === 1 ? selected.prs[0]! : null;
+      setPrPick({ sessionId: selected.session.id, step: only ? "action" : "target", target: only ? only.id : "all", cursor: 0 });
     } else if (input === "J") {
       const id = selected.session.id;
       const total = selected.tickets.length;
@@ -1014,10 +1097,6 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         setNotice(`archived ${selected.session.id} · z to show archived, a to restore`);
         refresh();
       }
-    } else if (input === "R") {
-      if (!config) return setNotice("config is unavailable");
-      if (!config.personas.length) return setNotice("no personas configured");
-      return setPersonaPick({ options: config.personas.map(p => p.name), cursor: 0, sessionId: selected.session.id });
     } else if (input === "d") {
       setConfirm({ action: "delete", id: selected.session.id });
     }
@@ -1041,12 +1120,35 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
   if (bootPick) return <Box flexDirection="column"><Text bold>Boot {bootPick.session} · choose a worktree for {bootPick.groups[0]!.project}</Text>{bootPick.groups[0]!.agents.map((a, i) => <Text key={a.id} color={i === bootPick.cursor ? "cyan" : undefined}>{i === bootPick.cursor ? "❯ " : "  "}{a.id} · {a.worktree_path}</Text>)}<Text dimColor>j/k move · enter choose · esc/q cancel</Text></Box>;
 
-  if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.sessionId} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
+  if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.sessionId}{personaPick.prId ? ` · #${rows.find(r => r.session.id === personaPick.sessionId)?.prs.find(p => p.id === personaPick.prId)?.number ?? "?"}` : ""} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
 
   if (readmePick) return <Box flexDirection="column"><Text bold>README · {readmePick.sessionId}</Text><Text>{readmePick.url ?? "(not generated yet)"}</Text>{README_ACTIONS.map((a, i) => {
     const current = i === readmePick.cursor;
     return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.needsUrl && !readmePick.url}>{current ? "❯ " : "  "}{a.key}  {a.label}</Text>;
   })}<Text dimColor>j/k move · enter select · r/o/c · esc/q cancel</Text></Box>;
+
+  const prPickView = prPick ? rows.find((r) => r.session.id === prPick.sessionId) : undefined;
+  if (prPick && prPickView) {
+    if (prPick.step === "target") {
+      const labels = [`All PRs (${prPickView.prs.length})`, ...prPickView.prs.map(prTargetLabel)];
+      return <Box flexDirection="column"><Text bold>PRs · {prPickView.session.id} · choose a target</Text>{labels.map((l, i) => {
+        const current = i === prPick.cursor;
+        return <Text key={i} color={current ? "cyan" : undefined}>{current ? "❯ " : "  "}{l}</Text>;
+      })}<Text dimColor>j/k move · enter choose · esc/q cancel</Text></Box>;
+    }
+    const pr = prPick.target === "all" ? null : prPickView.prs.find((p) => p.id === prPick.target) ?? null;
+    const fixOn = pr ? !!pr.pr_fix_enabled : !!prPickView.session.pr_fix_enabled;
+    return <Box flexDirection="column">
+      <Text bold>{pr ? `#${pr.number ?? "?"} · ${pr.title ?? ""}` : `PRs · ${prPickView.session.id}`}</Text>
+      {pr ? <Text>{pr.url}</Text> : null}
+      {PR_ACTIONS.map((a, i) => {
+        const current = i === prPick.cursor;
+        const label = a.key === "f" ? `Auto-fix: ${fixOn ? "on → turn off" : "off → turn on"}` : a.label;
+        return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.single && !pr}>{current ? "❯ " : "  "}{a.key}  {label}</Text>;
+      })}
+      <Text dimColor>j/k move · enter select · o/c/p/R/f · esc/q cancel</Text>
+    </Box>;
+  }
 
   if (mode === "agents" && pickerView) {
     return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} projectPick={projectPick} />;

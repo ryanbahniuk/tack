@@ -212,26 +212,39 @@ export type PrWatchTrigger =
   | { kind: "signalled"; pid: number }
   | { kind: "started"; pid: number };
 
+const DEFAULT_TRIGGER_DEPS = {
+  isAlive,
+  signal: (pid: number) => { process.kill(pid, "SIGUSR1"); },
+  spawn: spawnPrWatcher,
+  poll: (pr: SessionPrRow, project: Project): Promise<unknown> => pollPrStatus(pr.id, project.path, pr.number!),
+};
+
+/** Optional targeting for `triggerPrWatch`; an object so later knobs don't reshuffle callers. */
+export interface PrWatchTriggerOptions {
+  /** Refresh only this session PR's status. The watcher pass it wakes stays
+   * session-wide — cheap, and simpler than a per-PR pass. */
+  prId?: string;
+}
+
 /** Refresh watchable PR statuses first, then request an early watcher pass only
- * if any remain open. Poll failures retain stored state; watchPass guards apply. */
+ * if any remain open. Poll failures retain stored state; watchPass guards apply.
+ * With `prId`, only that PR is polled and `no-open-prs` means it isn't watchable
+ * (unknown, another session's, merged or closed). */
 export async function triggerPrWatch(
   sessionId: string,
   config: TackConfig,
-  deps = {
-    isAlive,
-    signal: (pid: number) => { process.kill(pid, "SIGUSR1"); },
-    spawn: spawnPrWatcher,
-    poll: (pr: SessionPrRow, project: Project): Promise<unknown> => pollPrStatus(pr.id, project.path, pr.number!),
-  },
+  deps: typeof DEFAULT_TRIGGER_DEPS = DEFAULT_TRIGGER_DEPS,
+  { prId }: PrWatchTriggerOptions = {},
 ): Promise<PrWatchTrigger> {
   if (!config.prWatch.enabled) return { kind: "disabled" };
   const session = getSession(sessionId);
   if (!session || !isSessionOpen(session)) return { kind: "inactive" };
-  await Promise.allSettled(listSessionPrs(sessionId).filter(isWatchablePr).map(async (pr) => {
+  const targets = () => listSessionPrs(sessionId).filter((pr) => isWatchablePr(pr) && (!prId || pr.id === prId));
+  await Promise.allSettled(targets().map(async (pr) => {
     const project = config.projects.find((p) => p.name === pr.project_name);
     if (pr.number !== null && project) await deps.poll(pr, project);
   }));
-  if (!listSessionPrs(sessionId).some(isWatchablePr) && !hasUnresolvedDependencies(sessionId)) return { kind: "no-open-prs" };
+  if (prId ? !targets().length : !targets().length && !hasUnresolvedDependencies(sessionId)) return { kind: "no-open-prs" };
   if (session.pr_watch_pid && deps.isAlive(session.pr_watch_pid)) {
     try {
       deps.signal(session.pr_watch_pid);
@@ -447,6 +460,8 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   if (!conflict && fresh.length === 0 && released.length === 0) return;
 
   if (!getSession(session.id)?.pr_fix_enabled) return log(`${tag}: PR auto-fix is off for this session`);
+  // Re-read like the session: the human may have silenced just this PR mid-pass.
+  if (!getSessionPr(pr.id)?.pr_fix_enabled) return log(`${tag}: PR auto-fix is off for this PR`);
 
   const dependencyPending = released.some(f => f.source_kind === "dependency_release");
   const cap = prFixCapReached(pr.id, config);

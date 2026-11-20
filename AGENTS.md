@@ -49,7 +49,7 @@ src/session/manual.ts    manual workspaces (kind "manual"): project resolution, 
 src/session/readme.ts    bounded session digest, README authoring and link management
 src/publish/             pluggable local and Claude Artifact page publishers
 src/session/review.ts    human-requested persona review startup
-src/session/pr-fix.ts    per-session auto-fix toggle
+src/session/pr-fix.ts    session and per-PR auto-fix toggles
 src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback (fix_pr includeExisting reopens it), latch readiness)
 src/session/auto-link-prs.ts  autoLinkPrs: link PR URLs from the human's messages (prompt hook / before launch)
 src/session/refresh.ts   stale detection, refresh guards + supervisor/watcher restart
@@ -128,7 +128,10 @@ current-head CI. Drafts fetch checks even with `fixCi: false`; fetch failures bl
 promotion and zero checks is green. The durable `session_prs.ready_promoted_at`
 latch respects a human's later return to draft. Keep readiness and CI ingestion
 on the same pending/failing predicates; promotion failures retry next tick. Per-session
-`pr_fix_enabled` controls automatic fix spawning independently of promotion.
+`pr_fix_enabled` controls automatic fix spawning independently of promotion; each
+`session_prs.pr_fix_enabled` narrows it to one PR (effective = session && PR). Hold/unhold
+touch only the session flag. The dashboard's `p` PR actions menu runs open/copy/poll/
+review/auto-fix on all of a session's PRs or one.
 
 ## Testing & gotchas
 

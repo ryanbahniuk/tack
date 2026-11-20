@@ -178,6 +178,9 @@ export interface SessionPrRow {
   body_ref: string | null;
   /** When `link_pr` adopted this existing PR into the session; null for PRs Tack opened. */
   linked_at: string | null;
+  /** This PR's own auto-fix switch (1/0). Effective auto-fix also needs the
+   * session's `pr_fix_enabled`; see `prAutoFixEnabled`. */
+  pr_fix_enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -837,6 +840,16 @@ export function setSessionPrBodyRef(id: string, ref: string): void {
 }
 
 /** Latches the first successful automatic promotion, preserving it across polls. */
+/** Flip one PR's own auto-fix switch; the session-level flag is untouched. */
+export function setSessionPrFixEnabledForPr(id: string, enabled: boolean): void {
+  getDb().prepare(`UPDATE session_prs SET pr_fix_enabled = ?, updated_at = ? WHERE id = ?`).run(enabled ? 1 : 0, nowIso(), id);
+}
+
+/** Effective auto-fix for a PR: both the session switch and the PR's own must be on. */
+export function prAutoFixEnabled(session: Pick<SessionRow, "pr_fix_enabled">, pr: Pick<SessionPrRow, "pr_fix_enabled">): boolean {
+  return !!session.pr_fix_enabled && !!pr.pr_fix_enabled;
+}
+
 export function markSessionPrReadyPromoted(id: string): void {
   const now = nowIso();
   getDb().prepare(`UPDATE session_prs SET ready_promoted_at = ?, updated_at = ?

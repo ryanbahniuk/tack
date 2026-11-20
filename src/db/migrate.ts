@@ -412,6 +412,12 @@ const migrations: Migration[] = [
         AND reply_url IS NULL AND handled_at IS NOT NULL AND handled_at = created_at
         AND session_pr_id IN (SELECT id FROM session_prs WHERE linked_at IS NOT NULL);
   `, addColumns: [{ table: "pr_feedback", column: "baselined_at", type: "TEXT" }] },
+  // Per-PR auto-fix switch, ANDed with `sessions.pr_fix_enabled` by the watcher so
+  // the human can silence one noisy PR without pausing the rest. Hold/unhold stay
+  // session-level and never touch it. Defaults on, so existing PRs keep fixing.
+  { version: 25, name: "session_pr_fix_enabled", sql: ``, addColumns: [
+    { table: "session_prs", column: "pr_fix_enabled", type: "INTEGER NOT NULL DEFAULT 1" },
+  ] },
 ];
 
 /** Applies any pending migrations in a single transaction. */
