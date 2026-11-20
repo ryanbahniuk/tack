@@ -6,6 +6,8 @@ import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
 import { startRemoteReview } from "../session/review";
 import { setPrFix } from "../session/pr-fix";
+import { openUrl } from "./open-url";
+import { copyToClipboard } from "./clipboard";
 import React, { useEffect, useRef, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
@@ -178,20 +180,13 @@ export function agentViewTarget(a: AgentRow, exists: (path: string) => boolean):
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-/** Opens a URL in the user's default browser — fire-and-forget, no terminal needed. */
-function openUrl(url: string): void {
-  const cmd =
-    process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
-  try {
-    Bun.spawn(cmd, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-  } catch {
-    /* no opener available — the URL is still visible on screen to copy */
-  }
-}
+/** The `D` README menu: hotkey, label, and whether it needs an existing link. */
+const README_ACTIONS = [
+  { key: "r", label: "Refresh (regenerate)", needsUrl: false },
+  { key: "o", label: "Open in browser", needsUrl: true },
+  { key: "c", label: "Copy link to clipboard", needsUrl: true },
+] as const;
+type ReadmeAction = (typeof README_ACTIONS)[number]["key"];
 
 /** What the human asked for by leaving the dashboard: open the highlighted session,
  *  create a new one, page through output, or edit an agent's worktree. */
@@ -468,6 +463,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const ticketsSigRef = useRef("");
   /** Persona chooser for the selected session. */
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string } | null>(null);
+  const [readmePick, setReadmePick] = useState<{ sessionId: string; url: string | null; cursor: number } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
   const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
   const [bootPick, setBootPick] = useState<{ session: string; groups: { project: string; agents: AgentRow[] }[]; choices: Record<string, string>; cursor: number } | null>(null);
@@ -792,6 +788,29 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       return;
     }
 
+    // README menu: swallows every key while open and closes after any action
+    // (including a refused open/copy), so it never lingers behind a notice.
+    if (readmePick) {
+      if (input === "q" || key.escape) { setReadmePick(null); setNotice("cancelled"); return; }
+      if (key.downArrow || input === "j") return setReadmePick({ ...readmePick, cursor: Math.min(readmePick.cursor + 1, README_ACTIONS.length - 1) });
+      if (key.upArrow || input === "k") return setReadmePick({ ...readmePick, cursor: Math.max(readmePick.cursor - 1, 0) });
+      const action: ReadmeAction | undefined = key.return ? README_ACTIONS[readmePick.cursor]!.key
+        : README_ACTIONS.find(a => a.key === input)?.key;
+      if (!action) return;
+      const { sessionId: id, url } = readmePick;
+      setReadmePick(null);
+      if (action === "r") {
+        // Regenerating spends tokens and may publish, so keep the y/N confirm.
+        if (!config) return setNotice("Configuration unavailable");
+        const publisher = selectPublisher(config);
+        return setConfirm({ action: "readme", id, label: publisher.label, local: publisher.kind === "local" });
+      }
+      if (!url) return setNotice("no README yet · r to generate");
+      if (action === "o") { openUrl(url); return setNotice(`opened README for ${id} in browser`); }
+      void copyToClipboard(url).then(ok => setNotice(ok ? `copied README link for ${id}` : `no clipboard tool found · ${url}`));
+      return;
+    }
+
     // Agent picker: output and editing both hand the terminal to a child process.
     if (mode === "agents") {
       const agents = pickerView?.agents ?? [];
@@ -900,9 +919,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     } else if (!selected) {
       return;
     } else if (input === "D") {
-      if (!config) { setNotice("Configuration unavailable"); return; }
-      const publisher = selectPublisher(config);
-      setConfirm({ action: "readme", id: selected.session.id, label: publisher.label, local: publisher.kind === "local" });
+      setReadmePick({ sessionId: selected.session.id, url: selected.session.readme_url, cursor: 0 });
     } else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
       // launching the session happens in `runDashboard` once this unmounts — we just
@@ -1025,6 +1042,11 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   if (bootPick) return <Box flexDirection="column"><Text bold>Boot {bootPick.session} · choose a worktree for {bootPick.groups[0]!.project}</Text>{bootPick.groups[0]!.agents.map((a, i) => <Text key={a.id} color={i === bootPick.cursor ? "cyan" : undefined}>{i === bootPick.cursor ? "❯ " : "  "}{a.id} · {a.worktree_path}</Text>)}<Text dimColor>j/k move · enter choose · esc/q cancel</Text></Box>;
 
   if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.sessionId} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
+
+  if (readmePick) return <Box flexDirection="column"><Text bold>README · {readmePick.sessionId}</Text><Text>{readmePick.url ?? "(not generated yet)"}</Text>{README_ACTIONS.map((a, i) => {
+    const current = i === readmePick.cursor;
+    return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.needsUrl && !readmePick.url}>{current ? "❯ " : "  "}{a.key}  {a.label}</Text>;
+  })}<Text dimColor>j/k move · enter select · r/o/c · esc/q cancel</Text></Box>;
 
   if (mode === "agents" && pickerView) {
     return <AgentsPanel view={pickerView} cursor={Math.min(agentCursor, Math.max(0, pickerView.agents.length - 1))} notice={notice} confirmText={confirmText} projectPick={projectPick} />;
