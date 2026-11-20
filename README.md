@@ -168,7 +168,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `r` | Restart a session when it is `stale` or broken after sleep or network loss. Restarts the supervisor (parked in tmux; `enter` attaches), revives dropped agents, and restarts a dead or stale PR watcher (asks first) |
 | `x` | Stop (asks first) |
 | `a` | Archive, or unarchive (asks first) |
-| `h` | Toggle hold; on-hold sessions remain visible below other sessions and keep running |
+| `h` | Toggle hold; on-hold sessions remain visible below other sessions and keep running. Hold turns PR auto-fix off; unhold turns it back on |
 | `d` | Delete (asks first) |
 | `z` | Show or hide archived sessions |
 | `C` | Edit the Tack config, then reload it and refresh stale sessions |
@@ -216,7 +216,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
 | `tack session restart <session> \| --all` | Get a session healthy and current after a Tack update (`stale`), sleep, or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive dropped agents, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. `refresh` and `reconnect` remain available as deprecated aliases. |
 | `tack session stop <session>` | Stop the session and its agents. |
-| `tack session hold <session>` / `unhold <session>` | Organize a session on hold or return it to active without stopping work. |
+| `tack session hold <session>` / `unhold <session>` | Organize a session on hold or return it to active without stopping running processes. Hold turns PR auto-fix off; unhold turns it back on. |
 | `tack session archive <session>` | Stop and hide it, remembering which agents were interrupted. |
 | `tack session unarchive <session>` | Restore it and resume the interrupted agents (then rejoin with `resume`). |
 | `tack session delete <session>` | Kill processes and purge worktrees, artifacts and DB rows. This can't be undone. |

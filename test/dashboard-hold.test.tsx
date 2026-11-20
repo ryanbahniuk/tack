@@ -34,15 +34,18 @@ test("hold sorts last and dashboard toggles it while refusing archived sessions"
     expect(frame.indexOf(active!.id)).toBeLessThan(frame.indexOf(held!.id));
     await press("h");
     expect(getSession(active!.id)?.status).toBe("on_hold");
-    expect(frame).toContain(`put ${active!.id} on hold`);
+    expect(frame).toContain(`put ${active!.id} on hold · PR auto-fix off`);
+    expect(getSession(active!.id)?.pr_fix_enabled).toBe(0);
     await press("j");
     await press("h");
     expect(getSession(active!.id)?.status).toBe("active");
-    expect(frame).toContain(`${active!.id} off hold`);
+    expect(frame).toContain(`${active!.id} off hold · PR auto-fix on`);
+    expect(getSession(active!.id)?.pr_fix_enabled).toBe(1);
     await press("z");
     await press("j");
     await press("h");
     expect(getSession(archived!.id)?.status).toBe("archived");
+    expect(getSession(archived!.id)?.pr_fix_enabled).toBe(1);
     expect(frame).toContain(`${archived!.id} is archived · a to unarchive`);
   } finally {
     app.unmount(); list.mockRestore();

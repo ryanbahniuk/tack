@@ -680,7 +680,7 @@ refresh tick.
   Without a handle they run the original prompt in the same worktree. Normal
   first runs stay fresh; continuation retries keep resuming the active conversation. Unarchive does not launch the
   supervisor: rejoin via `tack session resume <id>` or dashboard `enter/o`.
-  Hold/unhold changes only the status; on-hold sessions remain open and sort below other dashboard sessions. Dashboard `h` toggles hold.
+  Hold sets the status and turns PR auto-fix (`pr_fix_enabled`) off; unhold returns it to active and turns auto-fix back on, even if it was off before the hold. Neither stops running processes; on-hold sessions remain open and sort below other dashboard sessions. Dashboard `h` toggles hold.
   Dashboard `a` archives immediately, confirms unarchive with the interrupted
   count, and reports the resumed count; `z` reveals archived sessions.
 

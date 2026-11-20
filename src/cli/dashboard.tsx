@@ -982,9 +982,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     } else if (input === "h") {
       const s = selected.session;
       if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
-      if (s.status === "on_hold") { unholdSession(s.id); setNotice(`${s.id} off hold`); }
-      else { holdSession(s.id); setNotice(`put ${s.id} on hold · h to resume`); }
-      refresh();
+      if (s.status === "on_hold") {
+        void unholdSession(s.id, config ?? undefined).then(() => setNotice(`${s.id} off hold · PR auto-fix on`))
+          .catch(err => setNotice(`unhold failed: ${(err as Error).message}`)).finally(refresh);
+      } else {
+        holdSession(s.id); setNotice(`put ${s.id} on hold · PR auto-fix off · h to resume`);
+        refresh();
+      }
     } else if (input === "a") {
       if (selected.session.status === "archived") {
         setConfirm({ action: "unarchive", id: selected.session.id, count: listInterruptedAgents(selected.session.id).length });
