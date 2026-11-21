@@ -943,7 +943,7 @@ export async function postFix(
   try {
     const proposed = readPrDescription(pr.session_id, agent.id, "proposed");
     const base = readPrDescription(pr.session_id, agent.id, "base");
-    if (outcome !== "not_pushed" && proposed.trim() && base && pr.number !== null) {
+    if ((outcome === "pushed" || outcome === "no_changes") && proposed.trim() && base && pr.number !== null) {
       const live = await fetchPrBody(project.path, pr.number);
       const normalize = (body: string) => body.replace(/\r\n/g, "\n").trim();
       if (normalize(live) === normalize(proposed)) {

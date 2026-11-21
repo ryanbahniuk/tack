@@ -1048,10 +1048,13 @@ describe("postFix outcomes", () => {
       else fetch.mockResolvedValue(scenario === "edited" ? "Human edit" : scenario === "applied" ? " New body " : "Old\nbody");
       const update = spyOn(prs, "updatePrBody").mockResolvedValue();
       const reply = spyOn(prs, "postIssueComment").mockResolvedValue(null);
+      const logs: string[] = [];
       try {
-        await postFix(a, pr, project(), { prWatch: { autoPush: true, reply: true } } as TackConfig, log);
+        await postFix(a, pr, project(), { prWatch: { autoPush: true, reply: true } } as TackConfig, message => logs.push(message));
         expect(update.mock.calls.length).toBe(scenario === "update" ? 1 : 0);
         expect(reply).toHaveBeenCalled();
+        if (scenario === "edited") expect(logs.join("\n")).toContain("skipped description update (edited on GitHub during the run)");
+        if (scenario === "failure") expect(logs.join("\n")).toContain("description update failed: offline");
         expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
         const stored = listSessionPrs(pr.session_id)[0]!;
         expect(readArtifact(stored.body_ref)).toBe(scenario === "update" || scenario === "applied" ? "New body" : "");
@@ -1062,7 +1065,9 @@ describe("postFix outcomes", () => {
   for (const status of ["stopped", "failed"] as const) {
     test(`${status} records the outcome and keeps feedback semantics`, async () => {
       const { a, pr } = setup(status);
+      writePrDescription(pr.session_id, a.id, "proposed", "stale");
       await postFix(a, pr, project(), config(), log);
+      expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
       expect(getAgent(a.id)).toMatchObject({ status, fix_outcome: status, fix_pushed_sha: null });
       expect(getAgent(a.id)!.post_fixed_at).not.toBeNull();
       if (status === "stopped") expect(listUnassignedPrFeedback(pr.id)).toHaveLength(1);

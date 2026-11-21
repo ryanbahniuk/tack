@@ -414,6 +414,7 @@ test("a reuse whose fast-forward fails restores the old row exactly, then falls 
   let release!: (v: { reason: string }) => void;
   ff.mockImplementation(() => new Promise(resolve => { release = resolve; }));
   mocks.push(spyOn(prs, "fetchPrBody").mockResolvedValue("body"));
+  writePrDescription(session.id, fix.id, "proposed", "stale");
   const pending = spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] });
   // The claim happens before the worktree fetch: the old row is busy, and a racer is refused.
   await Promise.resolve();
@@ -430,6 +431,10 @@ test("a reuse whose fast-forward fails restores the old row exactly, then falls 
     reuseFallbackReason: "non-fast-forwardable head", items: 1,
   });
   expect(result.agent.id).not.toBe(fix.id);
+  expect(readPrDescription(session.id, fix.id, "base")).toBe("body");
+  expect(readPrDescription(session.id, fix.id, "proposed")).toBe("");
+  expect(readPrDescription(session.id, result.agent.id, "base")).toBe("body");
+  expect(readPrDescription(session.id, result.agent.id, "proposed")).toBe("");
   expect(listAgentPrFeedback(result.agent.id).map(f => f.source_id)).toEqual(["IC_2"]);
 });
 
