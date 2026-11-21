@@ -1,12 +1,13 @@
 import { writeContextFile } from "../artifacts/store";
 import type { TackConfig } from "../config/schema";
+import { userGuidanceSection } from "../context/user-guidance";
 
 /**
  * The supervisor's system context, materialized to a file and injected by path.
  * It frames the supervisor as a read-only planner that delegates everything to
  * agents through its `tack-supervisor` tools — never editing code itself.
  */
-export function buildSupervisorContext(sessionId: string, config: TackConfig, opts?: { artifactsDir?: string }): string {
+export function buildSupervisorContext(sessionId: string, config: TackConfig, opts?: { artifactsDir?: string; guidancePath?: string }): string {
   const projects = config.projects.map((p) => `- ${p.name}: ${p.description}`).join("\n");
   const body = [
     "# Tack supervisor",
@@ -250,5 +251,6 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "## Projects",
     projects || "(none configured)",
   ].join("\n");
-  return writeContextFile(sessionId, "supervisor.context.md", body + "\n");
+  const guidance = userGuidanceSection(opts?.guidancePath);
+  return writeContextFile(sessionId, "supervisor.context.md", body + (guidance ? "\n\n" + guidance : "") + "\n");
 }

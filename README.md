@@ -141,6 +141,10 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 
 ---
 
+## Personal guidance
+
+Put personal preferences in `~/.tack/AGENTS.md` (or `$TACK_HOME/AGENTS.md`). Tack includes this file in every supervisor and agent run it launches, for both claude and codex. It does not affect claude or codex started outside Tack. Their own `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` still load; move shared preferences into the Tack file to avoid duplicates. Edits apply on the next launch or resume.
+
 ## Everyday use
 
 ### Dashboard
@@ -159,7 +163,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `enter` / `o` | Open (rejoin) the selected session's supervisor |
 | `c` | Create a new session |
 | `v` | Agents picker: `enter`/`o`/`v` shows output (a live follow for running agents), `e` edits a worktree, `n` creates a manual workspace |
-| `S` | Session actions: `c` new, `m` view amendments, `D` README actions, `r` restart, `b` boot, `B` unboot, `h` hold/unhold, `x` stop, `a` archive/unarchive, `d` delete. Restart asks first, parks the supervisor in tmux, revives dropped agents and restarts a dead or stale PR watcher. README actions offer `r` refresh (asks first), `o` open and `c` copy; open and copy need an existing README |
+| `S` | Session actions: `c` new, `m` view amendments, `D` README actions, `r` restart, `b` boot, `B` unboot, `h` hold/unhold, `x` stop, `a` archive/unarchive, `d` delete. Restart asks first, parks the supervisor in tmux, revives dropped agents and restarts a dead or stale PR watcher. README actions offer `r` refresh (regenerate and republish to the current destination, or the default; asks first and names it), `o` open, `c` copy and `p` publish to… (pick Claude Artifact / Confluence / Google Doc / local, then confirm); open and copy need an existing README |
 | `t` | Ticket actions: `o` open this session's tickets, `t` browse all tickets, `p` poll Jira now. The tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `P` polls the filtered tickets’ sessions; `esc`/`q` goes back |
 | `p` | PR actions menu. First pick the target: `All PRs (N)` or one PR (skipped when the session has a single PR; PRs with their own auto-fix off say `pr-fix off`). Then pick an action: `o` open in the browser (every PR for All PRs), `c` copy the link (single PR only), `p` poll now, `R` review with a persona, `f` toggle auto-fix (the session switch for All PRs, that PR's own switch otherwise). `j`/`k` + `enter` also work; `esc`/`q` cancels |
 | `a` | Archive, or unarchive (asks first); also in Session actions |
@@ -207,7 +211,7 @@ Bare `tack session` lists sessions. `sessions` is accepted as an alias.
 | `tack session approve <session>` | Approve a plan when the in-chat prompt didn't appear. |
 | `tack session follow <agentId>` | Stream an agent's live transcript. |
 | `tack session poll-prs <session>` | Ask the PR watcher to poll now (starts or wakes it if PRs are open). |
-| `tack session readme <session> [--no-publish | --link <url> | --unlink] [--open]` | Generate, link or unlink a session README page; optionally open it. |
+| `tack session readme <session> [--to <claude-artifact\|confluence\|google-doc\|local> \| --no-publish \| --link <url> \| --unlink] [--open]` | Generate, link or unlink a session README page; `--to` overrides the destination for this run; optionally open it. |
 | `tack session retitle <session>` | Regenerate the title with the summary model. |
 | `tack session restart <session> \| --all` | Get a session healthy and current after a Tack update (`stale`), sleep, or a lost connection: restart the supervisor (even mid-turn; a pending plan is re-presented), revive dropped agents, restart a dead or stale PR watcher, then park the supervisor detached in tmux and hand the terminal back (attach with `resume`). Without tmux the supervisor stays stopped until `tack session resume`. `--all` covers every active session. `refresh` and `reconnect` remain available as deprecated aliases. |
 | `tack session stop <session>` | Stop the session and its agents. |
@@ -555,4 +559,16 @@ use `tack session boot-status <session>` to inspect them and `tack session unboo
 project `boot` settings; see SPEC.md §11 for details.
 
 
-Session READMEs are generated only when requested with `tack session readme` or the dashboard `S` → `D` menu's refresh action (after confirmation). `roles.readme` accepts a model key or non-empty list and defaults to `roles.supervisor`. Set `readme: { publisher: "local" }` to save locally, or `"claude-artifact"` to publish; the default uses Claude Artifact when Claude is configured or available, otherwise local. Publishing sends session information from the digest, including the contract, PR bodies and agent output excerpts, to claude.ai as a private artifact. Use `--link <url>` or `--unlink` to manage an existing page, or ask the supervisor to use `link_readme` / `unlink_readme`. Regenerating a linked README republishes into and overwrites that URL; `--no-publish` keeps the link while saving the new page locally.
+Session READMEs are generated only when requested with `tack session readme` or the dashboard `S` → `D` menu's refresh / publish-to actions (after confirmation). `roles.readme` accepts a model key or non-empty list and defaults to `roles.supervisor`. `readme.publisher` sets the default destination: `"claude-artifact"` (a private claude.ai artifact; the default when Claude is configured or available), `"confluence"` (a private page in your personal Confluence space), `"google-doc"` (an unshared Google Doc in your My Drive) or `"local"`. Override it for one run with `--to <publisher>` or the dashboard `S` → `D` → `p` picker. A refresh with no override republishes to whichever destination owns the session's current README URL, falling back to the default; publishing somewhere else replaces the session's single README URL and leaves the old page in place. Artifacts and local pages are authored as HTML (`readme.html`); Confluence and Google Docs as Markdown (`readme.md`).
+
+```ts
+readme: {
+  publisher: "confluence",
+  confluence: { site: "acme.atlassian.net", spaceKey: "ENG", parentId: "12345", mcpServer: "Atlassian" }, // all optional; default: your personal space
+  googleDoc: { folderId: "1AbC…", mcpServer: "claude_ai_Google_Drive", tools: ["mcp__claude_ai_Google_Drive__…"] }, // all optional; default: My Drive
+},
+```
+
+The Confluence and Google Docs publishers require the claude runtime and the matching connector already set up in your Claude Code (the Atlassian MCP for Confluence, the Google Drive connector for Docs); Tack holds no credentials and makes no direct API calls. It runs a headless, read-only `claude -p` turn that loads your own MCP servers and connectors and may call only `Read` plus the listed connector tools: for Confluence, `atlassianUserInfo`, `getAccessibleAtlassianResources`, `getConfluenceSpaces`, `getConfluencePage`, `createConfluencePage` and `updateConfluencePage` on `readme.confluence.mcpServer` (default `Atlassian`); for Google Docs, the whole `readme.googleDoc.mcpServer` server (default `claude_ai_Google_Drive`) unless `readme.googleDoc.tools` names specific tools. Run `claude mcp list` to find your server names. Confluence pages are created with `isPrivate: true`; Google Docs are never shared. If the run can't confirm the page is private, Tack keeps the URL and prints a warning to check its sharing settings.
+
+**Privacy:** publishing sends session information from the digest, including the contract, PR bodies and agent output excerpts, to the chosen destination: claude.ai as a private artifact, or your organization's internal Atlassian or Google Workspace tenant. Nothing is published unless you explicitly run `tack session readme` or confirm a dashboard refresh / publish. Use `--link <url>` or `--unlink` to manage an existing page, or ask the supervisor to use `link_readme` / `unlink_readme`. Regenerating a linked README republishes into and overwrites that URL; `--no-publish` keeps the link while saving the new page locally.

@@ -406,8 +406,10 @@ export class ClaudeRuntime implements Runtime {
     // pass --strict-mcp-config so a run never inherits the user's global MCP
     // config from the filesystem. Otherwise a bare read-only run (e.g. project
     // summarization) picks up whatever third-party servers — datadog, slack — the
-    // user has configured and wanders into them.
-    cmd.push("--mcp-config", JSON.stringify({ mcpServers: mcpConfig(opts) }), "--strict-mcp-config");
+    // user has configured and wanders into them. `inheritUserMcp` publish runs
+    // drop the strict flag so connectors load; `allowTools` still bounds them.
+    cmd.push("--mcp-config", JSON.stringify({ mcpServers: mcpConfig(opts) }));
+    if (!opts.inheritUserMcp) cmd.push("--strict-mcp-config");
     // The prompt is fed via stdin (see run()), not as a positional arg.
     return cmd;
   }

@@ -92,7 +92,7 @@ describe("session README", () => {
   test("generates, publishes and persists; no-publish skips publisher", async () => {
     const session = createSession({ title: "Widget" }); let calls = 0; let existingUrl: string | null | undefined;
     linkSessionReadme(session.id, "https://example.test/linked");
-    const publisher = { kind: "test", label: "Test", async publish(input: { existingUrl?: string | null }) { calls++; existingUrl = input.existingUrl; return { url: "https://example.test/page" }; } };
+    const publisher = { kind: "local" as const, label: "Test", format: "html" as const, owns: (url: string) => url.startsWith("https://example.test/"), async publish(input: { existingUrl?: string | null }) { calls++; existingUrl = input.existingUrl; return { url: "https://example.test/page" }; } };
     async function* runAuthor() { yield { type: "text" as const, text: "<<<README_HTML\n<html><title>Widget Work</title></html>\nREADME_HTML>>>" }; }
     await generateSessionReadme(config, session.id, { runAuthor, publisher, publish: false });
     expect(getSession(session.id)?.readme_url).toBe("https://example.test/linked");

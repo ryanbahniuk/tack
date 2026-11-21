@@ -1,6 +1,6 @@
 import { isSessionOpen } from "../db";
 import { spawnSessionReadmer } from "../session/readme";
-import { selectPublisher } from "../publish";
+import { PUBLISHER_KINDS, selectReadmePublisher, type PublisherKind } from "../publish";
 import { hasUnresolvedDependencies, listPrDependencies } from "../db";
 import { worktreeEditSummary } from "../session/edit";
 import { startBaseCacheRefresher } from "../worktree/base-cache";
@@ -198,8 +198,15 @@ const README_ACTIONS = [
   { key: "r", label: "Refresh (regenerate)", needsUrl: false },
   { key: "o", label: "Open in browser", needsUrl: true },
   { key: "c", label: "Copy link to clipboard", needsUrl: true },
+  { key: "p", label: "Publish to…", needsUrl: false },
 ] as const;
 type ReadmeAction = (typeof README_ACTIONS)[number]["key"];
+
+/** The `D` → `p` destination picker: hotkey and label per publisher kind. */
+const README_DESTINATIONS: { kind: PublisherKind; key: string; label: string }[] = PUBLISHER_KINDS.map(kind => ({
+  kind,
+  ...({ "claude-artifact": { key: "a", label: "Claude Artifact" }, confluence: { key: "c", label: "Confluence (private page)" }, "google-doc": { key: "g", label: "Google Doc (unshared)" }, local: { key: "l", label: "Local file" } } as const)[kind],
+}));
 
 /** The `p` PR actions menu: hotkey, label, and whether it needs a single-PR target.
  * The auto-fix label is rendered from the target's current state instead. */
@@ -245,7 +252,7 @@ type Confirm =
   | { action: "edit"; agentId: string; path: string }
   | { action: "unarchive"; id: string; count: number }
   | { action: "restart"; id: string; count: number; planPending: boolean; stale: boolean; midTurn: boolean }
-  | { action: "readme"; id: string; label: string; local: boolean }
+  | { action: "readme"; id: string; label: string; local: boolean; publisher?: PublisherKind }
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
@@ -506,7 +513,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [prPick, setPrPick] = useState<PrPick | null>(null);
   const [sessionPick, setSessionPick] = useState<{ sessionId: string; cursor: number } | null>(null);
   const [ticketPick, setTicketPick] = useState<{ cursor: number } | null>(null);
-  const [readmePick, setReadmePick] = useState<{ sessionId: string; url: string | null; cursor: number } | null>(null);
+  const [readmePick, setReadmePick] = useState<{ sessionId: string; url: string | null; cursor: number; step?: "action" | "destination" } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
   const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
   const [bootPick, setBootPick] = useState<{ session: string; groups: { project: string; agents: AgentRow[] }[]; choices: Record<string, string>; cursor: number } | null>(null);
@@ -833,7 +840,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     if (confirm) {
       if (input === "y" || input === "Y" || (key.return && (confirm.action === "delete" || confirm.action === "stop"))) {
         if (confirm.action === "readme") {
-          spawnSessionReadmer(confirm.id);
+          if (confirm.publisher) spawnSessionReadmer(confirm.id, confirm.publisher);
+          else spawnSessionReadmer(confirm.id);
           setNotice(`generating README for ${confirm.id} · tack session show ${confirm.id} for the link`);
         } else if (confirm.action === "unboot" || confirm.action === "steal") {
           const pending = confirm; setConfirm(null);
@@ -983,6 +991,17 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
     // README menu: swallows every key while open and closes after any action
     // (including a refused open/copy), so it never lingers behind a notice.
+    if (readmePick?.step === "destination") {
+      if (input === "q" || key.escape) { setReadmePick(null); setNotice("cancelled"); return; }
+      if (key.downArrow || input === "j") return setReadmePick({ ...readmePick, cursor: Math.min(readmePick.cursor + 1, README_DESTINATIONS.length - 1) });
+      if (key.upArrow || input === "k") return setReadmePick({ ...readmePick, cursor: Math.max(readmePick.cursor - 1, 0) });
+      const dest = key.return ? README_DESTINATIONS[readmePick.cursor] : README_DESTINATIONS.find(d => d.key === input);
+      if (!dest) return;
+      setReadmePick(null);
+      if (!config) return setNotice("Configuration unavailable");
+      const publisher = selectReadmePublisher(config, readmePick.url, dest.kind);
+      return setConfirm({ action: "readme", id: readmePick.sessionId, label: publisher.label, local: publisher.kind === "local", publisher: publisher.kind });
+    }
     if (readmePick) {
       if (input === "q" || key.escape) { setReadmePick(null); setNotice("cancelled"); return; }
       if (key.downArrow || input === "j") return setReadmePick({ ...readmePick, cursor: Math.min(readmePick.cursor + 1, README_ACTIONS.length - 1) });
@@ -991,11 +1010,12 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         : README_ACTIONS.find(a => a.key === input)?.key;
       if (!action) return;
       const { sessionId: id, url } = readmePick;
+      if (action === "p") return setReadmePick({ ...readmePick, step: "destination", cursor: 0 });
       setReadmePick(null);
       if (action === "r") {
         // Regenerating spends tokens and may publish, so keep the y/N confirm.
         if (!config) return setNotice("Configuration unavailable");
-        const publisher = selectPublisher(config);
+        const publisher = selectReadmePublisher(config, url);
         return setConfirm({ action: "readme", id, label: publisher.label, local: publisher.kind === "local" });
       }
       if (!url) return setNotice("no README yet · S → D → r to generate");
@@ -1150,7 +1170,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   });
 
   const confirmText = confirm ? (confirm.action === "readme"
-    ? `Generate a README for ${confirm.id} ${confirm.local ? "and save it locally" : `and publish it as a private ${confirm.label} page`}? (y/N)`
+    ? `Generate a README for ${confirm.id} ${confirm.local ? "and save it locally" : `and publish it to ${confirm.label} (private)`}? (y/N)`
     : confirm.action === "edit"
     ? `Agent ${confirm.agentId} is still running. Edit its worktree anyway? (y/N)`
     : confirm.action === "unboot"
@@ -1181,10 +1201,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.key === "o" && !selected?.tickets.length}>{current ? "❯ " : "  "}{a.key}  {a.label}{a.key === "o" ? ` (${selected?.tickets.length ?? 0})` : ""}</Text>;
   })}<Text dimColor>j/k move · enter select · o/t/p · esc/q cancel</Text></Box>;
 
+  if (readmePick?.step === "destination") return <Box flexDirection="column"><Text bold>README actions · {readmePick.sessionId} · publish to</Text>{README_DESTINATIONS.map((d, i) => {
+    const current = i === readmePick.cursor;
+    return <Text key={d.kind} color={current ? "cyan" : undefined}>{current ? "❯ " : "  "}{d.key}  {d.label}</Text>;
+  })}<Text dimColor>j/k move · enter select · a/c/g/l · esc/q cancel</Text></Box>;
+
   if (readmePick) return <Box flexDirection="column"><Text bold>README actions · {readmePick.sessionId}</Text><Text>{readmePick.url ?? "(not generated yet)"}</Text>{README_ACTIONS.map((a, i) => {
     const current = i === readmePick.cursor;
     return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.needsUrl && !readmePick.url}>{current ? "❯ " : "  "}{a.key}  {a.label}</Text>;
-  })}<Text dimColor>j/k move · enter select · r/o/c · esc/q cancel</Text></Box>;
+  })}<Text dimColor>j/k move · enter select · r/o/c/p · esc/q cancel</Text></Box>;
 
   const prPickView = prPick ? rows.find((r) => r.session.id === prPick.sessionId) : undefined;
   if (prPick && prPickView) {

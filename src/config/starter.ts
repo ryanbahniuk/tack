@@ -40,7 +40,17 @@ export default ({
     // readme: "opus-5", // defaults to supervisor
   },
 
-  // readme: { publisher: "local" }, // defaults to claude-artifact when available
+  // Session README destination: "claude-artifact" (default when claude is available),
+  // "confluence", "google-doc" or "local". Override per run with
+  // \`tack session readme <id> --to <publisher>\` or the dashboard D menu. Confluence
+  // and Google Docs reuse your claude MCP servers/connectors (find names with
+  // \`claude mcp list\`) and send the digest-derived page to that tenant only when
+  // you explicitly publish.
+  // readme: {
+  //   publisher: "confluence",
+  //   confluence: { spaceKey: "~me", mcpServer: "Atlassian" }, // also site, parentId; default: personal space
+  //   googleDoc: { folderId: "1AbC…", mcpServer: "claude_ai_Google_Drive" }, // default: My Drive
+  // },
 
   // Personas have a unique name and description (review instructions). Humans
   // explicitly request reviews. Optional model accepts a key or non-empty
