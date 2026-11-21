@@ -160,7 +160,9 @@ untouched** — they belong to the repo. Tack layers its own context separately.
    **by path** — `claude --append-system-prompt-file`; for codex, a short `-c
    developer_instructions=…` directive to read the file first (codex's
    `model_instructions_file` would *replace* its base prompt, not add to it). Long
-   context never goes on the command line.
+   context never goes on the command line. Supervisor and agent context files append
+   personal guidance from `<TACK_HOME>/AGENTS.md` at each launch, after Tack rules;
+   repository guidance and Tack rules take precedence on conflict.
 2. **Live shared state.** Every agent's CLI mounts the **Tack coordination MCP
    server** (`tack __mcp <sessionId> <agentId>`), a standalone stdio MCP server
    backed by the shared SQLite DB. Tools: `read_shared_context`, `list_agents`,

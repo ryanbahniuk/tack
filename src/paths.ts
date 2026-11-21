@@ -13,6 +13,9 @@ import { join } from "node:path";
  */
 export const TACK_HOME = process.env.TACK_HOME ?? join(homedir(), ".tack");
 
+/** Personal guidance injected into supervisor and agent runs. */
+export const USER_GUIDANCE_PATH = join(TACK_HOME, "AGENTS.md");
+
 /** User config (a `.ts` module that `export default`s a config object). */
 export const CONFIG_PATH = join(TACK_HOME, "config.ts");
 /** SQLite database — metadata and refs only; large text lives on disk. */

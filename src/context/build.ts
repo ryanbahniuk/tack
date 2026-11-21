@@ -1,5 +1,6 @@
 import { writeContextFile } from "../artifacts/store";
 import type { AgentKind } from "../db";
+import { userGuidanceSection } from "./user-guidance";
 
 export interface AgentContextParts {
   sessionId: string;
@@ -26,7 +27,7 @@ export interface AgentContextParts {
  * via `report_pr_feedback`, and — like every agent — never pushes or talks to GitHub
  * itself; the watcher pushes its commits and posts the replies.
  */
-export function buildAgentContext(parts: AgentContextParts): string {
+export function buildAgentContext(parts: AgentContextParts, guidancePath?: string): string {
   const sections: string[] = [];
   const review = parts.kind === "review";
   const prFix = parts.kind === "pr_fix";
@@ -130,6 +131,9 @@ export function buildAgentContext(parts: AgentContextParts): string {
           ...commitGuidance,
         ].join("\n"),
   );
+
+  const guidance = userGuidanceSection(guidancePath);
+  if (guidance) sections.push(guidance);
 
   return writeContextFile(parts.sessionId, `${parts.agentId}.context.md`, sections.join("\n\n") + "\n");
 }
