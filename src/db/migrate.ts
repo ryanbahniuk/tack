@@ -418,6 +418,11 @@ const migrations: Migration[] = [
   { version: 25, name: "session_pr_fix_enabled", sql: ``, addColumns: [
     { table: "session_prs", column: "pr_fix_enabled", type: "INTEGER NOT NULL DEFAULT 1" },
   ] },
+  // Last-polled CI and review signals for the dashboard; NULL until the watcher polls.
+  { version: 26, name: "session_pr_ci_review", sql: ``, addColumns: [
+    { table: "session_prs", column: "ci_status", type: "TEXT" },
+    { table: "session_prs", column: "review_status", type: "TEXT" },
+  ] },
 ];
 
 /** Applies any pending migrations in a single transaction. */

@@ -4,8 +4,10 @@ import {
   listAgents,
   listSessionPrs,
   upsertSessionPr,
+  type PrCiStatus,
   type PrFeedbackKind,
   type PrMergeable,
+  type PrReviewStatus,
   type SessionPrRow,
 } from "../db";
 import { sessionIdFromPrBranch } from "../worktree/worktree";
@@ -342,6 +344,8 @@ export interface PrStatus {
   isDraft?: boolean;
   mergeable: PrMergeable | string | null;
   mergeStateStatus?: string | null;
+  /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED, or empty when the repo requires no reviews. */
+  reviewDecision?: string | null;
   baseRefName: string | null;
   headRefOid: string | null;
   headRefName: string | null;
@@ -384,7 +388,7 @@ export interface PrFeedbackItem {
 }
 
 const PR_STATUS_FIELDS =
-  "state,mergedAt,mergeCommit,isDraft,mergeable,mergeStateStatus,baseRefName,headRefOid,headRefName,url,title";
+  "state,mergedAt,mergeCommit,isDraft,mergeable,mergeStateStatus,reviewDecision,baseRefName,headRefOid,headRefName,url,title";
 
 /** Fetches a PR's state, mergeability, refs, conversation comments, and reviews. */
 export async function fetchPrStatus(repoPath: string, number: number): Promise<PrStatus> {
@@ -405,6 +409,7 @@ export async function fetchPrStatus(repoPath: string, number: number): Promise<P
     isDraft: raw.isDraft ?? false,
     mergeable: raw.mergeable ?? null,
     mergeStateStatus: raw.mergeStateStatus ?? null,
+    reviewDecision: raw.reviewDecision ?? null,
     baseRefName: raw.baseRefName ?? null,
     headRefOid: raw.headRefOid ?? null,
     headRefName: raw.headRefName ?? null,
@@ -491,6 +496,37 @@ export function isPendingCheck(check: PrCheck): boolean {
 export function isFailingCheck(check: PrCheck): boolean {
   return /^(fail|cancel)$/i.test(check.bucket ?? "") ||
     /^(FAILURE|FAIL|ERROR|CANCELLED|CANCELED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE)$/i.test(check.state ?? "");
+}
+
+/** Failing outranks pending so a red check shows before the rest of the suite settles. */
+export function ciStatusFrom(checks: PrCheck[]): PrCiStatus {
+  if (checks.some(isFailingCheck)) return "failing";
+  if (checks.some(isPendingCheck)) return "pending";
+  return checks.length > 0 ? "passing" : "none";
+}
+
+const REVIEW_DECISIONS: Record<string, PrReviewStatus> = {
+  APPROVED: "approved",
+  CHANGES_REQUESTED: "changes_requested",
+  REVIEW_REQUIRED: "review_required",
+};
+
+/** GitHub's reviewDecision is empty when no reviews are required, so fall back to
+ * each author's latest verdict (reviews arrive oldest first). */
+export function reviewStatusFrom(reviewDecision: string | null | undefined, reviews: GhReview[]): PrReviewStatus {
+  const decided = REVIEW_DECISIONS[(reviewDecision ?? "").toUpperCase()];
+  if (decided) return decided;
+  const latest = new Map<string, string>();
+  for (const review of reviews) {
+    const login = review.author?.login;
+    const state = (review.state ?? "").toUpperCase();
+    if (!login || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(state)) continue;
+    latest.set(login, state);
+  }
+  const states = [...latest.values()];
+  if (states.includes("CHANGES_REQUESTED")) return "changes_requested";
+  if (states.includes("APPROVED")) return "approved";
+  return "none";
 }
 
 /** No checks is green; a failed fetch must be represented separately by callers. */

@@ -125,8 +125,9 @@ src/artifacts/store.ts   refs → files (the DB only stores paths)
 `draft` argument. PR watch (`prWatch.enabled`, default true) auto-promotes once
 with `prWatch.autoReady` (default true): mergeable, no busy fix or outstanding
 feedback, explicit handled decisions/replies for non-CI items, and settled green
-current-head CI. Drafts fetch checks even with `fixCi: false`; fetch failures block
-promotion and zero checks is green. The durable `session_prs.ready_promoted_at`
+current-head CI. Every poll fetches checks (whatever `fixCi` says) and persists
+`session_prs.ci_status` / `review_status` for the dashboard badges; fetch failures
+block promotion and keep the last `ci_status`, and zero checks is green. The durable `session_prs.ready_promoted_at`
 latch respects a human's later return to draft. Keep readiness and CI ingestion
 on the same pending/failing predicates; promotion failures retry next tick. Per-session
 `pr_fix_enabled` controls automatic fix spawning independently of promotion; each

@@ -291,6 +291,8 @@ amendments(id, session_id→sessions, proposed_by→agents, proposal_ref,
 
 session_prs(id, session_id→sessions, agent_id, project_name, number, url, title,
             state, head_branch, mergeable, base_branch, head_sha, checked_at,
+            ci_status[passing|failing|pending|none],
+            review_status[approved|changes_requested|review_required|none],
             created_at, updated_at, UNIQUE(session_id, url))
 
 pr_feedback(id, session_pr_id→session_prs, source_id,
@@ -816,8 +818,9 @@ record new feedback or spawn automatic fixes for it. Turning either on wakes the
 watcher (a PR switch polls just that PR first). `check_prs` reports each PR's
 `prFixEnabled`. Explicit `fix_pr` remains available.
 
-Each pass, per PR: `gh pr view` → persist state/mergeable/base/head; skip merged or
-closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
+Each pass, per PR: `gh pr view` plus, for a PR that isn't merged or closed,
+`gh pr checks` → persist state/mergeable/base/head, `review_status` and `ci_status`;
+skip merged or closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
 completed; otherwise gather **new** feedback — unresolved review-thread comments,
 non-empty review bodies, conversation comments, bots included, minus anything
 already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
@@ -839,15 +842,24 @@ awaiting-post-fix agent, no fresh/released feedback, and no stored pending/faile
 decisions. Every non-CI feedback row must be handled with decision fixed, declined
 or not_applicable and a `reply_ref`; silently declined unreported items do not
 qualify. Current-head checks must all be settled and none failing/cancelled; zero
-checks is green. Draft checks are fetched even with `fixCi: false`, sharing one
-fetch with failure ingestion; fetch errors block readiness. A clean PR qualifies
+checks is green. Checks are fetched once per poll regardless of `fixCi`, shared by
+readiness, failure ingestion and `ci_status`; fetch errors block readiness. A clean PR qualifies
 without any prior fix run. On success the watcher latches
 `session_prs.ready_promoted_at`, persists state open and logs it. The latch is never
 cleared, so a human returning the PR to draft is respected. Promotion failures are
 logged and retried next tick. Disable `autoReady` for manual promotion.
 
-With `prWatch.fixCi` (default true), also fetch checks on the current PR head
-using `gh pr checks --json` (GraphQL `statusCheckRollup` for older gh). Wait until
+Every poll (`pollPrStatus`, shared with `fix_pr` and the dashboard's poll) fetches
+checks on the current PR head using `gh pr checks --json` (GraphQL
+`statusCheckRollup` for older gh) and stores `ci_status`: failing if any check
+failed, else pending if any is pending, else passing, or none for zero checks. A
+failed fetch keeps the last stored value. `review_status` maps `reviewDecision`
+directly; when it's empty (no required reviews) it falls back to each author's
+latest approved / changes-requested / dismissed review, with changes requested
+winning over approval. Discovery (`upsertSessionPr`) never writes either column, and
+`check_prs` reports both as `ciStatus` / `reviewStatus`.
+
+With `prWatch.fixCi` (default true), the watcher ingests failures from those checks. Wait until
 no check is pending before ingesting any failures; reviews and conflicts still
 proceed while CI is pending. Failed, cancelled, timed-out and startup-failure checks
 become `ci_check` feedback with source ids `ci:<headSha>:<workflow/name>`. The SHA
