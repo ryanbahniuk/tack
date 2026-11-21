@@ -28,8 +28,8 @@ test("dashboard displays boot badge, chooses worktrees, and confirms unboot", as
   const press = async (key: string) => { frame = ""; input.write(key); await Bun.sleep(30); await app.waitUntilRenderFlush(); };
   try {
     await app.waitUntilRenderFlush(); expect(frame).toContain("booted: web");
-    await press("b"); expect(frame).toContain("choose a worktree for web"); expect(frame).toContain(a.id); expect(frame).toContain(b.id);
-    await press("q"); await press("B"); expect(frame).toContain(`Unboot ${session.id}? (y/N)`);
+    await press("S"); await press("b"); expect(frame).toContain("choose a worktree for web"); expect(frame).toContain(a.id); expect(frame).toContain(b.id);
+    await press("q"); await press("S"); await press("B"); expect(frame).toContain(`Unboot ${session.id}? (y/N)`);
     await press("n"); expect(frame).toContain("cancelled");
   } finally { app.unmount(); for (const spy of spies) spy.mockRestore(); deleteSession(session.id); rmSync(dir, { recursive: true, force: true }); }
 });

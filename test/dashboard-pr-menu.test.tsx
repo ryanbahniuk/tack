@@ -99,7 +99,7 @@ test("several PRs show the target step; All PRs opens every PR", async () => {
     expect(ui.frame()).toContain("#1 Change 1 · app · open");
     expect(ui.frame()).toContain("#2 Change 2 · app · open · pr-fix off");
     await ui.press("\r");
-    expect(ui.frame()).toContain(`PRs · ${ui.id}`);
+    expect(ui.frame()).toContain(`PR actions · ${ui.id}`);
     await ui.press("o");
     expect(ui.spies.open.mock.calls).toEqual([[`${URL_BASE}/1`], [`${URL_BASE}/2`]]);
     expect(ui.frame()).toContain("opened 2 PRs in browser");

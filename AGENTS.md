@@ -155,7 +155,7 @@ review/auto-fix on all of a session's PRs or one.
 
 ## Restarting sessions
 
-`tack session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or
+`tack session restart <id>` (dashboard `S` → `r`) stops the supervisor even mid-turn or
 with a pending plan, revives orphaned or transient-failed agents except manual and
 `pr_fix` agents, and restarts dead or stale PR watchers when needed. The supervisor
 is parked detached in tmux; without tmux it stays stopped until resume. `--all`

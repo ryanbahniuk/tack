@@ -602,8 +602,8 @@ holder before taking its lock. A booting claim older than 15 minutes can be
 recovered without `--steal`. The resolved plan is stored so `unboot` uses the
 original teardown even after config changes. Archive and delete unboot; stop does
 not. `tack session boot-status <session>` shows processes and probes. In the
-session list, `b` boots and offers worktree choices and lock-steal confirmation;
-`B` confirms teardown. The booted project badge updates on the normal dashboard
+session list, `S` → `b` boots and offers worktree choices and lock-steal confirmation;
+`S` → `B` confirms teardown. The booted project badge updates on the normal dashboard
 refresh tick.
 
 
@@ -661,9 +661,9 @@ refresh tick.
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
   `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
-  Atlassian MCP client (`src/projects/jira.ts`); `P` polls now, sharing the
-  background tick's in-flight guard so the two never overlap. `J` opens the session's
-  tickets; `t` lists every ticket linked to any existing session, archived included
+  Atlassian MCP client (`src/projects/jira.ts`); `t` → `p` polls now, sharing the
+  background tick's in-flight guard so the two never overlap. `t` → `o` opens the session's
+  tickets; `t` → `t` lists every ticket linked to any existing session, archived included
   and regardless of `z` (one `listAllSessionJiraTickets` join, read on the 1s tick only
   while the view is open). Open work comes first, newest link first within each status,
   one row per session, with the session's state; `f` (status), `a` (archived) and `/`
@@ -703,7 +703,7 @@ across interruption, unarchive and transient retry.
 
 ### Restart session processes
 
-`session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or with a
+`session restart <id>` (dashboard `S` → `r`) stops the supervisor even mid-turn or with a
 pending plan, revives dropped agents, and restarts a dead or stale PR watcher when
 there are watchable PRs or unresolved dependencies. It parks the replacement in
 tmux with a restart seed; `session resume` attaches. Without tmux it stays stopped
