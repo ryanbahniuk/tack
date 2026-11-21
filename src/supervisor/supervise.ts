@@ -56,8 +56,7 @@ export { writeSupervisorPrompt } from "./prompt";
  * background runner start from an identical, already-persisted session — and so
  * the caller has the id to print (or spawn a runner against) before any work.
  */
-export function createSupervisorSession(problem: string, config: TackConfig): SessionRow {
-  const model = modelForRole(config, "supervisor");
+export function createSupervisorSession(problem: string, config: TackConfig, model = modelForRole(config, "supervisor")): SessionRow {
   return createSession({
     // The truncated prompt is only a stand-in until the summary model's title lands
     // (`src/session/title.ts`). Without a seed, the prompt-submit hook installs

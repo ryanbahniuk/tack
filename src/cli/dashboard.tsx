@@ -241,10 +241,17 @@ type Launch =
   /** Create a manual workspace, then edit it exactly like `edit`. Created after Ink
    * tears down: the worktree fetch can take seconds and must not freeze the UI. */
   | { kind: "manual"; sessionId: string; project: string; prId?: string }
+  | { kind: "ops" }
   | { kind: "create" }
   | { kind: "config" }
   | { kind: "output"; ref: string; title: string }
   | { kind: "follow"; agentId: string };
+
+export function dashboardLaunchCommand(launch: Extract<Launch, { kind: "ops" | "create" | "resume" }>) {
+  if (launch.kind === "ops") return selfCommand(["ops"]);
+  if (launch.kind === "create") return selfCommand(["session", "create"]);
+  return selfCommand(["session", "resume", launch.id, ...(launch.message ? ["--message", launch.message] : [])]);
+}
 
 /** A pending yes/no confirmation for stopping, deleting, or restoring work. */
 type Confirm =
@@ -256,7 +263,7 @@ type Confirm =
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · S session actions · p PR actions · t ticket actions · c new · h hold/unhold · a archive/unarchive · d delete · C config · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · S session actions · p PR actions · t ticket actions · c new · O ops · h hold/unhold · a archive/unarchive · d delete · C config · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -1142,6 +1149,9 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setShowArchived((v) => !v);
     } else if (input === "c") {
       runSessionAction(selected, "c");
+    } else if (input === "O") {
+      onLaunch({ kind: "ops" });
+      exit();
     } else if (input === "S") {
       if (!selected) return setNotice("no session selected · c to create one");
       setSessionPick({ sessionId: selected.session.id, cursor: 0 });
@@ -1851,7 +1861,7 @@ export async function runDashboard(): Promise<void> {
           ? editorInvocation(".")
         : launch.kind === "follow"
           ? selfCommand(["session", "follow", launch.agentId])
-        : selfCommand(launch.kind === "create" ? ["session", "create"] : ["session", "resume", launch.id, ...(launch.message ? ["--message", launch.message] : [])]);
+        : dashboardLaunchCommand(launch);
     const proc = Bun.spawn([command, ...args], {
       cwd: launch.kind === "edit" ? launch.path : undefined,
       stdin: "inherit",

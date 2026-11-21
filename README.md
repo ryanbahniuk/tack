@@ -155,6 +155,8 @@ The dashboard is the primary way to drive Tack.
 tack dashboard
 ```
 
+The global ops agent answers questions across sessions and can perform lifecycle actions. Its destructive actions require approval; those actions are unavailable when ops uses Codex, which cannot enforce per-tool approval. Session creation requires the selected supervisor model to use Claude so the human can approve its plan.
+
 The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR and ticket status. On terminals at least 140 columns wide it opens in split view, with work on the left and **Insights** on the right.
 
 | Key | Action |
@@ -162,6 +164,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `j` / `k` | Move |
 | `enter` / `o` | Open (rejoin) the selected session's supervisor |
 | `c` | Create a new session |
+| `O` | Open the global ops agent (`tack ops`); detach and reopen to continue. Use `tack ops --restart` to reload it |
 | `v` | Agents picker: `enter`/`o`/`v` shows output (a live follow for running agents), `e` edits a worktree, `n` creates a manual workspace |
 | `S` | Session actions: `c` new, `m` view amendments, `D` README actions, `r` restart, `b` boot, `B` unboot, `h` hold/unhold, `x` stop, `a` archive/unarchive, `d` delete. Restart asks first, parks the supervisor in tmux, revives dropped agents and restarts a dead or stale PR watcher. README actions offer `r` refresh (regenerate and republish to the current destination, or the default; asks first and names it), `o` open, `c` copy and `p` publish to… (pick Claude Artifact / Confluence / Google Doc / local, then confirm); open and copy need an existing README |
 | `t` | Ticket actions: `o` open this session's tickets, `t` browse all tickets, `p` poll Jira now. The tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `P` polls the filtered tickets’ sessions; `esc`/`q` goes back |
