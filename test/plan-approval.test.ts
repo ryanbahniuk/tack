@@ -14,101 +14,108 @@ function fixture() {
   setSessionAwaitingInput(session.id, "plan");
   return session.id;
 }
-function client(result: unknown, capable = true) {
-  const elicitInput = mock(async () => result);
+function client(...results: unknown[]) {
+  const queue = [...results];
+  const elicitInput = mock(async () => {
+    const next = queue.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  });
   return {
     elicitInput,
-    getClientCapabilities: () => capable ? { elicitation: {} } : {},
+    getClientCapabilities: () => ({ elicitation: {} }),
   } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
 }
+function incapableClient() {
+  return {
+    elicitInput: mock(async () => null),
+    getClientCapabilities: () => ({}),
+  } as unknown as Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">;
+}
+const PROMPT = "Review the plan below. Accept to approve it, or Decline to say what to change.";
+const TIMEOUT = { timeout: 24 * 60 * 60 * 1000 };
+const FEEDBACK_FORM = {
+  message: "What would you change in the plan?",
+  requestedSchema: {
+    type: "object",
+    properties: {
+      feedback: { type: "string", title: "What would you change?" },
+    },
+    required: ["feedback"],
+  },
+};
 
 test("plan approval message shows the full plan", () => {
-  const prompt = "Review the plan below. Submit blank to approve, or type what to change and press Submit. Decline discards anything typed.";
   expect(planApprovalMessage("\r\n  \r\nGoal sentence  \r\n\r\n  - tack: do X  \r\n- penny: do Y\r\n \r\n"))
-    .toBe(`${prompt}\n\nGoal sentence\n\n  - tack: do X\n- penny: do Y`);
-  expect(planApprovalMessage(" \n\t\n ")).toBe(prompt);
+    .toBe(`${PROMPT}\n\nGoal sentence\n\n  - tack: do X\n- penny: do Y`);
+  expect(planApprovalMessage(" \n\t\n ")).toBe(PROMPT);
 });
 
-test("accepted approval presents the form and approves", async () => {
+test("accept on the field-less decision form approves without a second form", async () => {
   const id = fixture();
-  const c = client({ action: "accept", content: {} });
-  expect(await requestPlanApproval(c, id, "Build it")).toMatchObject({ approved: true });
+  const c = client({ action: "accept", content: { feedback: "ignored" } });
+  expect(await requestPlanApproval(c, id, "Build it")).toEqual({ approved: true, note: expect.any(String) });
+  expect(c.elicitInput).toHaveBeenCalledTimes(1);
   expect(c.elicitInput).toHaveBeenCalledWith({
-    message: "Review the plan below. Submit blank to approve, or type what to change and press Submit. Decline discards anything typed.\n\nBuild it",
-    requestedSchema: {
-      type: "object",
-      properties: {
-        feedback: { type: "string", title: "What would you change?" },
-      },
-    },
-  }, { timeout: 24 * 60 * 60 * 1000 });
+    message: `${PROMPT}\n\nBuild it`,
+    requestedSchema: { type: "object", properties: {} },
+  }, TIMEOUT);
   expect(getSession(id)?.plan_approved_at).toBeTruthy();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
-for (const result of [
-  { action: "accept", content: { feedback: "   " } },
-  { action: "accept" },
-]) {
-  test(`${JSON.stringify(result)} approves`, async () => {
-    const id = fixture();
-    expect(await requestPlanApproval(client(result), id, "Plan")).toMatchObject({ approved: true });
-    expect(getSession(id)?.plan_approved_at).toBeTruthy();
-    expect(getSession(id)?.awaiting_input_at).toBeNull();
-  });
-}
-
-test("keep planning returns feedback without approval", async () => {
+test("decline opens a required feedback form whose answer keeps planning", async () => {
   const id = fixture();
-  const c = client({ action: "accept", content: { feedback: "Change scope" } });
+  const c = client({ action: "decline" }, { action: "accept", content: { feedback: "  Change scope " } });
   expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({
-    approved: false, keepPlanning: true, feedback: "Change scope",
+    approved: false, keepPlanning: true, feedback: "Change scope", note: expect.stringContaining("Revise the plan"),
   });
+  expect(c.elicitInput).toHaveBeenCalledTimes(2);
+  expect(c.elicitInput).toHaveBeenLastCalledWith(FEEDBACK_FORM, TIMEOUT);
   expect(getSession(id)?.plan_approved_at).toBeNull();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
-for (const result of [
-  { action: "cancel" },
-  { action: "decline" },
-]) {
-  test(`${JSON.stringify(result)} leaves the plan unapproved`, async () => {
+for (const [label, second] of [
+  ["blank accept", { action: "accept", content: { feedback: "   " } }],
+  ["accept without content", { action: "accept" }],
+  ["decline", { action: "decline" }],
+  ["cancel", { action: "cancel" }],
+  ["error", new Error("unavailable")],
+] as const) {
+  test(`decline then ${label} on the feedback form tells the supervisor to ask in chat`, async () => {
     const id = fixture();
-    expect(await requestPlanApproval(client(result), id, "Plan")).toMatchObject({ approved: false });
+    const c = client({ action: "decline" }, second);
+    const result = await requestPlanApproval(c, id, "Plan");
+    expect(result).toMatchObject({ approved: false, action: "decline" });
+    expect(result).not.toHaveProperty("keepPlanning");
+    const { note } = result as { note: string };
+    expect(note).toContain("declined the plan but gave no changes");
+    expect(note).toContain("Ask them in chat");
+    expect(note).toContain("Do NOT say they left no feedback");
+    expect(c.elicitInput).toHaveBeenCalledTimes(2);
     expect(getSession(id)?.plan_approved_at).toBeNull();
     expect(getSession(id)?.awaiting_input_at).toBeNull();
   });
 }
 
-for (const action of ["decline", "cancel"] as const) {
-  test(`${action} with feedback keeps planning`, async () => {
-    const id = fixture();
-    const c = client({ action, content: { feedback: "  Change scope " } });
-    expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({
-      approved: false, keepPlanning: true, feedback: "Change scope", action,
-    });
-    expect(getSession(id)?.plan_approved_at).toBeNull();
-    expect(getSession(id)?.awaiting_input_at).toBeNull();
-  });
-
-  for (const content of [undefined, {}, { feedback: "  " }]) {
-    test(`${action} without feedback (${JSON.stringify(content)}) asks to restate`, async () => {
-      const id = fixture();
-      const result = await requestPlanApproval(client({ action, content }), id, "Plan");
-      const { note } = result as { note: string };
-      expect(note).toContain("restate");
-      expect(note).toContain(action === "decline" ? "declined" : "dismissed");
-      expect(note).toContain("Do NOT say they left no feedback");
-      expect(result).toMatchObject({ approved: false, action });
-      expect(result).not.toHaveProperty("keepPlanning");
-      expect(getSession(id)?.plan_approved_at).toBeNull();
-      expect(getSession(id)?.awaiting_input_at).toBeNull();
-    });
-  }
-}
+test("cancel on the decision form skips the feedback form and asks in chat", async () => {
+  const id = fixture();
+  const c = client({ action: "cancel" });
+  const result = await requestPlanApproval(c, id, "Plan");
+  expect(result).toMatchObject({ approved: false, action: "cancel" });
+  expect(result).not.toHaveProperty("keepPlanning");
+  const { note } = result as { note: string };
+  expect(note).toContain("dismissed the approval form without deciding");
+  expect(note).toContain("Ask them in chat whether they want changes");
+  expect(note).toContain("Do NOT say they left no feedback");
+  expect(c.elicitInput).toHaveBeenCalledTimes(1);
+  expect(getSession(id)?.plan_approved_at).toBeNull();
+  expect(getSession(id)?.awaiting_input_at).toBeNull();
+});
 
 test("missing capability and elicitation errors preserve the awaiting marker", async () => {
-  for (const c of [client(null, false), client(Promise.reject(new Error("unavailable")))]) {
+  for (const c of [incapableClient(), client(new Error("unavailable"))]) {
     const id = fixture();
     const result = await requestPlanApproval(c, id, "Plan");
     expect(result).toMatchObject({ approved: false, note: expect.stringContaining(`tack session approve ${id}`) });
@@ -121,24 +128,40 @@ test("already approved skips elicitation", async () => {
   const id = fixture();
   approveSessionPlan(id);
   setSessionAwaitingInput(id, "plan");
-  const c = client(null);
+  const c = client();
   expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
   expect(c.elicitInput).not.toHaveBeenCalled();
   expect(getSession(id)?.awaiting_input_at).toBeNull();
 });
 
-for (const outcome of ["keep planning", "cancel", "decline with feedback", "error"]) {
-  test(`out-of-band approval wins over ${outcome}`, async () => {
+for (const outcome of ["cancel", "decline", "error"] as const) {
+  test(`out-of-band approval during the decision form wins over ${outcome}`, async () => {
     const id = fixture();
-    const c = client(null);
+    const c = client();
     c.elicitInput = mock(async () => {
       approveSessionPlan(id);
       if (outcome === "error") throw new Error("unavailable");
-      if (outcome === "cancel") return { action: "cancel" as const };
-      if (outcome === "decline with feedback") return { action: "decline" as const, content: { feedback: "revise" } };
+      return { action: outcome };
+    });
+    expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
+    expect(c.elicitInput).toHaveBeenCalledTimes(1);
+    expect(getSession(id)?.awaiting_input_at).toBeNull();
+  });
+}
+
+for (const outcome of ["feedback", "decline", "error"] as const) {
+  test(`out-of-band approval during the feedback form wins over ${outcome}`, async () => {
+    const id = fixture();
+    const c = client();
+    c.elicitInput = mock(async (params: { requestedSchema: { properties: object } }) => {
+      if (!Object.keys(params.requestedSchema.properties).length) return { action: "decline" as const };
+      approveSessionPlan(id);
+      if (outcome === "error") throw new Error("unavailable");
+      if (outcome === "decline") return { action: "decline" as const };
       return { action: "accept" as const, content: { feedback: "revise" } };
     });
     expect(await requestPlanApproval(c, id, "Plan")).toMatchObject({ approved: true });
+    expect(c.elicitInput).toHaveBeenCalledTimes(2);
     expect(getSession(id)?.awaiting_input_at).toBeNull();
   });
 }
