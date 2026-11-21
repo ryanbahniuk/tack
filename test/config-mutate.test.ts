@@ -73,6 +73,19 @@ describe("path resolution", () => {
     expect((await readAuthoredConfig(path)).prWatch).toEqual({ autoReady: false });
   });
 
+  test("sets and unsets global and project ignored authors", async () => {
+    const path = configFile(BASE);
+    const paths = [["prWatch", "ignoreAuthors"], ["projects", "tack", "prWatch", "ignoreAuthors"]];
+    await apply(path, paths.map(path => ({ op: "set" as const, path, value: ["tfyoudoing"] })));
+    let config = await loadConfig(path);
+    expect(config.prWatch.ignoreAuthors).toEqual(["tfyoudoing"]);
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.ignoreAuthors).toEqual(["tfyoudoing"]);
+    await apply(path, paths.map(path => ({ op: "unset" as const, path })));
+    config = await loadConfig(path);
+    expect(config.prWatch.ignoreAuthors).toEqual([]);
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.ignoreAuthors ?? []).toEqual([]);
+  });
+
   test("unknown identifiers and settings are errors", async () => {
     const path = configFile(BASE);
     await expect(prepareConfigChange(path, [{ op: "set", path: ["projects", "nope", "description"], value: "x" }]))
