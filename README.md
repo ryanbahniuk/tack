@@ -155,6 +155,8 @@ The dashboard is the primary way to drive Tack.
 tack dashboard
 ```
 
+The global ops agent answers questions across sessions and can perform lifecycle actions. Its destructive actions require approval; those actions are unavailable when ops uses Codex, which cannot enforce per-tool approval. Session creation requires the selected supervisor model to use Claude so the human can approve its plan.
+
 The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR and ticket status. On terminals at least 140 columns wide it opens in split view, with work on the left and **Insights** on the right.
 
 | Key | Action |
@@ -162,6 +164,7 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `j` / `k` | Move |
 | `enter` / `o` | Open (rejoin) the selected session's supervisor |
 | `c` | Create a new session |
+| `O` | Open the global ops agent (`tack ops`); detach and reopen to continue. Use `tack ops --restart` to reload it |
 | `v` | Agents picker: `enter`/`o`/`v` shows output (a live follow for running agents), `e` edits a worktree, `n` creates a manual workspace |
 | `m` | View pending amendments (read-only) |
 | `J` | Open the session's Jira tickets in the browser |

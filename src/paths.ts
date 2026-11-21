@@ -58,3 +58,5 @@ export function supervisorCwd(sessionId: string): string {
 export function supervisorArtifactsDir(sessionId: string): string {
   return join(supervisorCwd(sessionId), "artifacts");
 }
+
+export function opsDir(): string { return join(TACK_HOME, "ops"); }

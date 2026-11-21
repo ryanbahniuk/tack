@@ -129,7 +129,7 @@ export function tmuxListSessions(spawn: typeof spawnSync = spawnSync): Set<strin
  * is applied with an `env` prefix on the pane command rather than tmux's `-e` (which
  * older tmux lacks, and which wouldn't reach a pane spawned by a running server).
  */
-export function tmuxEnsureSession(sessionId: string, cwd: string, spec: InteractiveSpec): boolean {
+export function tmuxEnsureSession(sessionId: string, cwd: string, spec: InteractiveSpec, reopenCommand?: string): boolean {
   const name = tmuxSessionName(sessionId);
   if (tmuxHasSession(name)) return true;
   const envPrefix = spec.env
@@ -142,7 +142,7 @@ export function tmuxEnsureSession(sessionId: string, cwd: string, spec: Interact
   );
   if (created.status !== 0) return false;
   tmuxBindNewSessionKey();
-  tmuxSetStatusHint(sessionId);
+  tmuxSetStatusHint(sessionId, reopenCommand);
   return true;
 }
 
@@ -171,9 +171,11 @@ export function insideTmux(): boolean {
 /**
  * Build the status hint for the current attach context. Nested tmux needs the
  * prefix doubled for all shortcuts to reach Tack's inner session. */
-export function statusHintText(sessionId: string, prefix: string, nested: boolean): string {
+export function statusHintText(sessionId: string, prefix: string, nested: boolean, reopenCommand?: string): string {
   const keys = nested ? `${prefix} ${prefix}` : prefix;
-  return ` #[bold]tack#[default] ${sessionId}  ·  detach: ${keys} d  ·  new session: ${keys} ${TMUX_NEW_SESSION_KEY}  ·  tack bug: ${keys} ${TMUX_TACK_BUG_KEY}  ·  resume: tack session resume ${sessionId} `;
+  return reopenCommand !== undefined
+    ? ` #[bold]tack#[default] ops  ·  detach: ${keys} d  ·  new session: ${keys} ${TMUX_NEW_SESSION_KEY}  ·  reopen: ${reopenCommand} `
+    : ` #[bold]tack#[default] ${sessionId}  ·  detach: ${keys} d  ·  new session: ${keys} ${TMUX_NEW_SESSION_KEY}  ·  tack bug: ${keys} ${TMUX_TACK_BUG_KEY}  ·  resume: tack session resume ${sessionId} `;
 }
 
 /**
@@ -184,11 +186,11 @@ export function statusHintText(sessionId: string, prefix: string, nested: boolea
  * inside or outside tmux on different occasions. Refresh the binding too, so
  * rejoining a server started by an older Tack installs the shortcut.
  */
-export function tmuxSetStatusHint(sessionId: string): void {
+export function tmuxSetStatusHint(sessionId: string, reopenCommand?: string): void {
   tmuxBindNewSessionKey();
   const name = tmuxSessionName(sessionId);
   const prefix = tmuxPrefixKey();
-  const hint = statusHintText(sessionId, prefix, insideTmux());
+  const hint = statusHintText(sessionId, prefix, insideTmux(), reopenCommand);
   const set = (option: string, value: string) =>
     spawnSync("tmux", tmuxArgs("set-option", "-t", name, option, value), { stdio: "ignore" });
   set("status", "on");

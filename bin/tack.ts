@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { launchOps } from "../src/ops/launch";
+import { runOpsServer } from "../src/mcp/ops-server";
 import { bootSession, unbootSession, bootStatus } from "../src/boot";
 import { decodePreflight } from "../src/agent/preflight";
 import { followAgent } from "../src/cli/follow";
@@ -1725,10 +1727,17 @@ const sessionCreateDefault = defineCommand({
   run: sessionCreate.run,
 });
 
+const ops = defineCommand({
+  meta: { name: "ops", description: "Open the Tack operations agent" },
+  args: { restart: { type: "boolean", description: "Restart the ops agent", default: false } },
+  async run({ args }) { const outcome = await launchOps(await loadConfig(), args.restart); console.log(outcome.detached ? "Ops detached. Reopen with tack ops." : "Ops exited. Reopen with tack ops."); },
+});
+
 const main = defineCommand({
   meta: { name: "tack", description: "Runtime-neutral supervisor over Claude Code and Codex" },
   subCommands: {
     init,
+    ops,
     runtimes,
     projects,
     models,
@@ -1750,6 +1759,8 @@ const hidden = process.argv[2];
 if (hidden === "__mcp") {
   const [, , , sessionId, agentId] = process.argv;
   await runCoordinationServer(sessionId!, agentId!);
+} else if (hidden === "__ops-mcp") {
+  await runOpsServer();
 } else if (hidden === "__supervisor-mcp") {
   const [, , , sessionId] = process.argv;
   await runSupervisorServer(sessionId!);
