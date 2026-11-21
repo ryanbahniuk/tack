@@ -33,6 +33,8 @@ import {
   listPrFixAgents,
   listPrFixRuns,
   listSessionPrs,
+  listSessionJiraTickets,
+  listProjectPrHeadBranches,
   prFeedbackSourceIds,
   setAgentRefs,
   setSessionPrBodyRef,
@@ -58,7 +60,7 @@ import { checkModelOffered } from "../runtimes/availability";
 import { spawnAgentRunner } from "../agent/detached";
 import { spawnSessionTitler } from "../session/title";
 import { manualWorkspaceDiff } from "../session/manual";
-import { commitWorktreeAsync, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
+import { commitWorktreeAsync, jiraPrBranchName, uniquePrBranch, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
 import {
   fetchPrChecks,
   enrichCiLogs,
@@ -596,7 +598,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
           : "Only call this AFTER the agents finish, you've summarized what each did, and the human has " +
             "explicitly approved opening PRs. ") +
         "Commits leftover changes using the PR title as the commit subject, merges the latest remote base, then pushes its worktree branch under the " +
-        "tack/pr/<session>/<slug> nomenclature, and runs `gh pr create`; returns the PR url and baseSync. " +
+        "<TICKET>_<description> when a Jira ticket is linked, else tack/pr/<session>/<slug>, and runs `gh pr create`; returns the PR url and baseSync. " +
         "PRs open as drafts by default (draftPrs); the watcher promotes them once comments are addressed and CI is green. " +
         "Open upstream PRs first, then pass awaitsRelease with their agent IDs; give downstream work a temporary pin until release. " +
         "A base conflict is aborted and handed to a pr_fix agent when PR watch and its guards allow it. ",
@@ -605,7 +607,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         awaitsRelease: z.array(z.object({ agentId: z.string() })).optional().describe("Upstream agents whose open PRs must release before this PR is ready"),
         title: z.string().trim().min(1).describe("PR title"),
         body: z.string().describe("PR description (markdown)"),
-        slug: z.string().optional().describe("Short branch slug; derived from the title if omitted"),
+        slug: z.string().optional().describe("Short branch description; derived from the title if omitted. Used in <TICKET>_<description> with a linked Jira ticket, else tack/pr/<session>/<slug>"),
         base: z.string().optional().describe("Base branch to target; defaults to the repo's default branch"),
         draft: z.boolean().optional().describe("Request a draft PR; draftPrs forces drafts even when false. The watcher promotes addressed PRs with green CI."),
       },
@@ -658,10 +660,15 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         prFixSkipped?: string;
       } = await syncBranchWithBase(proj.path, branch, worktreePath, base);
       const asDraft = config.draftPrs || !!draft;
+      const tickets = listSessionJiraTickets(sessionId).filter((ticket) => JIRA_KEY_RE.test(ticket.key));
+      const ticket = tickets.find((row) => row.agent_id === agentId) ?? tickets[0];
+      const prBranch = ticket
+        ? await uniquePrBranch(proj.path, jiraPrBranchName(ticket.key, slug ?? title), listProjectPrHeadBranches(proj.name))
+        : sessionPrBranch(sessionId, slug ?? title);
       const pr = await openSessionPr({
         repoPath: proj.path,
         localBranch: branch,
-        prBranch: sessionPrBranch(sessionId, slug ?? title),
+        prBranch,
         title,
         body,
         base,

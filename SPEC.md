@@ -467,9 +467,10 @@ stdout/stderr to the log, and yields parsed JSON lines.
 4. The supervisor `wait_for_agents`, `read_agent_output`, adjudicates amendments,
    runs `check_conflicts`, optionally spawns follow-ups, and finishes with a
    summary. It then opens **one PR per unit of work** (the deliverable — N reviewable
-   PRs, see Positioning) in every affected repo, on `tack/pr/<sessionId>/<slug>`
-   branches; agents only commit to their worktree, and `open_pr` folds in anything
-   they left uncommitted. By default (`autoOpenPrs: true`) the supervisor opens them
+   PRs, see Positioning) in every affected repo, on `<TICKET>_<description>`
+   branches when a Jira ticket is linked, otherwise `tack/pr/<sessionId>/<slug>`.
+   Agents only commit to their worktree, and `open_pr` folds in anything they left
+   uncommitted. By default (`autoOpenPrs: true`) the supervisor opens them
    on its own once `check_conflicts` is clean — the human gate is review/merge of
    each PR, not permission to open it. The setting is presented to the supervisor
    as the human's explicit authorization to commit, push, and open PRs, so user-level
@@ -641,8 +642,8 @@ refresh tick.
   maximum per day; blanks mean out of range. Aligned KPIs show signed changes
   vs the previous period, preserving meaning without color. A grouped read every
   5s catches archived changes too; identical stats never trigger a repaint.
-- **PRs** — `gh pr list` per touched repo, filtered to `tack/pr/<sessionId>/…`
-  branches, upserted into `session_prs`. `p` opens the PR actions menu: pick All PRs
+- **PRs** — `gh pr list` per touched repo, matched to `tack/pr/<sessionId>/…`
+  branches or stored session PR head branches, upserted into `session_prs`. `p` opens the PR actions menu: pick All PRs
   or one PR (skipped for a single PR), then open, copy link (single PR), poll, review
   with a persona, or toggle auto-fix for that target.
   Existing PRs adopted with `link_pr` (`src/session/link-pr.ts`) are ordinary rows with

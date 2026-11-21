@@ -51,7 +51,7 @@ export interface OpenPrInput {
   repoPath: string;
   /** The agent's internal worktree branch holding its commits. */
   localBranch: string;
-  /** The `tack/pr/<sessionId>/<slug>` branch to push it to (discovery nomenclature). */
+  /** The Jira-named or `tack/pr/<sessionId>/<slug>` branch to push it to. */
   prBranch: string;
   title: string;
   body: string;
@@ -119,8 +119,8 @@ export async function pushBranch(
 
 /**
  * Opens a PR for an agent's committed work on the supervisor's behalf: pushes the
- * agent's worktree branch to the remote under the `tack/pr/<sessionId>/…`
- * nomenclature (so `discoverSessionPrs` can tie it back) and runs `gh pr create`.
+ * agent's worktree branch to the remote under a Jira-named or session-prefixed
+ * name and runs `gh pr create`.
  * The supervisor — not agents — owns this step, so it can summarize and get the
  * human's approval first. Throws with a one-line reason on failure to report.
  */
@@ -219,6 +219,15 @@ async function ghPrListAsync(repoPath: string): Promise<GhPr[]> {
   }
 }
 
+/** Associate stored head branches with their sessions for a single project. */
+export function sessionPrBranches(rows: SessionPrRow[], projectName: string): Map<string, string> {
+  const branches = new Map<string, string>();
+  for (const row of rows) {
+    if (row.project_name === projectName && row.head_branch) branches.set(row.head_branch, row.session_id);
+  }
+  return branches;
+}
+
 /**
  * Refreshes PR status for many sessions at once — the dashboard's background poll,
  * covering every currently-listed session with one `gh pr list` per distinct project
@@ -260,8 +269,9 @@ export async function refreshSessionPrs(config: TackConfig, sessionIds: string[]
       skipped.push({ project: projectName, reason: (err as Error).message });
       continue;
     }
+    const knownBranches = sessionPrBranches(union(), projectName);
     for (const pr of prs) {
-      const sessionId = sessionIdFromPrBranch(pr.headRefName);
+      const sessionId = sessionIdFromPrBranch(pr.headRefName) ?? knownBranches.get(pr.headRefName);
       if (!sessionId) continue;
       const agentId = agentBySession.get(sessionId);
       if (!agentId) continue; // not one of the sessions we were asked to refresh
