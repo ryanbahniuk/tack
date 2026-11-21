@@ -1,6 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { renderUsage, type CommandDef, type Resolvable } from 'citty';
+import { docsIndex, findSection, searchDocs } from '../ops/docs';
+import { readConfigView } from './supervisor-server';
 import { join } from 'node:path';
 import { loadConfig, modelForRole } from '../config/load';
 import { agentCostBySession, countOpenPrFeedbackByPr, getAgent, getSession, latestSharedContext, listAgentsBySession, listPendingAmendmentsBySession, listPrDependencies, listSessionJiraTicketsBySession, listSessionPrsBySession, listSessions } from '../db';
@@ -34,8 +37,30 @@ function views(includeArchived = false) {
     return { session: s, base, agents: aa, prs: pp.map(p => ({ ...p, watch: { openFeedback: feedback.get(p.id) ?? 0, fixing: aa.some(a => a.kind === 'pr_fix' && a.session_pr_id === p.id && (a.status === 'pending' || a.status === 'running' || (a.status === 'done' && !a.post_fixed_at))), dependency: listPrDependencies(s.id).find(d => d.downstream_pr_id === p.id && ['waiting_merge', 'waiting_release', 'bump_queued'].includes(d.status))?.package } })), tickets: tickets.get(s.id) ?? [], amendments: amendments.get(s.id) ?? [] };
   });
 }
-export async function runOpsServer(): Promise<void> {
+async function resolve<T>(value: Resolvable<T>): Promise<T> {
+  return typeof value === 'function' ? await (value as () => T | Promise<T>)() : await value;
+}
+async function cliHelp(cli: CommandDef | undefined, path: string[]): Promise<string> {
+  if (!cli) throw new Error('CLI help is unavailable: no command tree was provided.');
+  let cmd = cli, parent: CommandDef | undefined;
+  for (const name of path) {
+    const children = cmd.subCommands ? await resolve(cmd.subCommands) : {};
+    const names = Object.keys(children).filter(key => !key.startsWith('__'));
+    if (!names.includes(name)) throw new Error(`Unknown command "${name}". Valid subcommands: ${names.join(', ') || '(none)'}`);
+    parent = cmd;
+    cmd = await resolve(children[name]!);
+  }
+  const children = cmd.subCommands ? await resolve(cmd.subCommands) : undefined;
+  const visible = children && Object.fromEntries(Object.entries(children).filter(([name]) => !name.startsWith('__')));
+  return renderUsage({ ...cmd, subCommands: visible }, parent);
+}
+export async function runOpsServer(opts: { cli?: CommandDef } = {}): Promise<void> {
   const server = new McpServer({ name: OPS_MCP_NAME, version: '1.0.0' });
+  server.registerTool('tack_docs_index', { description: 'List built-in Tack documentation sections.', inputSchema: {}, annotations: { readOnlyHint: true } }, async () => result(docsIndex()));
+  server.registerTool('read_tack_docs', { description: 'Read a built-in Tack documentation section.', inputSchema: { doc: z.enum(['readme', 'spec']), section: sid, tailChars: tail }, annotations: { readOnlyHint: true } }, async ({ doc, section, tailChars }) => result(reportExcerpt(findSection(doc, section).text, tailChars ?? 50000, tailChars !== undefined)));
+  server.registerTool('search_tack_docs', { description: 'Search built-in Tack documentation.', inputSchema: { query: sid, limit: z.number().int().min(1).max(25).optional() }, annotations: { readOnlyHint: true } }, async ({ query, limit }) => result(searchDocs(query, limit ?? 8)));
+  server.registerTool('tack_cli_help', { description: 'Show Tack command usage and flags.', inputSchema: { command: z.array(z.string()).optional() }, annotations: { readOnlyHint: true } }, async ({ command }) => result(reportExcerpt(await cliHelp(opts.cli, command ?? []), 50000)));
+  server.registerTool('read_config', { description: 'Read the redacted Tack config.', inputSchema: {}, annotations: { readOnlyHint: true } }, async () => result(await readConfigView()));
   const requireView = (id: string) => { const v = views(true).find(v => v.session.id === id); if (!v) throw new Error(`Unknown session ${id}`); return v; };
   server.registerTool('list_sessions', { description: 'List Tack sessions.', inputSchema: { includeArchived: z.boolean().optional(), status: z.string().optional(), query: z.string().optional(), since: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }, annotations: { readOnlyHint: true } }, async ({ includeArchived, status, query, since, limit }) => result(views(includeArchived).filter(v => (!status || v.base.status === status) && (!query || (v.base.title ?? '').toLowerCase().includes(query.toLowerCase())) && (!since || v.base.updated_at >= since)).slice(0, limit ?? 100).map(v => v.base)));
   server.registerTool('show_session', { description: 'Inspect a session.', inputSchema: { sessionId: sid }, annotations: { readOnlyHint: true } }, async ({ sessionId }) => { const v = requireView(sessionId); return result({ ...v.base, prompt: reportExcerpt(readReportFile(join(LOGS_DIR, sessionId, 'supervisor.prompt')), 12000), summary: reportExcerpt(sessionSummaryText(v.session), 12000), contract: reportExcerpt(readArtifact(latestSharedContext(sessionId)?.body_ref), 12000), agents: v.agents, prs: v.prs, tickets: v.tickets, amendments: v.amendments }); });

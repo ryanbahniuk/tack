@@ -1760,7 +1760,7 @@ if (hidden === "__mcp") {
   const [, , , sessionId, agentId] = process.argv;
   await runCoordinationServer(sessionId!, agentId!);
 } else if (hidden === "__ops-mcp") {
-  await runOpsServer();
+  await runOpsServer({ cli: main });
 } else if (hidden === "__supervisor-mcp") {
   const [, , , sessionId] = process.argv;
   await runSupervisorServer(sessionId!);
