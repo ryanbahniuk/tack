@@ -394,6 +394,9 @@ tack projects remove <name|path>
 | `path` | yes | `~` is expanded. |
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
+| `projects[].prWatch.ignoreAuthors` | no | GitHub authors to ignore for this project, in addition to the global list. |
+
+For example, set `prWatch: { ignoreAuthors: ["tfyoudoing"] }` on the `chime-tf` project.
 
 `projects add` and `projects refresh` have the summary model write `description`
 and `metadata` for you. `tack session create` also auto-registers the current git
@@ -485,6 +488,7 @@ different from the author's when one is available.
 | `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
 | `prWatch.autoPush` | `true` | Push fix commits (never force). |
 | `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
+| `prWatch.ignoreAuthors` | `[]` | GitHub authors whose feedback is ignored across all projects. Matching is case-insensitive and ignores a trailing `[bot]`. |
 | `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
 | `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
 | `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |

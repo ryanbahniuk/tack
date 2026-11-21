@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { ConfigSchema, PrWatchSchema, type TackConfig } from "../src/config/schema";
+import { ConfigSchema, PrWatchSchema, ProjectSchema, type TackConfig } from "../src/config/schema";
 import { migrate } from "../src/db/migrate";
 import {
   createAgent, createSession, getSessionPr, listSessionPrs, markSessionPrReadyPromoted,
@@ -84,6 +84,13 @@ describe("PR readiness config and persistence", () => {
     const base = { roles: { supervisor: "x", agent: "x", summary: "x" } };
     expect(ConfigSchema.parse(base).draftPrs).toBe(true);
     expect(ConfigSchema.parse({ ...base, draftPrs: false }).draftPrs).toBe(false);
+    expect(PrWatchSchema.parse(undefined).ignoreAuthors).toEqual([]);
+    expect(PrWatchSchema.parse({}).ignoreAuthors).toEqual([]);
+    expect(PrWatchSchema.parse({ ignoreAuthors: ["bot"] }).ignoreAuthors).toEqual(["bot"]);
+    const project = { name: "app", path: "/app", description: "app" };
+    expect(ProjectSchema.parse(project).prWatch).toBeUndefined();
+    expect(ProjectSchema.parse({ ...project, prWatch: {} }).prWatch?.ignoreAuthors).toEqual([]);
+    expect(ProjectSchema.parse({ ...project, prWatch: { ignoreAuthors: ["bot"] } }).prWatch?.ignoreAuthors).toEqual(["bot"]);
     expect(PrWatchSchema.parse(undefined).autoReady).toBe(true);
     expect(PrWatchSchema.parse({}).autoReady).toBe(true);
     expect(PrWatchSchema.parse({ autoReady: false }).autoReady).toBe(false);
@@ -197,6 +204,17 @@ describe("watcher promotion", () => {
     try { await run({ session, pr, config, logs: [], checks, promote }); }
     finally { for (const mock of mocks.reverse()) mock.mockRestore(); }
   }
+  test("settles ignored pending feedback without spawning or blocking promotion", async () => {
+    await fixture(async ({ session, pr, config, promote }) => {
+      const db = await import("../src/db");
+      config.projects[0]!.prWatch = { ignoreAuthors: ["noise"] };
+      db.insertPrFeedback({ sessionPrId: pr.id, sourceId: "ignored", sourceKind: "issue_comment", author: "NOISE[bot]", bodyRef: "/body", url: pr.url });
+      await watchPr(session, pr, config, () => {});
+      expect(db.listPrFeedback(pr.id)[0]).toMatchObject({ decision: "not_applicable", handled_at: expect.any(String), reply_ref: null, reply_url: null });
+      expect(db.listPrFixAgents(pr.id)).toHaveLength(0);
+      expect(promote).toHaveBeenCalledTimes(1);
+    });
+  });
   test("fetches checks with fixCi disabled and promotes a clean PR before the fix cap", async () => {
     await fixture(async ({ session, pr, config, checks, promote, logs }) => {
       const { setSessionPrFixEnabled } = await import("../src/db");

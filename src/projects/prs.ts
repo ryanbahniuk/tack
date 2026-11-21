@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { RuntimeKind, TackConfig } from "../config/schema";
+import type { Project, RuntimeKind, TackConfig } from "../config/schema";
 import {
   listAgents,
   listSessionPrs,
@@ -664,6 +664,17 @@ export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
     || KNOWN_BOT_LOGINS.has((a.login ?? "").replace(/\[bot\]$/i, "").toLowerCase());
 }
 
+export function isIgnoredAuthor(login: string | null | undefined, ignoreList: readonly string[]): boolean {
+  if (!login) return false;
+  const normalize = (value: string) => value.replace(/\[bot\]$/i, "").toLowerCase();
+  const author = normalize(login);
+  return ignoreList.some((entry) => normalize(entry) === author);
+}
+
+export function ignoredAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "ignoreAuthors"> }, project: Project): string[] {
+  return [...new Set([...(config.prWatch.ignoreAuthors ?? []), ...(project.prWatch?.ignoreAuthors ?? [])])];
+}
+
 /** Headings that open informational bot PR summaries (Cursor, CodeRabbit, Copilot).
  * Matched against the first visible line, case-insensitively. */
 const BOT_SUMMARY_HEADINGS = [
@@ -703,13 +714,14 @@ export function normalizeFeedback(
   status: Pick<PrStatus, "comments" | "reviews" | "url">,
   threads: ReviewThread[],
   alreadyHandledIds: Iterable<string>,
+  ignoreAuthors: readonly string[] = [],
 ): PrFeedbackItem[] {
   const seen = new Set(alreadyHandledIds);
   const out: PrFeedbackItem[] = [];
   const take = (item: PrFeedbackItem) => {
     if (!item.body.trim()) return;
     if (item.body.includes(PR_WATCH_MARKER)) return;
-    if (isBotPrSummary(item)) return;
+    if (isBotPrSummary(item) || isIgnoredAuthor(item.author, ignoreAuthors)) return;
     if (seen.has(item.sourceId)) return;
     seen.add(item.sourceId); // de-dupe within one pass too
     out.push(item);
