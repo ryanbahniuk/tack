@@ -268,7 +268,7 @@ export function configUpdateMessage(reason: string, changedPaths: string[], diff
 const CONFIG_WRITTEN_NOTE =
   "Config written. Every live session, including this one (supervisor and PR watcher), is now marked stale. " +
   "autoOpenPrs, autoLinkPrs, draftPrs, roles.supervisor, personas and jira take full effect only after " +
-  "`tack session refresh <id>` (or `r` in the dashboard). roles.agent, projects and models apply " +
+  "`tack session refresh <id>` (or `S` → `r` in the dashboard). roles.agent, projects and models apply " +
   "immediately to this session's tool calls. Tell the human which of their changes need a refresh.";
 
 /**

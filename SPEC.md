@@ -604,8 +604,8 @@ holder before taking its lock. A booting claim older than 15 minutes can be
 recovered without `--steal`. The resolved plan is stored so `unboot` uses the
 original teardown even after config changes. Archive and delete unboot; stop does
 not. `tack session boot-status <session>` shows processes and probes. In the
-session list, `b` boots and offers worktree choices and lock-steal confirmation;
-`B` confirms teardown. The booted project badge updates on the normal dashboard
+session list, `S` → `b` boots and offers worktree choices and lock-steal confirmation;
+`S` → `B` confirms teardown. The booted project badge updates on the normal dashboard
 refresh tick.
 
 
@@ -663,9 +663,9 @@ refresh tick.
   stored in `session_jira_tickets`, and shown under the session's PRs (collapsed
   roll-up + per-ticket rows colored by status category) in `tack dashboard` and in
   `tack session show`. The dashboard refreshes status every 2 minutes via one long-lived
-  Atlassian MCP client (`src/projects/jira.ts`); `P` polls now, sharing the
-  background tick's in-flight guard so the two never overlap. `J` opens the session's
-  tickets; `t` lists every ticket linked to any existing session, archived included
+  Atlassian MCP client (`src/projects/jira.ts`); `t` → `p` polls now, sharing the
+  background tick's in-flight guard so the two never overlap. `t` → `o` opens the session's
+  tickets; `t` → `t` lists every ticket linked to any existing session, archived included
   and regardless of `z` (one `listAllSessionJiraTickets` join, read on the 1s tick only
   while the view is open). Open work comes first, newest link first within each status,
   one row per session, with the session's state; `f` (status), `a` (archived) and `/`
@@ -705,7 +705,7 @@ across interruption, unarchive and transient retry.
 
 ### Restart session processes
 
-`session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or with a
+`session restart <id>` (dashboard `S` → `r`) stops the supervisor even mid-turn or with a
 pending plan, revives dropped agents, and restarts a dead or stale PR watcher when
 there are watchable PRs or unresolved dependencies. It parks the replacement in
 tmux with a restart seed; `session resume` attaches. Without tmux it stays stopped
@@ -1028,4 +1028,4 @@ A downstream PR can declare upstream session PRs with `awaitsRelease`. Tack infe
 
 ## Session READMEs
 
-A human can request a session README from the CLI or dashboard. Tack builds a bounded digest of the session and asks the configured `readme` role to author a self-contained HTML page in a read-only runtime. A separate `PagePublisher` (`src/publish/`) delivers it to one of four destinations: `local` (a `file://` URL), `claude-artifact` (a private Claude Artifact), `confluence` (a private page in the user's personal space or `readme.confluence.spaceKey`) or `google-doc` (an unshared native Google Doc in My Drive or `readme.googleDoc.folderId`). Each publisher declares the `format` its author step must produce (`html` for artifact/local using `README_PAGE_SPEC`, `markdown` for Confluence/Google Docs using `README_DOC_SPEC`) and `owns(url)`. `readme.publisher` is the default; `tack session readme --to` and the dashboard `D` → `p` picker override it for one run. A refresh with no override picks the publisher that owns the session's current URL, else the default, and passes `existingUrl` only to a publisher that owns it, so it updates in place; switching destination creates a new page and replaces the session's single README URL without deleting the old one. The Confluence and Google Docs publishers follow the artifact pattern: a headless read-only, shell-less `claude -p` run with `RunOptions.inheritUserMcp` (the claude adapter drops `--strict-mcp-config` so the user's own MCP servers and claude.ai connectors load; Codex ignores it) and an `allowTools` list naming only `Read` plus the specific connector tools. Tack makes no direct REST calls and holds no credentials. The run ends with `PUBLISHED_URL:` / `PRIVATE: yes|no|unverified`; Tack takes the last URL the publisher owns and returns a warning unless privacy was confirmed. Publishing sends the digest-derived page to claude.ai or the internal Atlassian / Google Workspace tenant and only happens when the human triggers it. The digest and HTML live in the artifact store; the database stores their refs and publication URL. Use `tack session readme <id> --link <url>` or `--unlink`, or the supervisor tools `link_readme` / `unlink_readme`, to manage an existing page link without a model or network call. Regeneration republishes into and overwrites the linked URL; `--no-publish` keeps the link. To add another destination (e.g. a Codex equivalent of artifacts), implement `PagePublisher`, add its kind to `PUBLISHER_KINDS` and the config enum, and return it from `publisherFor` in `src/publish/index.ts`; the runtime-neutral authoring stage stays unchanged.
+A human can request a session README from the CLI or dashboard. Tack builds a bounded digest of the session and asks the configured `readme` role to author a self-contained HTML page in a read-only runtime. A separate `PagePublisher` (`src/publish/`) delivers it to one of four destinations: `local` (a `file://` URL), `claude-artifact` (a private Claude Artifact), `confluence` (a private page in the user's personal space or `readme.confluence.spaceKey`) or `google-doc` (an unshared native Google Doc in My Drive or `readme.googleDoc.folderId`). Each publisher declares the `format` its author step must produce (`html` for artifact/local using `README_PAGE_SPEC`, `markdown` for Confluence/Google Docs using `README_DOC_SPEC`) and `owns(url)`. `readme.publisher` is the default; `tack session readme --to` and the dashboard `S` → `D` → `p` picker override it for one run. A refresh with no override picks the publisher that owns the session's current URL, else the default, and passes `existingUrl` only to a publisher that owns it, so it updates in place; switching destination creates a new page and replaces the session's single README URL without deleting the old one. The Confluence and Google Docs publishers follow the artifact pattern: a headless read-only, shell-less `claude -p` run with `RunOptions.inheritUserMcp` (the claude adapter drops `--strict-mcp-config` so the user's own MCP servers and claude.ai connectors load; Codex ignores it) and an `allowTools` list naming only `Read` plus the specific connector tools. Tack makes no direct REST calls and holds no credentials. The run ends with `PUBLISHED_URL:` / `PRIVATE: yes|no|unverified`; Tack takes the last URL the publisher owns and returns a warning unless privacy was confirmed. Publishing sends the digest-derived page to claude.ai or the internal Atlassian / Google Workspace tenant and only happens when the human triggers it. The digest and HTML live in the artifact store; the database stores their refs and publication URL. Use `tack session readme <id> --link <url>` or `--unlink`, or the supervisor tools `link_readme` / `unlink_readme`, to manage an existing page link without a model or network call. Regeneration republishes into and overwrites the linked URL; `--no-publish` keeps the link. To add another destination (e.g. a Codex equivalent of artifacts), implement `PagePublisher`, add its kind to `PUBLISHER_KINDS` and the config enum, and return it from `publisherFor` in `src/publish/index.ts`; the runtime-neutral authoring stage stays unchanged.
