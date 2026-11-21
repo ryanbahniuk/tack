@@ -17,6 +17,9 @@ export function opsDecision(alive: boolean, resumeRef: string | undefined, resta
 export function opsLaunchPlan(alive: boolean, resumeRef: string | undefined, restart: boolean) {
   return { kill: restart, decision: opsDecision(alive, resumeRef, restart) };
 }
+export function opsContext(): string {
+  return 'You are the global Tack operations agent. Answer questions about current and historical Tack work using your introspection tools. Run lifecycle actions when asked. Never approve plans, send keys or messages into a session TUI, write config, spawn agents, or open PRs. New sessions you create wait for human plan approval in the dashboard. Answer questions about how Tack works using tack_cli_help for commands and flags, search_tack_docs and read_tack_docs with README for user-facing behavior including dashboard keys, config reference and troubleshooting, and SPEC for design and rationale. Use read_config to understand how this install is configured; the human makes config changes with tack config edit. Name the documentation section you relied on. When the docs and help do not cover something, say so rather than guessing about internals.';
+}
 export async function launchOps(config: TackConfig, restart = false): Promise<{ code: number; detached: boolean }> {
   const cwd = opsDir(), statePath = join(cwd, 'state.json');
   mkdirSync(cwd, { recursive: true });
@@ -34,7 +37,7 @@ export async function launchOps(config: TackConfig, restart = false): Promise<{ 
     state = { model: model.key, ...(resumeRef ? { resumeRef } : {}) };
     writeFileSync(statePath, JSON.stringify(state));
     const contextFile = join(cwd, 'context.md');
-    writeFileSync(contextFile, 'You are the global Tack operations agent. Answer questions about current and historical Tack work using your introspection tools. Run lifecycle actions when asked. Never approve plans, send keys or messages into a session TUI, write config, spawn agents, or open PRs. New sessions you create wait for human plan approval in the dashboard.');
+    writeFileSync(contextFile, opsContext());
     const runtime = selectRuntime(model.runtime), mcp = selfCommand(['__ops-mcp']);
     const opts: RunOptions = { prompt: '', cwd, model, bin: resolveRuntime(config, model.runtime).bin, readOnly: true, disallowShell: true, trustedDirs: [cwd], resume: decision === 'resume', sessionRef: resumeRef, contextFile, mcpServers: [{ name: OPS_MCP_NAME, ...mcp, ...(model.runtime === 'codex' ? { env: { TACK_OPS_GATED_DISABLED: '1' } } : {}) }], approvalTools: OPS_APPROVAL_TOOLS, approvalPrompt: 'Run this Tack action?', logPath: join(LOGS_DIR, 'ops', 'ops.log') };
     spec = runtime.interactiveCommand(opts);

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { opsDecision, opsLaunchPlan } from './launch';
+import { opsContext, opsDecision, opsLaunchPlan } from './launch';
 import { statusHintText } from '../session/tmux';
 
 test('ops attaches to a live TUI and otherwise resumes a stored conversation', () => {
@@ -21,4 +21,11 @@ import { selfCommand } from '../process/self';
 
 test('dashboard launches ops through the CLI handoff', () => {
   expect(dashboardLaunchCommand({ kind: 'ops' })).toEqual(selfCommand(['ops']));
+});
+
+
+test('ops context uses documentation tools and preserves human plan approval', () => {
+  const context = opsContext();
+  for (const tool of ['tack_cli_help', 'search_tack_docs', 'read_tack_docs', 'read_config']) expect(context).toContain(tool);
+  expect(context).toContain('Never approve plans');
 });

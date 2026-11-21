@@ -155,7 +155,7 @@ The dashboard is the primary way to drive Tack.
 tack dashboard
 ```
 
-The global ops agent answers questions across sessions and can perform lifecycle actions. Its destructive actions require approval; those actions are unavailable when ops uses Codex, which cannot enforce per-tool approval. Session creation requires the selected supervisor model to use Claude so the human can approve its plan.
+The global ops agent answers questions across sessions and about how Tack works using its built-in docs, CLI help, and your config, and can perform lifecycle actions. Run `tack ops --restart` to reload it. Its destructive actions require approval; those actions are unavailable when ops uses Codex, which cannot enforce per-tool approval. Session creation requires the selected supervisor model to use Claude so the human can approve its plan.
 
 The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR and ticket status. On terminals at least 140 columns wide it opens in split view, with work on the left and **Insights** on the right.
 
