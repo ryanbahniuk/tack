@@ -793,6 +793,13 @@ export function listSessionPrs(sessionId: string): SessionPrRow[] {
     .all(sessionId) as SessionPrRow[];
 }
 
+/** All stored head branches in a project, including PRs from other sessions. */
+export function listProjectPrHeadBranches(projectName: string): string[] {
+  const rows = getDb().prepare(`SELECT head_branch FROM session_prs WHERE project_name = ? AND head_branch IS NOT NULL`)
+    .all(projectName) as Array<{ head_branch: string }>;
+  return rows.map((row) => row.head_branch);
+}
+
 export function getSessionPr(id: string): SessionPrRow | null {
   return (getDb().prepare(`SELECT * FROM session_prs WHERE id = ?`).get(id) as SessionPrRow) ?? null;
 }
