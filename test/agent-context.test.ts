@@ -1,21 +1,19 @@
-import { expect, mock, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { userGuidanceSection } from "../src/context/user-guidance";
-
-let written = "";
-mock.module("../src/artifacts/store", () => ({
-  writeContextFile: (_sessionId: string, _name: string, body: string) => {
-    written = body;
-    return "/dev/null";
-  },
-}));
-const { buildAgentContext } = await import("../src/context/build");
+import * as store from "../src/artifacts/store";
+import { buildAgentContext } from "../src/context/build";
 
 test("personal guidance is last for every agent kind and absent when missing", () => {
   const dir = mkdtempSync(join(tmpdir(), "tack-agent-guidance-"));
   const path = join(dir, "AGENTS.md");
+  let written = "";
+  const writer = spyOn(store, "writeContextFile").mockImplementation((_sessionId, _name, body) => {
+    written = body;
+    return "/dev/null";
+  });
   try {
     for (const kind of ["agent", "pr_fix", "review"] as const) {
       const parts = { sessionId: "test", agentId: "test", projectName: "test", kind };
@@ -28,6 +26,7 @@ test("personal guidance is last for every agent kind and absent when missing", (
       rmSync(path);
     }
   } finally {
+    writer.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
