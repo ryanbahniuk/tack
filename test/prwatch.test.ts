@@ -12,6 +12,8 @@ import {
   feedbackQuote,
   fetchPrStatus,
   isBotAuthor,
+  isIgnoredAuthor,
+  ignoredAuthorsFor,
   isBotPrSummary,
   normalizeFeedback,
   type PrStatus,
@@ -79,6 +81,31 @@ function thread(isResolved: boolean, ids: number[], body = "please fix"): Review
     },
   };
 }
+
+describe("ignored feedback authors", () => {
+  test("matches exact logins without case or bot suffix differences", () => {
+    for (const [login, ignored] of [["TFYouDoing[bot]", "tfyoudoing"], ["tfyoudoing", "TFYOUDOING[bot]"], ["alice", "ALICE"]]) {
+      expect(isIgnoredAuthor(login, [ignored])).toBe(true);
+    }
+    expect(isIgnoredAuthor("alice-extra", ["alice"])).toBe(false);
+    expect(isIgnoredAuthor("alice", [])).toBe(false);
+  });
+  test("combines global and project lists", () => {
+    const project = { name: "app", path: "/app", description: "app", prWatch: { ignoreAuthors: ["project", "global"] } };
+    expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: ["global"] } }, project)).toEqual(["global", "project"]);
+    expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: [] } }, { name: "app", path: "/app", description: "app" })).toEqual([]);
+  });
+  test("filters every feedback kind while keeping another author's thread reply", () => {
+    const t = thread(false, [1, 2]);
+    t.comments!.nodes![0]!.author = { login: "noise[bot]" };
+    const items = normalizeFeedback(status({
+      comments: [{ id: "ignored-comment", author: { login: "noise" }, body: "fix" }, { id: "kept-comment", author: { login: "bob" }, body: "fix" }],
+      reviews: [{ id: "ignored-review", author: { login: "NOISE" }, body: "fix" }, { id: "kept-review", author: { login: "bob" }, body: "fix" }],
+    }), [t], [], ["noise"]);
+    expect(items.map(item => item.sourceId)).toEqual(["2", "kept-review", "kept-comment"]);
+    expect(items[0]!.inReplyTo).toBe("1");
+  });
+});
 
 describe("normalizeFeedback", () => {
   test("includes unresolved thread comments and excludes resolved threads", () => {

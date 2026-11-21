@@ -37,6 +37,7 @@ export const ProjectSchema = z.object({
   description: z.string().min(1),
   /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
   metadata: ProjectMetadataSchema.optional(),
+  prWatch: z.object({ ignoreAuthors: z.array(z.string().min(1)).default([]) }).optional(),
   boot: BootRecipeSchema.extend({ recipe: z.string().min(1).optional() }).optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
@@ -170,6 +171,7 @@ export const PrWatchSchema = z
     autoPush: z.boolean().default(true),
     reply: z.boolean().default(true),
     fixCi: z.boolean().default(true),
+    ignoreAuthors: z.array(z.string().min(1)).default([]),
     maxFixRunsPerDay: z.number().int().nonnegative().default(5),
   })
   .default({
@@ -179,6 +181,7 @@ export const PrWatchSchema = z
     autoPush: true,
     reply: true,
     fixCi: true,
+    ignoreAuthors: [],
     maxFixRunsPerDay: 5,
   });
 export type PrWatch = z.infer<typeof PrWatchSchema>;
