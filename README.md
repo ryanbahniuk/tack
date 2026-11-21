@@ -141,6 +141,10 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 
 ---
 
+## Personal guidance
+
+Put personal preferences in `~/.tack/AGENTS.md` (or `$TACK_HOME/AGENTS.md`). Tack includes this file in every supervisor and agent run it launches, for both claude and codex. It does not affect claude or codex started outside Tack. Their own `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` still load; move shared preferences into the Tack file to avoid duplicates. Edits apply on the next launch or resume.
+
 ## Everyday use
 
 ### Dashboard

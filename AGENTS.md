@@ -40,6 +40,7 @@ src/mcp/                 coordination-server.ts (agents), supervisor-server.ts (
 src/agent/               execute.ts (prepare/run + activity/error), continue.ts (pre-PR continuation), detached.ts (background runner, dependency self-gate + retry)
 src/supervisor/          supervise.ts (runner), context.ts (system context), conflicts.ts (overlap/collision detection), write-guard.ts (publishable-page write scope)
 src/context/build.ts     per-agent context file
+src/context/user-guidance.ts  launch-time personal guidance injection
 src/worktree/            session-scoped worktrees, background base cache, supervisor snapshots (syncSnapshot) + PR branch nomenclature
 src/projects/            prs.ts (gh-based PR discovery + PR-watch fetch/normalize/reply), jira.ts (track-only ticket status via the Atlassian MCP), summarize.ts (auto-describe a repo)
 src/prwatch/             watch.ts (per-session PR watcher: poll, spawn pr_fix agents, push + reply, promote drafts), prompt.ts
