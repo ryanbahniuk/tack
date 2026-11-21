@@ -139,7 +139,7 @@ export const SUPERVISOR_PLAN_APPROVAL_TOOL = `mcp__${SUPERVISOR_MCP_NAME}__reque
 const PLAN_ELICITATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 export function planApprovalMessage(summary: string): string {
-  const prompt = "Review the plan below. Submit blank to approve, or type what to change and press Submit. Decline discards anything typed.";
+  const prompt = "Review the plan below. Accept to approve it, or Decline to say what to change.";
   const lines = summary.replace(/\r\n/g, "\n").split("\n").map((line) => line.trimEnd());
   while (lines.length && !lines[0]) lines.shift();
   while (lines.length && !lines[lines.length - 1]) lines.pop();
@@ -149,16 +149,16 @@ export function planApprovalMessage(summary: string): string {
 
 /**
  * Only the human client's accepted elicitation can open an unapproved gate: the
- * response comes from the human, not the model. The form asks a single optional
- * "What would you change?" — accepted blank (or missing) approves, accepted with
- * feedback keeps planning. Decline/cancel never approve: if the client did send
- * non-blank feedback with them it is honored as keep-planning feedback, but most
- * clients (Claude Code included) drop typed text on decline/dismiss, so without it
- * the supervisor is told the text may have been lost and to ask the human to
- * restate — never to report that they left no feedback. An already-approved
- * session is safe to short-circuit because its gate was opened through an
- * existing human or pre-approval path. Everything else (no capability, errors)
- * fails closed, while respecting an approval made out of band during the prompt.
+ * response comes from the human, not the model. Approval is two forms because
+ * clients (Claude Code included) send no content on decline/cancel, so a text field
+ * beside the Decline button silently loses whatever was typed. The first form is
+ * Accept/Decline only; a Decline opens a second form whose required field asks what
+ * to change, returned as keep-planning feedback. A dismiss, or a Decline with no
+ * changes given, has the supervisor ask in chat — never report that they left no
+ * feedback. An already-approved session is safe to short-circuit because its gate
+ * was opened through an existing human or pre-approval path. No capability or an
+ * error on the first form fails closed, and an approval made out of band during
+ * either prompt always wins.
  */
 export async function requestPlanApproval(
   client: Pick<McpServer["server"], "getClientCapabilities" | "elicitInput">,
@@ -179,40 +179,55 @@ export async function requestPlanApproval(
     if (clearAwaiting) clearSessionAwaitingInput(sessionId);
     return result;
   };
+  let decision: Awaited<ReturnType<typeof client.elicitInput>>;
   try {
     if (!client.getClientCapabilities()?.elicitation) return nonApproval(unavailable, false);
-    const result = await client.elicitInput({
+    decision = await client.elicitInput({
       message: planApprovalMessage(summary),
+      requestedSchema: { type: "object", properties: {} },
+    }, { timeout: PLAN_ELICITATION_TIMEOUT_MS });
+  } catch {
+    return nonApproval(unavailable, false);
+  }
+  if (decision.action === "accept") {
+    approveSessionPlan(sessionId);
+    return approved;
+  }
+  if (decision.action === "cancel") {
+    return nonApproval({
+      approved: false,
+      action: "cancel",
+      note: "The human dismissed the approval form without deciding. Do NOT say they left no feedback. " +
+        "Ask them in chat whether they want changes, then call request_plan_approval again.",
+    }, true);
+  }
+  if (getSession(sessionId)?.plan_approved_at) return approved;
+  let feedback = "";
+  try {
+    const result = await client.elicitInput({
+      message: "What would you change in the plan?",
       requestedSchema: {
         type: "object",
         properties: {
           feedback: { type: "string", title: "What would you change?" },
         },
+        required: ["feedback"],
       },
     }, { timeout: PLAN_ELICITATION_TIMEOUT_MS });
-    const feedback = typeof result.content?.feedback === "string" ? result.content.feedback.trim() : "";
+    if (result.action === "accept" && typeof result.content?.feedback === "string") {
+      feedback = result.content.feedback.trim();
+    }
+  } catch {}
+  if (feedback) {
     const revise = "Human wants to keep planning. Revise the plan (and shared contract if needed) per the feedback, then call request_plan_approval again.";
-    if (result.action === "accept") {
-      if (!feedback) {
-        approveSessionPlan(sessionId);
-        return approved;
-      }
-      return nonApproval({ approved: false, keepPlanning: true, feedback, note: revise }, true);
-    }
-    if (feedback) {
-      return nonApproval({ approved: false, keepPlanning: true, feedback, action: result.action, note: revise }, true);
-    }
-    const how = result.action === "decline" ? "declined" : "dismissed";
-    return nonApproval({
-      approved: false,
-      action: result.action,
-      note: `The human ${how} the approval form. The form does not pass typed text back on decline or dismiss, ` +
-        "so any feedback they typed may not have arrived. Do NOT say they left no feedback. Ask the human to " +
-        "restate the changes they want in chat, then call request_plan_approval again.",
-    }, true);
-  } catch {
-    return nonApproval(unavailable, false);
+    return nonApproval({ approved: false, keepPlanning: true, feedback, note: revise }, true);
   }
+  return nonApproval({
+    approved: false,
+    action: "decline",
+    note: "The human declined the plan but gave no changes. Do NOT say they left no feedback. " +
+      "Ask them in chat what they want changed, then call request_plan_approval again.",
+  }, true);
 }
 
 /**
@@ -447,9 +462,9 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     "request_plan_approval",
     {
       description:
-        "Present your full plan in a form asking what the human would change. A blank submission approves; " +
-        "feedback means revise the plan and call this again; on decline or cancel, typed text may be lost, so ask the " +
-        "human to restate their changes (never assume there were none). " +
+        "Present your full plan in an Accept/Decline form. Accept approves. Decline prompts the human for the " +
+        "changes they want, which come back as feedback: revise the plan and call this again. If they dismiss the " +
+        "form, or decline without giving changes, ask in chat (never claim they left no feedback). " +
         "`spawn_agent` is blocked until the plan is approved.",
       inputSchema: {
         summary: z
