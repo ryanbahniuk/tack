@@ -66,7 +66,11 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
     models: parsed.models,
     roles,
-    readme: { publisher: parsed.readme?.publisher ?? (parsed.runtimes.claude || parsed.models.some(m => m.runtime === "claude") || Bun.which("claude") ? "claude-artifact" : "local") },
+    readme: {
+      publisher: parsed.readme?.publisher ?? (parsed.runtimes.claude || parsed.models.some(m => m.runtime === "claude") || Bun.which("claude") ? "claude-artifact" : "local"),
+      ...(parsed.readme?.confluence ? { confluence: parsed.readme.confluence } : {}),
+      ...(parsed.readme?.googleDoc ? { googleDoc: parsed.readme.googleDoc } : {}),
+    },
     personas,
     runtimes: {
       claude: expandBin(parsed.runtimes.claude),

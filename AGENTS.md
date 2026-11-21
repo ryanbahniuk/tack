@@ -47,7 +47,7 @@ src/session/lifecycle.ts stop / archive / delete
 src/session/edit.ts      worktree editor target resolution + post-edit Git summary
 src/session/manual.ts    manual workspaces (kind "manual"): project resolution, creation, live diff
 src/session/readme.ts    bounded session digest, README authoring and link management
-src/publish/             pluggable local and Claude Artifact page publishers
+src/publish/             pluggable README publishers: local, Claude Artifact, Confluence, Google Doc (connector.ts: shared headless claude run + PUBLISHED_URL/PRIVATE parsing)
 src/session/review.ts    human-requested persona review startup
 src/session/pr-fix.ts    session and per-PR auto-fix toggles
 src/session/link-pr.ts   link_pr / unlink_pr: adopt an existing GitHub PR (baseline its feedback (fix_pr includeExisting reopens it), latch readiness)
@@ -168,4 +168,4 @@ refresh of stale processes without reviving agents. Logic lives in
 
 Release-gated dependencies use `open_pr` with `awaitsRelease` after opening the upstream PR. PR watch waits for a containing GitHub release or tag, queues an uncapped dependency fix, and blocks draft promotion while it waits. No package registry or configuration setting determines publication.
 
-Session READMEs can be linked or unlinked with `tack session readme <id> --link <url>` / `--unlink` or supervisor tools `link_readme` / `unlink_readme`. Regeneration republishes into and overwrites the linked URL; `--no-publish` keeps the link.
+Session READMEs can be linked or unlinked with `tack session readme <id> --link <url>` / `--unlink` or supervisor tools `link_readme` / `unlink_readme`. Regeneration republishes into and overwrites the linked URL when the chosen destination owns it; `--no-publish` keeps the link. `readme.publisher` sets the default destination (`claude-artifact`, `confluence`, `google-doc`, `local`); `--to <kind>` or the dashboard `D` → `p` picker overrides it for one run, and a plain refresh keeps the destination that owns the current URL. Confluence and Google Docs publishing need the claude runtime plus the user's Atlassian MCP / Google Drive connector (`claude mcp list` shows server names): the publish run sets `inheritUserMcp` (drops `--strict-mcp-config`) but stays read-only and shell-less, allowing only `Read` and the listed connector tools. Every other run keeps strict MCP isolation. Tests inject runners; never make live publish calls.

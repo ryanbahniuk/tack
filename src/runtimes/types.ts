@@ -61,6 +61,13 @@ export interface RunOptions {
    * runs (e.g. project summarization) leave it off and keep Bash for investigation.
    */
   disallowShell?: boolean;
+  /**
+   * Load the user's own MCP servers and claude.ai connectors instead of strictly
+   * isolating the run to Tack's servers. Only for explicitly triggered publish runs
+   * that must reach a connector (Confluence, Google Drive); pair it with `readOnly`
+   * and a narrow `allowTools` list. Runtimes without such config ignore it.
+   */
+  inheritUserMcp?: boolean;
   /** Extra directories the run may read beyond its cwd (project roots, allowlist). */
   addDirs?: string[];
   /** Tack-owned directories the runtime may pre-record workspace trust for; never user-configured directories. */

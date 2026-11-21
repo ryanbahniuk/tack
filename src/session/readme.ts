@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { agentArtifactPath, writeSessionReadme, writeSessionReadmeDigest } from "../artifacts/store";
+import { agentArtifactPath, writeSessionReadme, writeSessionReadmeDigest, writeSessionReadmeMarkdown } from "../artifacts/store";
 import { modelForRole } from "../config/load";
 import type { TackConfig } from "../config/schema";
 import { clearSessionReadme, getSession, latestSharedContext, listAgents, listSessionJiraTickets, listSessionPrs, setSessionReadme, type SessionRow } from "../db";
@@ -9,15 +9,20 @@ import { LOGS_DIR } from "../paths";
 import { selfInvocation } from "../process/self";
 import { resolveRuntime, selectRuntime } from "../runtimes";
 import type { AgentEvent, RunOptions } from "../runtimes/types";
-import { selectPublisher } from "../publish";
+import { selectReadmePublisher } from "../publish";
 import { parseArtifactUrl } from "../publish/claude-artifact";
-import type { PagePublisher } from "../publish/types";
+import { isPublisherKind, PUBLISHER_KINDS, type PagePublisher, type PublisherKind } from "../publish/types";
 import { claudeReportTranscriptPath, extractReportTranscript, readReportFile, reportExcerpt } from "./bug-report";
 
 export const README_PAGE_SPEC = `Create a self-contained README-style HTML page from ONLY the digest below. Never invent PRs, links or statuses. Label unfinished or unknown rollout steps next; omit sections rather than pad them.
 Use an eyebrow, h1 and lede, concept or repo cards, diagrams or code explaining the mental model and technical approach, rollout phase cards with done/next/wait pills, a known trade-off warning callout, and a Pull requests table (Repo | PR | What it covers | Status + detail) followed by Status as of the digest date, and a footer. Use inline SVG diagrams with CSS tokens so they work in both themes.
 Define CSS tokens on :root, dark overrides under @media (prefers-color-scheme: dark){:root:not([data-theme="light"])} and :root[data-theme="dark"]. Set an explicit body background, max-width about 860px, 16px side gutters, and no horizontal page scroll at phone widths. Google Fonts is the only permitted external stylesheet; no external scripts. The title element must have 2–4 words.
 Output exactly one HTML document between <<<README_HTML and README_HTML>>> and nothing else.`;
+
+export const README_DOC_SPEC = `Create a README-style document in GitHub-flavored Markdown from ONLY the digest below. Never invent PRs, links or statuses. Label unfinished or unknown rollout steps next; omit sections rather than pad them.
+Start with one # heading of 2–4 words (the page title) and a short lede paragraph. Then cover the concepts or repos involved, the mental model and technical approach, rollout phases, a known trade-off callout as a blockquote, and a Pull requests table (Repo | PR | What it covers | Status + detail) followed by Status as of the digest date.
+Use headings, tables and lists. Show status as bold text labels such as **Done**, **Next** or **Waiting**. Draw diagrams as fenced text blocks. No raw HTML, SVG or CSS.
+Output exactly one Markdown document between <<<README_MD and README_MD>>> and nothing else.`;
 
 /** Count changed lines per file without exposing patch contents. */
 export function parseDiffStat(patch: string): string {
@@ -58,6 +63,11 @@ export function extractReadmeHtml(raw: string): string {
   if (html) return html[0];
   throw new Error("Author returned no HTML document");
 }
+export function extractReadmeMarkdown(raw: string): string {
+  const marked = raw.match(/<<<README_MD\s*([\s\S]*?)\s*README_MD>>>/i);
+  if (marked?.[1]?.trim()) return marked[1].trim() + "\n";
+  throw new Error("Author returned no Markdown document");
+}
 export function normalizeReadmeLink(raw: string): string {
   const url = raw.trim();
   let parsed: URL;
@@ -79,9 +89,18 @@ export function unlinkSessionReadme(sessionId: string): { removedUrl: string | n
   clearSessionReadme(sessionId);
   return { removedUrl: session.readme_url };
 }
-export async function generateSessionReadme(config: TackConfig, sessionId: string, opts: { publish?: boolean; runAuthor?: (opts: RunOptions) => AsyncIterable<AgentEvent>; publisher?: PagePublisher } = {}): Promise<{ file: string; url?: string; publisher: string }> {
+/** Validates `tack session readme` flag combinations; returns an error message or undefined. */
+export function readmeArgsConflict(args: { link?: string; unlink?: boolean; publish?: boolean; to?: string }): string | undefined {
+  if (args.to !== undefined && !isPublisherKind(args.to)) return `--to must be one of ${PUBLISHER_KINDS.join(", ")}`;
+  if (args.to !== undefined && (args.link !== undefined || args.unlink || args.publish === false)) return "--to can't be combined with --link, --unlink or --no-publish";
+  if ([args.link !== undefined, !!args.unlink, args.publish === false].filter(Boolean).length > 1) return "--link, --unlink and --no-publish are mutually exclusive";
+  return undefined;
+}
+export async function generateSessionReadme(config: TackConfig, sessionId: string, opts: { publish?: boolean; runAuthor?: (opts: RunOptions) => AsyncIterable<AgentEvent>; publisher?: PagePublisher; publisherKind?: PublisherKind } = {}): Promise<{ file: string; url?: string; publisher: PublisherKind; warning?: string }> {
   const session = getSession(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
+  const publisher = opts.publisher ?? selectReadmePublisher(config, session.readme_url, opts.publisherKind);
+  const markdown = publisher.format === "markdown";
   const digest = buildSessionReadmeDigest(session);
   const digestFile = writeSessionReadmeDigest(sessionId, digest);
   const model = modelForRole(config, "readme");
@@ -89,26 +108,31 @@ export async function generateSessionReadme(config: TackConfig, sessionId: strin
   const bin = opts.runAuthor ? model.runtime : resolveRuntime(config, model.runtime).bin;
   mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
   let text = "", summary = "";
-  for await (const ev of (opts.runAuthor ?? ((o) => runtime.run(o)))({ prompt: `${README_PAGE_SPEC}\n\n${digest}`, cwd: dirname(digestFile), model, bin, readOnly: true, disallowShell: true, logPath: join(LOGS_DIR, sessionId, "readme.log") })) {
+  for await (const ev of (opts.runAuthor ?? ((o) => runtime.run(o)))({ prompt: `${markdown ? README_DOC_SPEC : README_PAGE_SPEC}\n\n${digest}`, cwd: dirname(digestFile), model, bin, readOnly: true, disallowShell: true, logPath: join(LOGS_DIR, sessionId, "readme.log") })) {
     if (ev.type === "text") text += ev.text;
     else if (ev.type === "done") summary = ev.summary ?? "";
     else if (ev.type === "error") throw new Error(ev.message);
   }
-  const html = extractReadmeHtml(text || summary);
-  const file = writeSessionReadme(sessionId, html);
-  const publisher = opts.publisher ?? selectPublisher(config);
-  const title = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || session.title || "Session README";
-  const url = opts.publish === false ? undefined : (await publisher.publish({ file, title, description: `README for session ${sessionId}`, existingUrl: session.readme_url })).url;
-  setSessionReadme(sessionId, { ref: file, url: opts.publish === false ? session.readme_url : url });
-  return { file, url, publisher: publisher.kind };
+  const body = markdown ? extractReadmeMarkdown(text || summary) : extractReadmeHtml(text || summary);
+  const file = markdown ? writeSessionReadmeMarkdown(sessionId, body) : writeSessionReadme(sessionId, body);
+  const authoredTitle = markdown ? body.match(/^#[ \t]+(.+?)[ \t#]*$/m)?.[1]?.trim() : body.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim();
+  const title = authoredTitle || session.title || "Session README";
+  if (opts.publish === false) {
+    setSessionReadme(sessionId, { ref: file, url: session.readme_url });
+    return { file, publisher: publisher.kind };
+  }
+  const existingUrl = session.readme_url && publisher.owns(session.readme_url) ? session.readme_url : null;
+  const result = await publisher.publish({ file, title, description: `README for session ${sessionId}`, existingUrl });
+  setSessionReadme(sessionId, { ref: file, url: result.url });
+  return { file, url: result.url, publisher: publisher.kind, ...(result.warning ? { warning: result.warning } : {}) };
 }
 /** Detached and best-effort, so the dashboard remains responsive. */
-export function spawnSessionReadmer(sessionId: string): void {
+export function spawnSessionReadmer(sessionId: string, publisher?: PublisherKind): void {
   try {
     mkdirSync(join(LOGS_DIR, sessionId), { recursive: true });
     const fd = openSync(join(LOGS_DIR, sessionId, "readme.runner.log"), "a");
     const { command, args } = selfInvocation();
-    const child = spawn(command, [...args, "__readme-session", sessionId], { detached: true, stdio: ["ignore", fd, fd], env: process.env });
+    const child = spawn(command, [...args, "__readme-session", sessionId, ...(publisher ? [publisher] : [])], { detached: true, stdio: ["ignore", fd, fd], env: process.env });
     child.on("error", () => {}); child.unref();
   } catch { /* Best effort; failures are logged by the runner. */ }
 }
