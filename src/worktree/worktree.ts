@@ -37,7 +37,9 @@ export function sessionSnapshotsRoot(sessionId: string): string {
 
 /**
  * Standardized head-branch nomenclature for PRs an agent opens on behalf of a
- * session: `tack/pr/<sessionId>/<slug>`. Encoding the session id lets us later
+ * session without a Jira ticket: `tack/pr/<sessionId>/<slug>`. Jira-linked sessions
+ * use `<TICKET>_<description>` and are discovered through stored PR rows. Encoding
+ * the session id in the standard branch lets us later
  * discover the PR and tie it back (see `src/projects/prs.ts`). Distinct from the
  * internal `tack/<sessionId>/<agentId>` worktree branches.
  */
@@ -49,6 +51,39 @@ function safeSlug(slug: string): string {
 
 export function sessionPrBranch(sessionId: string, slug: string): string {
   return `${SESSION_PR_BRANCH_PREFIX}/${sessionId}/${safeSlug(slug)}`;
+}
+
+/** Build a readable, git-safe branch name from a validated Jira key and description. */
+export function jiraPrBranchName(key: string, slugOrTitle: string): string {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const text = slugOrTitle.replace(new RegExp(`^${escaped}(?=$|[:_\\/\\s-])[:_\\/\\s-]*`, "i"), "");
+  let desc = text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (desc.length > 40) {
+    const truncated = desc.slice(0, 40);
+    const boundary = desc[40] === "_" ? 40 : truncated.lastIndexOf("_");
+    desc = (boundary > 0 ? truncated.slice(0, boundary) : truncated).replace(/_+$/, "");
+  }
+  return `${key.toUpperCase()}_${desc || "change"}`;
+}
+
+/** Check origin once, falling back to stored names when it cannot be reached. */
+export async function uniquePrBranch(repo: string, candidate: string, taken: Iterable<string>): Promise<string> {
+  const names = new Set(taken);
+  try {
+    const result = await gitAsync(["ls-remote", "--heads", "origin", `${candidate}*`], repo,
+      { timeoutMs: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    if (result.code === 0 && !result.timedOut) {
+      for (const line of result.out.split("\n")) {
+        const ref = line.split(/\s+/)[1];
+        if (ref?.startsWith("refs/heads/")) names.add(ref.slice("refs/heads/".length));
+      }
+    }
+  } catch {
+    // An unavailable git or remote must not prevent the PR attempt.
+  }
+  let branch = candidate;
+  for (let suffix = 2; names.has(branch); suffix++) branch = `${candidate}_${suffix}`;
+  return branch;
 }
 
 /** Extracts the session id from a PR branch, or null if it isn't one of ours. */
