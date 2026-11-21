@@ -62,7 +62,6 @@ import { spawnSessionTitler } from "../session/title";
 import { manualWorkspaceDiff } from "../session/manual";
 import { commitWorktreeAsync, jiraPrBranchName, uniquePrBranch, sessionPrBranch, syncBranchWithBase, syncSnapshot } from "../worktree/worktree";
 import {
-  fetchPrChecks,
   enrichCiLogs,
   normalizeCiFailures,
   fetchReviewThreads,
@@ -803,7 +802,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
 
       // Poll live (and persist, as the watcher does) so the agent is told about the
       // conflict and base GitHub reports now, not at the last tick.
-      const { status, state, mergeable } = await pollPrStatus(pr.id, project.path, pr.number);
+      const { status, state, mergeable, checks } = await pollPrStatus(pr.id, project.path, pr.number);
       if (state === "merged" || state === "closed") throw new Error(`${tag} is ${state}; there's nothing to fix.`);
       const conflict = mergeable === "CONFLICTING";
       const ignoredAuthors = ignoredAuthorsFor(config, project);
@@ -821,9 +820,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         /* the watcher's next tick picks them up */
       }
 
-      if (config.prWatch.fixCi) {
+      if (config.prWatch.fixCi && checks) {
         try {
-          const checks = await fetchPrChecks(project.path, pr.number);
           ciIds = new Set(normalizeCiFailures(checks, status.headRefOid, new Set()).map(item => item.sourceId));
           fresh.push(...await enrichCiLogs(project.path,
             normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
@@ -963,6 +961,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
             title: pr.title,
             state: pr.state,
             mergeable: pr.mergeable,
+            ciStatus: pr.ci_status,
+            reviewStatus: pr.review_status,
             baseBranch: pr.base_branch,
             headBranch: pr.head_branch,
             checkedAt: pr.checked_at,

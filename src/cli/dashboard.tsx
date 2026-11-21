@@ -30,6 +30,8 @@ import {
   type AmendmentRow,
   type JiraTicketWithSessionRow,
   type SessionJiraTicketRow,
+  type PrCiStatus,
+  type PrReviewStatus,
   type SessionPrRow,
   type SessionRow,
 } from "../db";
@@ -159,7 +161,7 @@ function signature(views: View[]): string {
         v.prs
           .map((p) => {
             const w = v.prWatch[p.id];
-            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${p.pr_fix_enabled}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}/${w?.dependency ?? ""}`;
+            return `${p.number}/${p.state}/${p.mergeable ?? ""}/${p.ci_status ?? ""}/${p.review_status ?? ""}/${p.pr_fix_enabled}/${w?.openFeedback ?? 0}/${w?.fixing ? 1 : 0}/${w?.dependency ?? ""}`;
           })
           .join(",") +
         ";" +
@@ -230,7 +232,11 @@ interface PrPick {
 
 /** One target-step row: `#12 Title · project · state`, flagged when its own auto-fix is off. */
 function prTargetLabel(pr: SessionPrRow): string {
-  return `#${pr.number ?? "?"} ${pr.title ?? ""} · ${pr.project_name ?? "?"} · ${prStateDisplay(pr.state).label}${pr.pr_fix_enabled ? "" : " · pr-fix off"}`;
+  const live = pr.state === "open" || pr.state === "draft";
+  const ci = live ? prCiDisplay(pr.ci_status) : null;
+  const review = live ? prReviewDisplay(pr.review_status) : null;
+  return `#${pr.number ?? "?"} ${pr.title ?? ""} · ${pr.project_name ?? "?"} · ${prStateDisplay(pr.state).label}` +
+    `${ci ? ` · CI ${ci.label}` : ""}${review ? ` · ${review.label}` : ""}${pr.pr_fix_enabled ? "" : " · pr-fix off"}`;
 }
 
 /** What the human asked for by leaving the dashboard: open the highlighted session,
@@ -397,6 +403,9 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
       {selected &&
         v.prs.map((pr) => {
           const { glyph, color, label } = prStateDisplay(pr.state);
+          const live = pr.state === "open" || pr.state === "draft";
+          const ci = live ? prCiDisplay(pr.ci_status) : null;
+          const review = live ? prReviewDisplay(pr.review_status) : null;
           const w = v.prWatch[pr.id];
           return (
             <Text key={pr.id}>
@@ -405,6 +414,16 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
               <Text color={color}>
                 {glyph} {label}
               </Text>
+              {ci ? (
+                <Text color={ci.color} dimColor={ci.dim}>
+                  {" CI "}{ci.glyph} {ci.label}
+                </Text>
+              ) : null}
+              {review ? (
+                <Text color={review.color} dimColor={review.dim}>
+                  {" "}{review.glyph} {review.label}
+                </Text>
+              ) : null}
               {pr.linked_at ? <Text dimColor> linked</Text> : null}
               {prHasConflicts(pr) ? <Text color="red"> ⚠ conflicts</Text> : null}
               {w && w.openFeedback > 0 ? (
@@ -1705,6 +1724,24 @@ function prStateDisplay(state: string | null): { glyph: string; color: string; l
   if (state === "draft") return { glyph: "◌", color: "gray", label: "draft" };
   if (state === "closed") return { glyph: "✖", color: "red", label: "closed" };
   return { glyph: "·", color: "gray", label: state ?? "" };
+}
+
+export interface PrBadgeDisplay { glyph: string; color: string; label: string; dim?: boolean }
+
+export function prCiDisplay(status: PrCiStatus | null): PrBadgeDisplay | null {
+  if (status === "passing") return { glyph: "✔", color: "green", label: "passing" };
+  if (status === "failing") return { glyph: "✖", color: "red", label: "failing" };
+  if (status === "pending") return { glyph: "◌", color: "yellow", label: "pending" };
+  if (status === "none") return { glyph: "–", color: "gray", label: "none", dim: true };
+  return null;
+}
+
+export function prReviewDisplay(status: PrReviewStatus | null): PrBadgeDisplay | null {
+  if (status === "approved") return { glyph: "✔", color: "green", label: "approved" };
+  if (status === "changes_requested") return { glyph: "✖", color: "red", label: "changes requested" };
+  if (status === "review_required") return { glyph: "◌", color: "yellow", label: "review required" };
+  if (status === "none") return { glyph: "–", color: "gray", label: "no reviews", dim: true };
+  return null;
 }
 
 /** Real merge conflicts, per GitHub's mergeability (refreshed by the PR poll) — not

@@ -159,6 +159,8 @@ The global ops agent answers questions across sessions and can perform lifecycle
 
 The dashboard shows a live Session → Agent → PR tree with cost, liveness and PR and ticket status. On terminals at least 140 columns wide it opens in split view, with work on the left and **Insights** on the right.
 
+Each open or draft PR row shows two badges after its state, both refreshed on every PR watch poll. The CI badge is `CI ✔ passing`, `CI ✖ failing`, `CI ◌ pending` or `CI – none` (the head has no checks). The review badge is `✔ approved`, `✖ changes requested`, `◌ review required` or `– no reviews`. A badge is hidden until the PR has been polled. The `p` menu's PR picker shows the same status in compact form.
+
 | Key | Action |
 | --- | --- |
 | `j` / `k` | Move |

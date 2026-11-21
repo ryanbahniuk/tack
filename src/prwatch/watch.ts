@@ -62,6 +62,8 @@ import {
   updatePrBody,
   fetchPrChecks,
   ciGreen,
+  ciStatusFrom,
+  reviewStatusFrom,
   markPrReady,
   type PrCheck,
   enrichCiLogs,
@@ -403,7 +405,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   if (pr.number === null) return log(`${tag}: no PR number recorded; skipping`);
 
   // 1. Poll and persist status.
-  const { status, state, mergeable } = await pollPrStatus(pr.id, project.path, pr.number);
+  const { status, state, mergeable, checks, checksError } = await pollPrStatus(pr.id, project.path, pr.number);
 
   // 2. Nothing to do on a finished PR.
   if (state === "merged" || state === "closed") return;
@@ -434,17 +436,11 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   const ignoredAuthors = ignoredAuthorsFor(config, project);
   markIgnoredPendingFeedback(pr.id, ignoredAuthors);
   const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), ignoredAuthors);
-  let checks: PrCheck[] | null = null;
-  if (status.isDraft || config.prWatch.fixCi) {
-    try {
-      checks = await fetchPrChecks(project.path, pr.number);
-      if (config.prWatch.fixCi) {
-        fresh.push(...await enrichCiLogs(project.path,
-          normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
-      }
-    } catch (err) {
-      log(`${tag}: fetching CI checks failed: ${(err as Error).message}`);
-    }
+  if (checks === null) {
+    log(`${tag}: fetching CI checks failed: ${checksError ?? "unknown error"}`);
+  } else if (config.prWatch.fixCi) {
+    fresh.push(...await enrichCiLogs(project.path,
+      normalizeCiFailures(checks, status.headRefOid, prFeedbackSourceIds(pr.id))));
   }
   // Items released back to pending (a rejected push / stopped run) also need a fix.
   const released = listUnassignedPrFeedback(pr.id);
@@ -502,21 +498,41 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   log(`${tag}: ${lineage === "reused" ? "requeued" : "spawned"} fix agent ${agent.id} (${items} item(s), ${ciCount} CI item(s)${conflict ? ", merge conflict" : ""}); ${prFixLineageLabel({ agent, lineage, continued, fallbackReason, reuseFallbackReason })}`);
 }
 
+export interface PrPoll {
+  status: PrStatus;
+  state: string;
+  mergeable: PrMergeable | null;
+  /** Head checks; null when the fetch failed or the PR is merged/closed. */
+  checks: PrCheck[] | null;
+  checksError?: string;
+}
+
 /**
- * Polls one PR's live status from GitHub and persists it on the row (state,
- * mergeability, base, head, title), returning the raw status plus the lower-cased
- * state and normalized mergeability. A draft is stored as "draft" (the dashboard's
- * vocabulary); gh reports it as OPEN + isDraft, so `state` here stays "open". Shared
- * by the watcher's tick and `fix_pr` so both record what they acted on.
+ * Polls one PR's live status and head checks from GitHub and persists them on the
+ * row (state, mergeability, base, head, title, CI and review status), returning the
+ * raw status plus the lower-cased state, normalized mergeability, and checks. A
+ * draft is stored as "draft" (the dashboard's vocabulary); gh reports it as OPEN +
+ * isDraft, so `state` here stays "open". A failed checks fetch keeps the last known
+ * `ci_status`. Shared by the watcher's tick and `fix_pr` so both record what they
+ * acted on.
  */
 export async function pollPrStatus(
   sessionPrId: string,
   repoPath: string,
   number: number,
-): Promise<{ status: PrStatus; state: string; mergeable: PrMergeable | null }> {
+): Promise<PrPoll> {
   const status = await fetchPrStatus(repoPath, number);
   const state = status.state.toLowerCase();
   const mergeable = toMergeable(status.mergeable);
+  let checks: PrCheck[] | null = null;
+  let checksError: string | undefined;
+  if (state !== "merged" && state !== "closed") {
+    try {
+      checks = await fetchPrChecks(repoPath, number);
+    } catch (err) {
+      checksError = (err as Error).message;
+    }
+  }
   setSessionPrStatus(sessionPrId, {
     state: state === "open" && status.isDraft ? "draft" : state,
     mergeable,
@@ -524,8 +540,10 @@ export async function pollPrStatus(
     headSha: status.headRefOid,
     title: status.title,
     mergedAt: status.mergedAt,
+    ciStatus: checks ? ciStatusFrom(checks) : undefined,
+    reviewStatus: reviewStatusFrom(status.reviewDecision, status.reviews),
   });
-  return { status, state, mergeable };
+  return { status, state, mergeable, checks, ...(checksError !== undefined ? { checksError } : {}) };
 }
 
 /**

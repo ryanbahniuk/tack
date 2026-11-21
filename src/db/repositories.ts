@@ -18,6 +18,10 @@ export type AgentKind = "pr_fix" | "review" | "manual";
 export type AgentFixOutcome = "pushed" | "no_changes" | "push_rejected" | "not_pushed" | "stopped" | "failed";
 /** GitHub's mergeability verdict for a PR. UNKNOWN = not computed yet (retry later). */
 export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+/** Last-polled CI rollup of the PR head; "none" means the head has no checks. */
+export type PrCiStatus = "passing" | "failing" | "pending" | "none";
+/** Last-polled review signal; "none" means no decision and no approving/blocking reviews. */
+export type PrReviewStatus = "approved" | "changes_requested" | "review_required" | "none";
 export type PrFeedbackKind = "review_thread" | "review" | "issue_comment" | "ci_check" | "dependency_release";
 export type PrFeedbackDecision = "pending" | "fixed" | "declined" | "not_applicable" | "failed";
 
@@ -181,6 +185,10 @@ export interface SessionPrRow {
   /** This PR's own auto-fix switch (1/0). Effective auto-fix also needs the
    * session's `pr_fix_enabled`; see `prAutoFixEnabled`. */
   pr_fix_enabled: number;
+  /** Last-polled CI status; null before the first poll. */
+  ci_status: PrCiStatus | null;
+  /** Last-polled review status; null before the first poll. */
+  review_status: PrReviewStatus | null;
   created_at: string;
   updated_at: string;
 }
@@ -818,6 +826,8 @@ export function setSessionPrStatus(
     headSha: string | null;
     title?: string | null;
     mergedAt?: string | null;
+    ciStatus?: PrCiStatus | null;
+    reviewStatus?: PrReviewStatus | null;
   },
 ): void {
   const now = nowIso();
@@ -825,7 +835,8 @@ export function setSessionPrStatus(
     .prepare(
       `UPDATE session_prs
          SET state = ?, mergeable = ?, base_branch = ?, head_sha = ?, title = COALESCE(?, title),
-             merged_at = COALESCE(?, merged_at), checked_at = ?, updated_at = ?
+             merged_at = COALESCE(?, merged_at), ci_status = COALESCE(?, ci_status),
+             review_status = COALESCE(?, review_status), checked_at = ?, updated_at = ?
        WHERE id = ?`,
     )
     .run(
@@ -835,6 +846,8 @@ export function setSessionPrStatus(
       status.headSha,
       status.title ?? null,
       status.mergedAt ?? null,
+      status.ciStatus ?? null,
+      status.reviewStatus ?? null,
       now,
       now,
       id,
