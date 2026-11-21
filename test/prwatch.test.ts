@@ -41,7 +41,8 @@ import {
   type AgentStatus,
 } from "../src/db";
 import { createWakeableSleep, postFix, prFixCommitSubject, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
-import { writePrFeedbackArtifact } from "../src/artifacts/store";
+import * as prs from "../src/projects/prs";
+import { writePrDescription, readPrDescription, readArtifact, writePrFeedbackArtifact } from "../src/artifacts/store";
 import type { Project, RuntimeKind, TackConfig } from "../src/config/schema";
 
 const CLAUDE_ATTRIBUTION = "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
@@ -216,6 +217,16 @@ describe("buildPrFixPrompt", () => {
     [thread(false, [42], "Off by one")],
     [],
   );
+
+  test("quotes an optional description before guidance and rules", () => {
+    const plain = buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items: [] });
+    expect(plain).not.toContain("## Current PR description");
+    const prompt = buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items: [], description: "# Title\n\n- Details", guidance: "Update it." });
+    expect(prompt).toContain("> # Title\n>\n> - Details");
+    expect(prompt.indexOf("## Current PR description")).toBeLessThan(prompt.indexOf("## Supervisor guidance"));
+    expect(prompt.indexOf("## Supervisor guidance")).toBeLessThan(prompt.indexOf("## Rules"));
+    expect(prompt.slice(prompt.indexOf("## Rules"))).toContain("report_pr_description");
+  });
 
   test("without a conflict: lists every item and the reporting rules, no merge step", () => {
     const p = buildPrFixPrompt({ pr, conflict: false, baseBranch: "main", items });
@@ -1025,10 +1036,38 @@ describe("postFix outcomes", () => {
   const project = (path = "unused") => ({ path }) as Project;
   const log = (_message: string) => {};
 
+  for (const scenario of ["update", "edited", "applied", "failure"] as const) {
+    test(`description ${scenario} preserves replies and clears the proposal`, async () => {
+      const { a, pr } = setup();
+      writePrDescription(pr.session_id, a.id, "base", "Old\r\nbody");
+      writePrDescription(pr.session_id, a.id, "proposed", "New body");
+      const f = listAgentPrFeedback(a.id)[0]!;
+      recordPrFeedbackDecision(f.id, "fixed", writePrFeedbackArtifact(pr.session_id, pr.id, f.source_id, "reply", "Done"));
+      const fetch = spyOn(prs, "fetchPrBody");
+      if (scenario === "failure") fetch.mockRejectedValue(new Error("offline"));
+      else fetch.mockResolvedValue(scenario === "edited" ? "Human edit" : scenario === "applied" ? " New body " : "Old\nbody");
+      const update = spyOn(prs, "updatePrBody").mockResolvedValue();
+      const reply = spyOn(prs, "postIssueComment").mockResolvedValue(null);
+      const logs: string[] = [];
+      try {
+        await postFix(a, pr, project(), { prWatch: { autoPush: true, reply: true } } as TackConfig, message => logs.push(message));
+        expect(update.mock.calls.length).toBe(scenario === "update" ? 1 : 0);
+        expect(reply).toHaveBeenCalled();
+        if (scenario === "edited") expect(logs.join("\n")).toContain("skipped description update (edited on GitHub during the run)");
+        if (scenario === "failure") expect(logs.join("\n")).toContain("description update failed: offline");
+        expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
+        const stored = listSessionPrs(pr.session_id)[0]!;
+        expect(readArtifact(stored.body_ref)).toBe(scenario === "update" || scenario === "applied" ? "New body" : "");
+      } finally { fetch.mockRestore(); update.mockRestore(); reply.mockRestore(); }
+    });
+  }
+
   for (const status of ["stopped", "failed"] as const) {
     test(`${status} records the outcome and keeps feedback semantics`, async () => {
       const { a, pr } = setup(status);
+      writePrDescription(pr.session_id, a.id, "proposed", "stale");
       await postFix(a, pr, project(), config(), log);
+      expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
       expect(getAgent(a.id)).toMatchObject({ status, fix_outcome: status, fix_pushed_sha: null });
       expect(getAgent(a.id)!.post_fixed_at).not.toBeNull();
       if (status === "stopped") expect(listUnassignedPrFeedback(pr.id)).toHaveLength(1);
@@ -1079,7 +1118,14 @@ describe("postFix outcomes", () => {
         if (outcome !== "no_changes") writeFileSync(join(repo, "fix.txt"), "fixed\n");
         const { a, pr } = setup();
         setAgentWorktree(a.id, repo, "tack/fix");
+        writePrDescription(pr.session_id, a.id, "base", "old");
+        writePrDescription(pr.session_id, a.id, "proposed", "new");
+        const fetch = spyOn(prs, "fetchPrBody").mockResolvedValue("old");
+        const update = spyOn(prs, "updatePrBody").mockResolvedValue();
         await postFix(getAgent(a.id)!, pr, project(repo), config(outcome !== "not_pushed"), log);
+        expect(fetch.mock.calls.length).toBe(outcome === "pushed" || outcome === "no_changes" ? 1 : 0);
+        expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
+        fetch.mockRestore(); update.mockRestore();
         const result = getAgent(a.id)!;
         expect(result.status).toBe("done");
         expect(result.post_fixed_at).not.toBeNull();

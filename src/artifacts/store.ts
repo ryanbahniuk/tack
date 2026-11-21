@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ARTIFACTS_DIR, CONTEXT_DIR } from "../paths";
 
@@ -91,6 +91,17 @@ export function writePrFeedbackArtifact(
 /** Writes the session's composed summary (see `src/session/summary.ts`) and returns its ref path. */
 export function writeSessionSummary(sessionId: string, body: string): string {
   return write(join(ARTIFACTS_DIR, sessionId, "summary.md"), body);
+}
+
+/** Per-run PR description snapshots and proposals live with the fix agent. */
+export function writePrDescription(sessionId: string, agentId: string, kind: "base" | "proposed", body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, agentId, `pr-description.${kind}.md`), body);
+}
+export function readPrDescription(sessionId: string, agentId: string, kind: "base" | "proposed"): string {
+  return readArtifact(join(ARTIFACTS_DIR, sessionId, agentId, `pr-description.${kind}.md`));
+}
+export function clearPrDescription(sessionId: string, agentId: string, kind: "base" | "proposed"): void {
+  rmSync(join(ARTIFACTS_DIR, sessionId, agentId, `pr-description.${kind}.md`), { force: true });
 }
 
 /** Writes the description body a session PR was opened with and returns its ref path. */

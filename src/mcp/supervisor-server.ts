@@ -749,7 +749,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         "resumable (same agent id, lineage: \"reused\"); otherwise starts a new fix agent that continues the " +
         "eligible PR lineage (\"continued\") or starts fresh (\"fresh\", with fallbackReason). " +
         "fresh: true forces a new agent and conversation. The PR watcher pushes " +
-        "its commits non-force onto the same PR branch and replies to review feedback when it finishes. " +
+        "its commits non-force onto the same PR branch, refreshes an out-of-date description and replies to review feedback when it finishes. " +
         "Do not use spawn_agent + open_pr to change an existing PR: that creates a second PR. The agent " +
         "automatically gets a merge step if GitHub reports a conflict and any pending review feedback or failing CI checks. " +
         "Runs one fix at a time per PR: refuses while another fix is running or awaiting its push. " +

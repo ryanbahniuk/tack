@@ -106,7 +106,7 @@ Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does t
 - **This spends real money.** Every supervisor and agent run is billed to your runtime logins. You can see per-session cost in `tack dashboard` and `tack session list`.
 - **Your own checkouts are never touched.** The supervisor investigates Tack-owned snapshot worktrees of each project's latest default branch, and each agent works in its own worktree.
 - **PRs open without asking, by default.** With `autoOpenPrs: true`, the supervisor commits, pushes and opens draft PRs on its own. Set `autoOpenPrs: false` and it asks first, then confirms each PR before opening it.
-- **PR watch acts on its own.** For every open PR it fixes review comments (bots included), failing CI and merge conflicts, pushes and replies on GitHub. Once a draft is addressed and green, it marks the PR ready to review. To turn this off, use these settings:
+- **PR watch acts on its own.** For every open PR it fixes review comments (bots included), failing CI and merge conflicts, pushes, refreshes an out-of-date PR description and replies on GitHub. Once a draft is addressed and green, it marks the PR ready to review. To turn this off, use these settings:
   - `prWatch.enabled: false`: no watcher at all.
   - `prWatch.fixCi: false`, `prWatch.reply: false`, `prWatch.autoPush: false` or
     `prWatch.autoReady: false`: turn off individual behaviours.

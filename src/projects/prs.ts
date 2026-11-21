@@ -863,6 +863,16 @@ export async function postReviewThreadReply(
   return htmlUrl(out);
 }
 
+/** Fetches and updates the live PR description. */
+export async function fetchPrBody(repoPath: string, number: number): Promise<string> {
+  const out = await runOk(["gh", "pr", "view", String(number), "--json", "body"], repoPath, "gh pr view");
+  return (JSON.parse(out) as { body: string }).body ?? "";
+}
+export async function updatePrBody(repoPath: string, number: number, body: string): Promise<void> {
+  const { owner, name } = await ghRepo(repoPath);
+  await runOk(["gh", "api", "-X", "PATCH", `repos/${owner}/${name}/pulls/${number}`, "-f", `body=${body}`], repoPath, "gh api (PR description)");
+}
+
 /** Posts a PR conversation comment. Returns the posted comment's html_url. */
 export async function postIssueComment(repoPath: string, number: number, body: string): Promise<string | null> {
   const { owner, name } = await ghRepo(repoPath);

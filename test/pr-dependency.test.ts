@@ -266,3 +266,28 @@ test("post-fix publishes a useful dependency reply", async () => {
     expect(f.dependency().status).toBe("bumped");
   } finally { post.mockRestore(); }
 });
+
+
+test("description reporting is available only to fix agents and replaces the proposal", async () => {
+  const { spyOn } = await import("bun:test");
+  const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+  const { runCoordinationServer } = await import("../src/mcp/coordination-server");
+  const { readPrDescription } = await import("../src/artifacts/store");
+  const f = dependencyFixture();
+  const fix = createAgent({ sessionId: f.session.id, projectName: "down", kind: "pr_fix", sessionPrId: f.downstream.id });
+  const other = createAgent({ sessionId: f.session.id, projectName: "down" });
+  const connect = spyOn(McpServer.prototype, "connect").mockResolvedValue();
+  const register = spyOn(McpServer.prototype, "registerTool");
+  try {
+    await runCoordinationServer(f.session.id, other.id);
+    expect(register.mock.calls.some(([name]) => name === "report_pr_description")).toBe(false);
+    register.mockClear();
+    await runCoordinationServer(f.session.id, fix.id);
+    const call = register.mock.calls.find(([name]) => name === "report_pr_description")!;
+    expect((call[1] as any).inputSchema.body.safeParse("").success).toBe(false);
+    const handler = call[2] as unknown as (value: unknown) => Promise<unknown>;
+    await handler({ body: "First" });
+    await handler({ body: "Second" });
+    expect(readPrDescription(f.session.id, fix.id, "proposed")).toBe("Second");
+  } finally { register.mockRestore(); connect.mockRestore(); }
+});

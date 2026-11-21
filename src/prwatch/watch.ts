@@ -37,6 +37,7 @@ import {
   setAgentStatus,
   setAgentPid,
   setSessionPrStatus,
+  setSessionPrBodyRef,
   setSessionPrWatchPid,
   unassignPrFeedback,
   setPrWatchCodeVersion,
@@ -50,13 +51,15 @@ import {
   type SessionPrRow,
   type SessionRow,
 } from "../db";
-import { readArtifact, writeContinuationPrompt, writePrFeedbackArtifact } from "../artifacts/store";
+import { readArtifact, writeContinuationPrompt, writePrFeedbackArtifact, writePrDescription, readPrDescription, clearPrDescription, writeSessionPrBody } from "../artifacts/store";
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import {
   buildReplyBody,
   buildConversationReplyBody,
   fetchPrStatus,
+  fetchPrBody,
+  updatePrBody,
   fetchPrChecks,
   ciGreen,
   markPrReady,
@@ -688,6 +691,10 @@ export async function spawnPrFixAgent(
   const model = opts.model ?? modelForRole(config, "agent");
   const forceFresh = opts.forceFresh ?? false;
   let feedbackRecorded = false;
+  let description = "";
+  try { if (pr.number !== null) description = await fetchPrBody(project.path, pr.number); }
+  catch { description = readArtifact(pr.body_ref); }
+
 
   /** One atomic claim of the PR's busy slot: guards, feedback, prompt, and either a
    * requeued row (when `reuse` allows it) or a new one. */
@@ -722,6 +729,7 @@ export async function spawnPrFixAgent(
       baseBranch: opts.baseBranch ?? pr.base_branch,
       items: rows.map((r) => feedbackItem(r, pr)),
       guidance: opts.guidance,
+      description: description || undefined,
     });
     const candidate = reuse ? prFixReuseCandidate(pr, model, config, forceFresh) : null;
     let reused: { snapshot: PrFixReuseSnapshot; runId: string } | null = null;
@@ -744,6 +752,9 @@ export async function spawnPrFixAgent(
         fixOrigin: opts.origin,
       }).id;
     }
+    clearPrDescription(session.id, agentId, "proposed");
+    if (description) writePrDescription(session.id, agentId, "base", description);
+    else clearPrDescription(session.id, agentId, "base");
     assignPrFeedback(rows.map((r) => r.id), agentId);
     // The launcher owns this pending row during the bounded fetch. Watchers use
     // this pid to distinguish preparation from a dead detached runner.
@@ -871,9 +882,15 @@ export async function postFix(
   // to); only the unhandled ones belong to the run being post-fixed.
   const items = listAgentPrFeedback(agent.id).filter((f) => !f.handled_at);
 
+  const clearProposal = () => {
+    try { clearPrDescription(pr.session_id, agent.id, "proposed"); }
+    catch (err) { log(`${tag}: clearing description proposal failed: ${(err as Error).message}`); }
+  };
+
   // Stopped by the human (session stop): nothing reached the PR, so hand its items
   // back for a later run rather than declaring them handled.
   if (agent.status === "stopped") {
+    clearProposal();
     const n = releaseAgentPrFeedback(agent.id);
     markAgentPostFixed(agent.id, "stopped");
     return log(`${tag}: was stopped; released ${n} item(s) back to pending`);
@@ -882,6 +899,7 @@ export async function postFix(
   // Failed: mark its items failed (terminal — never retried automatically, so a
   // comment that reliably breaks the agent can't loop), keep the error legible.
   if (agent.status === "failed") {
+    clearProposal();
     for (const f of items) { markPrFeedbackHandled(f.id, { decision: "failed" });
       for (const d of listPrDependencies(pr.session_id)) if (d.feedback_id === f.id) updatePrDependency(d.id, { status: "failed", detail: agent.error || "Fix run failed" });
     }
@@ -907,6 +925,7 @@ export async function postFix(
         if (!push.ok) {
           // Someone moved the PR branch since we forked (or the remote refused).
           // Never force: release the items so the next tick re-forks off the new head.
+          clearProposal();
           const n = releaseAgentPrFeedback(agent.id);
           markAgentPostFixed(agent.id, "push_rejected");
           return log(`${tag}: push rejected (${push.error}); released ${n} item(s) to retry next tick`);
@@ -919,6 +938,28 @@ export async function postFix(
         log(`${tag}: autoPush is off; commits left on ${agent.branch}`);
       }
     }
+  }
+
+  try {
+    const proposed = readPrDescription(pr.session_id, agent.id, "proposed");
+    const base = readPrDescription(pr.session_id, agent.id, "base");
+    if ((outcome === "pushed" || outcome === "no_changes") && proposed.trim() && base && pr.number !== null) {
+      const live = await fetchPrBody(project.path, pr.number);
+      const normalize = (body: string) => body.replace(/\r\n/g, "\n").trim();
+      if (normalize(live) === normalize(proposed)) {
+        setSessionPrBodyRef(pr.id, writeSessionPrBody(pr.session_id, pr.id, proposed));
+      } else if (normalize(live) !== normalize(base)) {
+        log(`${tag}: skipped description update (edited on GitHub during the run)`);
+      } else {
+        await updatePrBody(project.path, pr.number, proposed);
+        setSessionPrBodyRef(pr.id, writeSessionPrBody(pr.session_id, pr.id, proposed));
+        log(`${tag}: updated PR description`);
+      }
+    }
+  } catch (err) {
+    log(`${tag}: description update failed: ${(err as Error).message}`);
+  } finally {
+    clearProposal();
   }
 
   const conversation: PrFeedbackRow[] = [];
