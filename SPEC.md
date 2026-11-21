@@ -516,7 +516,7 @@ quickest way to validate the runtime pipeline.
 export default ({
   bootRecipes: { compose: { up: ["docker compose up -d"], down: ["docker compose down"], lock: "compose:{project}" } },
   projects: [
-    { name, path, description, boot: { recipe: "compose" } },
+    { name, path, description, boot: { recipe: "compose" }, prWatch: { ignoreAuthors: ["tfyoudoing"] } },
     { name: "web", path, description, boot: { run: "bun run dev", env: { PORT: "3001" } } },
   ],
   models: [
@@ -528,7 +528,7 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
-  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, maxFixRunsPerDay: 5 },
+  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, ignoreAuthors: [], maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
   autoLinkPrs: true,
   draftPrs: true,

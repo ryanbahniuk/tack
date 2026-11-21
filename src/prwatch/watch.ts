@@ -68,6 +68,8 @@ import {
   normalizeCiFailures,
   fetchReviewThreads,
   normalizeFeedback,
+  ignoredAuthorsFor,
+  isIgnoredAuthor,
   postIssueComment,
   postReviewThreadReply,
   pushBranch,
@@ -157,6 +159,14 @@ export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
   return pr.state !== "merged" && pr.state !== "closed";
 }
 
+export function markIgnoredPendingFeedback(sessionPrId: string, ignoreAuthors: readonly string[]): void {
+  for (const row of listUnassignedPrFeedback(sessionPrId)) {
+    if (row.source_kind !== "ci_check" && row.source_kind !== "dependency_release" && isIgnoredAuthor(row.author, ignoreAuthors)) {
+      markPrFeedbackHandled(row.id, { decision: "not_applicable" });
+    }
+  }
+}
+
 /** Pure promotion gate. Missing CI data blocks promotion, including fetch errors.
  * reply_ref distinguishes an explicit verdict from silently declined input. */
 export function readyToPromote(input: {
@@ -168,8 +178,9 @@ export function readyToPromote(input: {
   prFixBusy: boolean;
   freshCount: number;
   releasedCount: number;
-  feedback: Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref">[];
+  feedback: (Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref"> & { author?: string | null })[];
   checks: PrCheck[] | null;
+  ignoredAuthors?: readonly string[];
   unresolvedDependencies?: number;
 }): boolean {
   return input.enabled && input.autoReady && !!input.isDraft && !input.readyPromotedAt &&
@@ -177,6 +188,7 @@ export function readyToPromote(input: {
     input.freshCount === 0 && input.releasedCount === 0 &&
     input.feedback.every((row) => row.decision !== "pending" && row.decision !== "failed" &&
       (row.source_kind === "ci_check" ||
+        (!!row.handled_at && row.decision === "not_applicable" && isIgnoredAuthor(row.author, input.ignoredAuthors ?? [])) ||
         (!!row.handled_at && ["fixed", "declined", "not_applicable"].includes(row.decision) && !!row.reply_ref))) &&
     input.checks !== null && ciGreen(input.checks);
 }
@@ -419,7 +431,9 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   // still computing it; it's simply not a conflict yet and the next tick re-checks.
   const conflict = mergeable === "CONFLICTING";
   const threads = await fetchReviewThreads(project.path, pr.number);
-  const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id));
+  const ignoredAuthors = ignoredAuthorsFor(config, project);
+  markIgnoredPendingFeedback(pr.id, ignoredAuthors);
+  const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), ignoredAuthors);
   let checks: PrCheck[] | null = null;
   if (status.isDraft || config.prWatch.fixCi) {
     try {
@@ -444,6 +458,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
     freshCount: fresh.length,
     releasedCount: released.length,
     feedback: listPrFeedback(pr.id),
+    ignoredAuthors,
     checks,
     unresolvedDependencies: listPrDependencies(session.id).filter(d => d.downstream_pr_id === pr.id && ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status)).length,
   })) {

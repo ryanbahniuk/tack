@@ -121,11 +121,12 @@ export async function baselinePrFeedback(
   project: Project,
   number: number,
   headSha: string | null,
+  ignoreAuthors: readonly string[] = [],
 ): Promise<number> {
   const status = await prs.fetchPrStatus(project.path, number);
   const threads = (await prs.fetchReviewThreads(project.path, number)).map((t) => ({ ...t, isResolved: false }));
   const known = prFeedbackSourceIds(pr.id);
-  const items = prs.normalizeFeedback(status, threads, known);
+  const items = prs.normalizeFeedback(status, threads, known, ignoreAuthors);
   const checks = await prs.fetchPrChecks(project.path, number);
   items.push(...prs.normalizeCiFailures(checks, status.headRefOid ?? headSha, known));
   let added = 0;
@@ -155,7 +156,7 @@ export async function baselinePrFeedback(
  */
 export async function linkSessionPr(input: {
   sessionId: string;
-  config: Pick<TackConfig, "projects">;
+  config: Pick<TackConfig, "projects"> & Partial<Pick<TackConfig, "prWatch">>;
   url: string;
   project?: string;
 }): Promise<LinkPrResult> {
@@ -203,7 +204,7 @@ export async function linkSessionPr(input: {
   let baselined = 0;
   let baselineWarning: string | undefined;
   try {
-    baselined = await baselinePrFeedback(input.sessionId, row, project, gh.number, gh.headRefOid);
+    baselined = await baselinePrFeedback(input.sessionId, row, project, gh.number, gh.headRefOid, prs.ignoredAuthorsFor({ prWatch: input.config.prWatch ?? { ignoreAuthors: [] } }, project));
   } catch (err) {
     baselineWarning =
       `Linked, but recording the PR's existing feedback as already handled failed (${(err as Error).message}); ` +
