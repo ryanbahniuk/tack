@@ -133,6 +133,9 @@ export function writeBootPlan(sessionId: string, project: string, body: string):
 export function writeSessionReadme(id: string, html: string): string {
   return write(join(ARTIFACTS_DIR, id, "readme", "readme.html"), html);
 }
+export function writeSessionReadmeMarkdown(id: string, markdown: string): string {
+  return write(join(ARTIFACTS_DIR, id, "readme", "readme.md"), markdown);
+}
 export function writeSessionReadmeDigest(id: string, digest: string): string {
   return write(join(ARTIFACTS_DIR, id, "readme", "digest.md"), digest);
 }

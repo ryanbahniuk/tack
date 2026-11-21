@@ -72,7 +72,8 @@ import {
   stopSession,
   unarchiveSession,
 } from "../src/session/lifecycle";
-import { generateSessionReadme, linkSessionReadme, unlinkSessionReadme } from "../src/session/readme";
+import { generateSessionReadme, linkSessionReadme, readmeArgsConflict, unlinkSessionReadme } from "../src/session/readme";
+import { isPublisherKind, PUBLISHER_KINDS, type PublisherKind } from "../src/publish/types";
 import { generateSessionTitle, spawnSessionTitler, titleFromFirstPrompt } from "../src/session/title";
 import { RolesSchema } from "../src/config/schema";
 import type { Model, Project, Roles } from "../src/config/schema";
@@ -1445,12 +1446,12 @@ const sessionContext = defineCommand({
 
 const sessionReadme = defineCommand({
   meta: { name: "readme", description: "Generate, link or unlink a session README page" },
-  args: { session: { type: "positional", required: true, description: "Session id" }, link: { type: "string", description: "Link an existing page URL (e.g. a claude.ai artifact) as the README instead of generating one" }, unlink: { type: "boolean", description: "Remove the session's README link" }, publish: { type: "boolean", default: true, description: "Publish the page (use --no-publish to keep it local)" }, open: { type: "boolean", description: "Open the page" } },
+  args: { session: { type: "positional", required: true, description: "Session id" }, link: { type: "string", description: "Link an existing page URL (e.g. a claude.ai artifact) as the README instead of generating one" }, unlink: { type: "boolean", description: "Remove the session's README link" }, publish: { type: "boolean", default: true, description: "Publish the page (use --no-publish to keep it local)" }, open: { type: "boolean", description: "Open the page" }, to: { type: "string", description: `Publish to this destination for this run (${PUBLISHER_KINDS.join(" | ")}); defaults to the current README's destination, else readme.publisher` } },
   async run({ args }) {
     const id = String(args.session);
-    if ([args.link !== undefined, !!args.unlink, args.publish === false].filter(Boolean).length > 1) {
-      console.error(pc.red("--link, --unlink and --no-publish are mutually exclusive")); process.exit(1);
-    }
+    const conflict = readmeArgsConflict(args);
+    if (conflict) { console.error(pc.red(conflict)); process.exit(1); }
+    const to = args.to as PublisherKind | undefined;
     if (args.link !== undefined || args.unlink) {
       try {
         if (args.link !== undefined) {
@@ -1468,8 +1469,9 @@ const sessionReadme = defineCommand({
     requireSession(id);
     const config = await loadConfig(); const spin = startSpinner(`Generating README for ${id}`);
     try {
-      const result = await generateSessionReadme(config, id, { publish: args.publish });
-      spin.succeed("done"); console.log(`  ${result.file}`); if (result.url) console.log(`  ${result.url}`);
+      const result = await generateSessionReadme(config, id, { publish: args.publish, publisherKind: to });
+      spin.succeed("done"); console.log(`  ${result.file}`); if (result.url) console.log(`  ${result.url} (${result.publisher})`);
+      if (result.warning) console.log(pc.yellow(`  ! ${result.warning}`));
       if (args.open) execFileSync(process.platform === "darwin" ? "open" : "xdg-open", [result.url ?? result.file]);
     } catch (err) { spin.fail("failed"); console.error(pc.red((err as Error).message)); process.exit(1); }
   },
@@ -1767,8 +1769,12 @@ if (hidden === "__mcp") {
   await runPrWatcher(sessionId!, config);
   process.exit(0);
 } else if (hidden === "__readme-session") {
-  const sessionId = process.argv[3]!;
-  try { await generateSessionReadme(await loadConfig(), sessionId); }
+  const [, , , sessionId, kind] = process.argv;
+  try {
+    if (kind !== undefined && !isPublisherKind(kind)) throw new Error(`unknown publisher ${kind}`);
+    const result = await generateSessionReadme(await loadConfig(), sessionId!, { publisherKind: kind });
+    if (result.warning) console.error(`readme-session ${sessionId}: ${result.warning}`);
+  }
   catch (err) { console.error(`readme-session ${sessionId}: ${(err as Error).message}`); }
 } else if (hidden === "__title-session") {
   // Detached auto-titler (spawnSessionTitler). Best-effort: stdio is title.runner.log,
