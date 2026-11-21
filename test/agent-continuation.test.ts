@@ -11,6 +11,7 @@ import * as detached from "../src/agent/detached";
 import * as availability from "../src/runtimes/availability";
 import * as resolution from "../src/runtimes/resolve";
 import * as worktrees from "../src/worktree/worktree";
+import * as prs from "../src/projects/prs";
 import { ClaudeRuntime } from "../src/runtimes/claude";
 import { CodexRuntime } from "../src/runtimes/codex";
 import type { AgentEvent, RunOptions } from "../src/runtimes/types";
@@ -21,7 +22,7 @@ import {
   approveSessionPlan, createAgent, createSession, deleteSession, getAgent, getDb, listSessionPrs,
   listPrFixAgents, listPrFixRuns, listAgentPrFeedback, listUnassignedPrFeedback, insertPrFeedback, assignPrFeedback, markPrFeedbackHandled, setSessionPrStatus, markAgentPostFixed, setAgentCost, setAgentResumeRef, setAgentStatus, setAgentUsage, setAgentWorktree, upsertSessionPr,
 } from "../src/db";
-import { readArtifact } from "../src/artifacts/store";
+import { readArtifact, writePrDescription, readPrDescription } from "../src/artifacts/store";
 import { prContinuationDecision, prFixBusy, prFixLineageLabel, prLineageHead, spawnPrFixAgent } from "../src/prwatch/watch";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
@@ -287,6 +288,7 @@ test("a queued PR continuation reserves the lineage during its remote fetch", as
     new Promise(resolve => { release = resolve; })));
   mocks.push(spyOn(detached, "spawnAgentRunner").mockReturnValue(123));
   const opts = { origin: "supervisor", conflict: false, baseBranch: "main", title: "PR" } as const;
+  mocks.push(spyOn(prs, "fetchPrBody").mockResolvedValue("body"));
   setSessionPrStatus(pr.id, { state: "open" });
   const first = spawnPrFixAgent(session, pr, project, config, opts);
   await expect(spawnPrFixAgent(session, pr, project, config, opts)).rejects.toThrow("already running");
@@ -337,8 +339,10 @@ const feedback = (sourceId: string) => ({
 test("later fixes requeue the same pr_fix row and resume its own conversation with a per-run diff", async () => {
   const { session, project, config, fix, ff, launch, pr } = await firstFix();
   ff.mockResolvedValue({ base: "base-2" });
+  writePrDescription(session.id, fix.id, "proposed", "stale");
   const second = await spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] });
   expect(second).toMatchObject({ lineage: "reused", continued: fix.id, items: 1 });
+  expect(readPrDescription(session.id, fix.id, "proposed")).toBe("");
   expect(second.fallbackReason).toBeUndefined();
   expect(prFixLineageLabel(second)).toBe(`reused ${fix.id}`);
   expect(listPrFixAgents(pr.id).map(a => a.id)).toEqual([fix.id]);
@@ -409,8 +413,9 @@ test("a reuse whose fast-forward fails restores the old row exactly, then falls 
   const before = getAgent(fix.id)!;
   let release!: (v: { reason: string }) => void;
   ff.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+  mocks.push(spyOn(prs, "fetchPrBody").mockResolvedValue("body"));
   const pending = spawnPrFixAgent(session, pr, project, config, { ...fixOpts, fresh: [feedback("IC_2")] });
-  // The claim happens before the fetch: the old row is busy, and a racer is refused.
+  // The claim happens before the worktree fetch: the old row is busy, and a racer is refused.
   await Promise.resolve();
   expect(getAgent(fix.id)).toMatchObject({ status: "pending", pid: process.pid });
   await expect(spawnPrFixAgent(session, pr, project, config, fixOpts)).rejects.toThrow("already running");

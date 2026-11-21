@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readArtifact, writeAmendmentArtifact, writePrFeedbackArtifact, writeAgentArtifact } from "../artifacts/store";
+import { readArtifact, writeAmendmentArtifact, writePrFeedbackArtifact, writeAgentArtifact, writePrDescription } from "../artifacts/store";
 import {
   setAgentReviewRef,
   createAmendment,
@@ -107,6 +107,14 @@ export async function runCoordinationServer(sessionId: string, agentId: string):
   // verdicts back to the PR watcher. The agent never talks to GitHub; the watcher
   // reads these rows after the run, pushes, and posts each reply.
   if (getAgent(agentId)?.kind === "pr_fix") {
+    server.registerTool("report_pr_description", {
+      description: "Report the full updated PR description for Tack to apply on GitHub.",
+      inputSchema: { body: z.string().min(1) },
+    }, async ({ body }) => {
+      writePrDescription(sessionId, agentId, "proposed", body);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+    });
+
     server.registerTool(
       "report_pr_feedback",
       {

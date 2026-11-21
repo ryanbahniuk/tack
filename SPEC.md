@@ -909,7 +909,7 @@ input. `fix_pr` folds in current CI failures best-effort as well as review feedb
 
 The **post-fix step** (watcher): safety-net commit; if HEAD moved and `autoPush`,
 push **non-force** onto the PR branch — a rejected push releases the items back to
-pending for a fresh run off the new head; then, if `reply`, post inline replies
+pending for a fresh run off the new head; refresh an out-of-date PR description if unchanged on GitHub since the run began; then, if `reply`, post inline replies
 through the review-thread replies endpoint. CI items share the conversation batch,
 linking `[Failing check: <name>](<link>)` without quoting logs. Conversation comments and review bodies
 share **one top-level comment per fix run**, even when there is only one item. Each

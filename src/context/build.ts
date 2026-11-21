@@ -86,6 +86,7 @@ export function buildAgentContext(parts: AgentContextParts): string {
       ] : []),
       ...(prFix
         ? [
+            "- `report_pr_description` — report the full updated PR description when it is out of date.",
             "- `report_pr_feedback` — record your decision (`fixed` | `declined` |",
             "  `not_applicable`) and a short plain reply (1-3 sentences) for EVERY review or CI check item",
             "  in your task, by its `sourceId`. Call it once, before you finish. Tack posts",
@@ -112,7 +113,8 @@ export function buildAgentContext(parts: AgentContextParts): string {
           "When you're done, commit ALL of your changes to your worktree branch with clear",
           "messages (a merge commit for a conflict resolution, plus one or more commits for",
           "fixes). Then call `report_pr_feedback` once with a decision and reply for every",
-          "item. Do NOT push and do NOT call `gh` or the GitHub API — Tack pushes your",
+          "item. Call `report_pr_description` if the PR description needs updating.",
+          "Do NOT push and do NOT call `gh` or the GitHub API — Tack pushes your",
           "commits to the PR (non-force) and posts your replies. Leave the working tree",
           "clean; anything uncommitted risks being left out.",
           ...commitGuidance,
