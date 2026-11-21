@@ -52,11 +52,11 @@ for (const [plan, park] of [[false, { parked: true }], [true, { parked: true }],
     const parkSpy = spyOn(reconnect, "parkRestartedSupervisor").mockResolvedValue(park);
     const ui = await mount(config);
     try {
-      await ui.press("r");
+      await ui.press("S"); await ui.press("r");
       expect(ui.frame()).toContain(`Restart ${session.id}? Restarts the supervisor detached in tmux, revives 1 dropped agent(s)${plan ? " · pending plan will be re-presented" : ""}. (y/N)`);
       await ui.press("n");
       expect(run).not.toHaveBeenCalled();
-      await ui.press("r");
+      await ui.press("S"); await ui.press("r");
       await ui.press("y");
       await new Promise(resolve => setTimeout(resolve, 25));
       await ui.app.waitUntilRenderFlush();
@@ -83,7 +83,7 @@ test("dashboard w refuses archived sessions", async () => {
   const run = spyOn(reconnect, "restartSession");
   const ui = await mount(config);
   try {
-    await ui.press("r");
+    await ui.press("S"); await ui.press("r");
     expect(ui.frame()).toContain(`${session.id} is archived`);
     expect(ui.frame()).not.toContain("Restart ");
     expect(run).not.toHaveBeenCalled();
@@ -104,7 +104,7 @@ test("dashboard w does nothing and r shows only applicable restart clauses", asy
   try {
     await ui.press("w");
     expect(ui.frame()).not.toContain(`Restart ${session.id}?`);
-    await ui.press("r");
+    await ui.press("S"); await ui.press("r");
     expect(ui.frame()).toContain("interrupts the current turn");
     expect(ui.frame()).not.toContain("revives ");
     expect(ui.frame()).not.toContain("pending plan will be re-presented");

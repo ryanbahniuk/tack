@@ -136,7 +136,7 @@ jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 
 - **Auth:** Tack passes no tokens. The server inherits your environment and reuses the OAuth cache that the `chime-atlassian` plugin keeps at `~/.cache/chime-atlassian-mcp/`. Seed that cache once from an interactive client (the plugin, or an interactive Tack supervisor, which can answer the OAuth prompt). After that, headless runs reuse it. Never put tokens in `config.ts`.
 - **Permissions:** a mounted server's tools are auto-allowed under the supervisor's read-only posture, including any write tools the server exposes. Only mount servers you're comfortable with it calling.
-- **Tickets:** with `jira` set, the supervisor links the tickets a session works on. `tack dashboard` refreshes their status every 2 minutes (`P` polls now, `J` opens a session's tickets, `t` lists every session's tickets, archived included) and `tack session show` lists them. `cloudId` is optional and falls back to the server's `CONFLUENCE_CLOUD_ID`.
+- **Tickets:** with `jira` set, the supervisor links the tickets a session works on. `tack dashboard` refreshes their status every 2 minutes (`t` → `p` polls now, `t` → `o` opens a session's tickets, `t` → `t` lists every session's tickets, archived included) and `tack session show` lists them. `cloudId` is optional and falls back to the server's `CONFLUENCE_CLOUD_ID`.
 - **Existing PRs:** paste a GitHub PR URL (in one of your configured projects) into any message to the supervisor and Tack adopts it into the session automatically (`autoLinkPrs`, default on), telling the supervisor what it linked; the supervisor calls `link_pr` only for URLs that weren't auto-linked, and never opens a second PR; follow-up changes go onto that PR's branch via `fix_pr`. Like ticket linking it's local bookkeeping (read-only `gh` calls, never a write to GitHub). Feedback and failing CI that predate the link count as already handled; use `fix_pr` with `includeExisting: true` to address existing comments. The watcher never auto-promotes a linked draft, and fork or merged/closed PRs are refused. `unlink_pr` drops one linked by mistake; the dashboard tags linked PRs `linked`.
 
 ---
@@ -166,24 +166,19 @@ The dashboard shows a live Session → Agent → PR tree with cost, liveness and
 | `c` | Create a new session |
 | `O` | Open the global ops agent (`tack ops`); detach and reopen to continue. Use `tack ops --restart` to reload it |
 | `v` | Agents picker: `enter`/`o`/`v` shows output (a live follow for running agents), `e` edits a worktree, `n` creates a manual workspace |
-| `m` | View pending amendments (read-only) |
-| `J` | Open the session's Jira tickets in the browser |
-| `t` | Tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `esc`/`q` goes back |
+| `S` | Session actions: `c` new, `m` view amendments, `D` README actions, `r` restart, `b` boot, `B` unboot, `h` hold/unhold, `x` stop, `a` archive/unarchive, `d` delete. Restart asks first, parks the supervisor in tmux, revives dropped agents and restarts a dead or stale PR watcher. README actions offer `r` refresh (regenerate and republish to the current destination, or the default; asks first and names it), `o` open, `c` copy and `p` publish to… (pick Claude Artifact / Confluence / Google Doc / local, then confirm); open and copy need an existing README |
+| `t` | Ticket actions: `o` open this session's tickets, `t` browse all tickets, `p` poll Jira now. The tickets view: every Jira ticket linked to any session, archived ones included whatever `z` says (open work first, newest link first), with its session and state. `f` cycles the status filter (all, open, in progress, to do, done), `a` hides or shows archived sessions, `/` filters by ticket key or title and session id or title (`enter` keeps it, `esc` clears it). `enter`/`o` opens a ticket, `g` jumps to its session (showing archived sessions if needed), `P` polls the filtered tickets’ sessions; `esc`/`q` goes back |
 | `p` | PR actions menu. First pick the target: `All PRs (N)` or one PR (skipped when the session has a single PR; PRs with their own auto-fix off say `pr-fix off`). Then pick an action: `o` open in the browser (every PR for All PRs), `c` copy the link (single PR only), `p` poll now, `R` review with a persona, `f` toggle auto-fix (the session switch for All PRs, that PR's own switch otherwise). `j`/`k` + `enter` also work; `esc`/`q` cancels |
-| `P` | Poll Jira now instead of waiting for the 2-minute refresh: from the list for the sessions shown, from the tickets view for the sessions of the filtered tickets |
-| `D` | README menu: `r` refresh (regenerate and republish to the current destination, or the default; asks first and names it), `o` open the README in the browser, `c` copy its link to the clipboard, `p` publish to… (pick Claude Artifact / Confluence / Google Doc / local, then confirm). Open and copy need an existing README |
-| `r` | Restart a session when it is `stale` or broken after sleep or network loss. Restarts the supervisor (parked in tmux; `enter` attaches), revives dropped agents, and restarts a dead or stale PR watcher (asks first) |
-| `x` | Stop (asks first) |
-| `a` | Archive, or unarchive (asks first) |
-| `h` | Toggle hold; on-hold sessions remain visible below other sessions and keep running. Hold turns PR auto-fix off; unhold turns it back on |
-| `d` | Delete (asks first) |
+| `a` | Archive, or unarchive (asks first); also in Session actions |
+| `h` | Also in Session actions. Toggle hold; on-hold sessions remain visible below other sessions and keep running. Hold turns PR auto-fix off; unhold turns it back on |
+| `d` | Delete (asks first); also in Session actions |
 | `z` | Show or hide archived sessions |
 | `C` | Edit the Tack config, then reload it and refresh stale sessions |
 | `s` | Cycle layout: split → list-only → full-screen Insights |
 | `[` / `]` | Insights range: 7d · 30d (default) · 90d · 1y · all |
 | `q` | Quit |
 
-Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale` (press `r` to restart).
+Working supervisors show a spinner and elapsed turn time, a pending plan shows `◆ needs input`, and sessions running older Tack code are marked `stale` (press `S` → `r` to restart).
 
 <details>
 <summary>Insights details</summary>
@@ -532,10 +527,10 @@ See [Recommended Chime setup](#recommended-chime-setup) for a working example.
 | PRs aren't discovered and the dashboard says `gh not found` | Install `gh` and run `gh auth login`. |
 | PRs look stale | `tack session poll-prs <session>` or dashboard `p`. |
 | Session seems stuck or its supervisor exited | `tack session resume <session>`. |
-| Session or agents died after the laptop slept or the network dropped | `tack session restart <session>` (or `--all`), or dashboard `r`. |
-| `stale` badge after updating Tack | `tack session restart <session>` (or `--all`), or dashboard `r`. |
+| Session or agents died after the laptop slept or the network dropped | `tack session restart <session>` (or `--all`), or dashboard `S` → `r`. |
+| `stale` badge after updating Tack | `tack session restart <session>` (or `--all`), or dashboard `S` → `r`. |
 | `jira unavailable` in the dashboard | Check that the `supervisorMcpServers` entry runs (`uvx` on PATH) and its OAuth cache is seeded. |
-| `J` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
+| `t` → `o` says no Jira site is configured | Add a `jira` block with `siteUrl`. |
 | `Config has errors` | `tack config edit`; the message names the failing key. |
 | Detached and lost the supervisor | `tack session list`, then `tack session resume <session>`. |
 | Editor won't open | Set `$VISUAL` or `$EDITOR`. |
@@ -567,7 +562,7 @@ use `tack session boot-status <session>` to inspect them and `tack session unboo
 project `boot` settings; see SPEC.md §11 for details.
 
 
-Session READMEs are generated only when requested with `tack session readme` or the dashboard `D` menu's refresh / publish-to actions (after confirmation). `roles.readme` accepts a model key or non-empty list and defaults to `roles.supervisor`. `readme.publisher` sets the default destination: `"claude-artifact"` (a private claude.ai artifact; the default when Claude is configured or available), `"confluence"` (a private page in your personal Confluence space), `"google-doc"` (an unshared Google Doc in your My Drive) or `"local"`. Override it for one run with `--to <publisher>` or the dashboard `D` → `p` picker. A refresh with no override republishes to whichever destination owns the session's current README URL, falling back to the default; publishing somewhere else replaces the session's single README URL and leaves the old page in place. Artifacts and local pages are authored as HTML (`readme.html`); Confluence and Google Docs as Markdown (`readme.md`).
+Session READMEs are generated only when requested with `tack session readme` or the dashboard `S` → `D` menu's refresh / publish-to actions (after confirmation). `roles.readme` accepts a model key or non-empty list and defaults to `roles.supervisor`. `readme.publisher` sets the default destination: `"claude-artifact"` (a private claude.ai artifact; the default when Claude is configured or available), `"confluence"` (a private page in your personal Confluence space), `"google-doc"` (an unshared Google Doc in your My Drive) or `"local"`. Override it for one run with `--to <publisher>` or the dashboard `S` → `D` → `p` picker. A refresh with no override republishes to whichever destination owns the session's current README URL, falling back to the default; publishing somewhere else replaces the session's single README URL and leaves the old page in place. Artifacts and local pages are authored as HTML (`readme.html`); Confluence and Google Docs as Markdown (`readme.md`).
 
 ```ts
 readme: {

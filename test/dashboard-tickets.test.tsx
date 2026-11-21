@@ -51,7 +51,7 @@ for (const tickets of [0, 2]) {
     try {
       await app.waitUntilRenderFlush();
       frame = "";
-      input.write("J");
+      input.write("t"); await Bun.sleep(30); input.write("o");
       await new Promise(resolve => setTimeout(resolve, 25));
       await app.waitUntilRenderFlush();
       expect(frame).toContain(tickets
@@ -104,7 +104,7 @@ test("dashboard t lists tickets across sessions, open work first, and esc return
   stampLink(b.id, "MISSION-4", "2026-02-01T00:00:00.000Z");
   const { press, cleanup } = await mount([a.id, b.id], null);
   try {
-    const view = await press("t");
+    const view = (await press("t"), await press("t"));
     expect(view).toContain("Jira tickets · 4 of 4 · 2 sessions · 1 done");
     const row = (key: string) => view.split("\n").find(line => line.includes(key)) ?? "";
     expect(row("MISSION-2")).toContain(b.id);
@@ -123,13 +123,13 @@ test("dashboard t lists tickets across sessions, open work first, and esc return
     await press("j");
     const list = await press("g");
     expect(list).toContain(`❯ ○ ${a.id}`);
-    expect(list).toContain("t tickets");
-    await press("t");
+    expect(list).toContain("t ticket actions");
+    (await press("t"), await press("t"));
     const back = await press("\u001b");
     expect(back).toContain("Tack ·");
     expect(back).not.toContain("Jira tickets ·");
     // q backs out of the view instead of quitting.
-    await press("t");
+    (await press("t"), await press("t"));
     expect(await press("q")).toContain("Tack ·");
   } finally {
     cleanup();
@@ -142,7 +142,7 @@ test("dashboard tickets view explains when nothing is linked", async () => {
   const s = createSession({});
   const { press, cleanup } = await mount([s.id], null);
   try {
-    const view = await press("t");
+    const view = (await press("t"), await press("t"));
     expect(view).toContain("Jira tickets · 0 of 0 · 0 sessions · 0 done");
     expect(view).toContain("No Jira tickets linked to any session.");
   } finally {
@@ -155,7 +155,7 @@ test("dashboard P without config says so", async () => {
   const s = createSession({});
   const { press, cleanup } = await mount([s.id], null);
   try {
-    expect(await press("P")).toContain("config is unavailable");
+    await press("t"); expect(await press("p")).toContain("config is unavailable");
   } finally {
     cleanup();
     deleteSession(s.id);
@@ -182,7 +182,7 @@ test("dashboard P polls Jira now and never overlaps an in-flight poll", async ()
   const config = { projects: [], prWatch: { intervalSeconds: 3600, enabled: false }, jira: { siteUrl: "https://example.atlassian.net" } } as unknown as TackConfig;
   const { press, cleanup } = await mount([s.id], config);
   try {
-    await press("t");
+    (await press("t"), await press("t"));
     expect(calls).toBe(1);
     expect(await press("P")).toContain("polling Jira…");
     expect(calls).toBe(2);
@@ -242,7 +242,7 @@ test("tickets view windows rows around the cursor inside a short terminal", asyn
   };
   try {
     await app.waitUntilRenderFlush();
-    const first = await press("t");
+    const first = (await press("t"), await press("t"));
     expect(first).toContain("Jira tickets · 30 of 30 · 1 session");
     // Newest link first.
     expect(first).toMatch(/❯ MISSION-30 /);
@@ -276,7 +276,7 @@ test("tickets view shows archived sessions' tickets with z off, and g turns z on
     expect(list).toContain("(active)");
     expect(list).not.toContain(old.id);
     // …but the tickets view still shows its ticket, with a static archived badge.
-    const view = await press("t");
+    const view = (await press("t"), await press("t"));
     expect(view).toContain("Jira tickets · 2 of 2 · 2 sessions · 1 done");
     expect(rowOf(view, "MISSION-1")).toContain("○ active");
     expect(rowOf(view, "MISSION-2")).toContain(old.id);
@@ -303,7 +303,7 @@ test("tickets view f cycles the status filter and a toggles archived sessions", 
   const { press, cleanup } = await mount([a.id, b.id], null);
   const keys = (frame: string) => ["MISSION-1", "MISSION-2", "MISSION-3", "MISSION-4"].filter(k => frame.includes(k));
   try {
-    expect(keys(await press("t"))).toEqual(["MISSION-1", "MISSION-2", "MISSION-3", "MISSION-4"]);
+    expect(keys((await press("t"), await press("t")))).toEqual(["MISSION-1", "MISSION-2", "MISSION-3", "MISSION-4"]);
     const open = await press("f");
     expect(open).toContain("Jira tickets · 3 of 4 · 2 sessions · 0 done · status: open");
     expect(keys(open)).toEqual(["MISSION-1", "MISSION-2", "MISSION-3"]);
@@ -331,7 +331,7 @@ test("tickets view f cycles the status filter and a toggles archived sessions", 
     await press("f");
     await press("a");
     await press("q");
-    const reopened = await press("t");
+    const reopened = (await press("t"), await press("t"));
     expect(reopened).toContain("Jira tickets · 4 of 4 · 2 sessions · 1 done");
     expect(reopened).not.toContain("archived hidden");
   } finally {
@@ -353,7 +353,7 @@ test("tickets view / filters by text and captures shortcut keys while typing", a
   stampLink(b.id, "OTHER-3", "2026-01-01T00:00:00.000Z");
   const { press, cleanup } = await mount([a.id, b.id], null);
   try {
-    await press("t");
+    (await press("t"), await press("t"));
     expect(await press("/")).toContain("type to filter · enter keep · esc clear");
     // `q` is text, not "back": the view stays open and filters on the ticket title.
     const q = await press("Q");
@@ -411,7 +411,7 @@ test("tickets view P polls the filtered entries' sessions, archived ones include
   try {
     // The background poll keeps its on-screen scope.
     expect(poll).toHaveBeenLastCalledWith(config, [a.id]);
-    await press("t");
+    (await press("t"), await press("t"));
     await press("P");
     expect(new Set(poll.mock.lastCall![1] as string[])).toEqual(new Set([a.id, b.id]));
     await press("a");

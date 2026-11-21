@@ -55,8 +55,8 @@ async function mount(opts: { url: string | null; copyOk?: boolean }) {
 test("D opens the README menu and esc closes it", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
-    expect(ui.frame()).toContain(`README · ${ui.id}`);
+    await ui.press("S"); await ui.press("D");
+    expect(ui.frame()).toContain(`README actions · ${ui.id}`);
     expect(ui.frame()).toContain(URL);
     expect(ui.frame()).toContain("r  Refresh (regenerate)");
     expect(ui.frame()).toContain("o  Open in browser");
@@ -65,19 +65,19 @@ test("D opens the README menu and esc closes it", async () => {
     expect(ui.frame()).toContain("j/k move · enter select · r/o/c/p · esc/q cancel");
     await ui.press("\u001b");
     expect(ui.frame()).toContain("cancelled");
-    expect(ui.frame()).not.toContain(`README · ${ui.id}`);
+    expect(ui.frame()).not.toContain(`README actions · ${ui.id}`);
   } finally { ui.cleanup(); }
 });
 
 test("r confirms before regenerating; n cancels, y spawns the readmer", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("r");
     expect(ui.frame()).toContain(`Generate a README for ${ui.id} and save it locally? (y/N)`);
     await ui.press("n");
     expect(ui.spies.readmer).not.toHaveBeenCalled();
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("r");
     await ui.press("y");
     expect(ui.spies.readmer).toHaveBeenCalledWith(ui.id);
@@ -88,7 +88,7 @@ test("r confirms before regenerating; n cancels, y spawns the readmer", async ()
 test("enter on the highlighted option selects it (j moves to Open)", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("j");
     await ui.press("\r");
     expect(ui.spies.open).toHaveBeenCalledWith(URL);
@@ -99,7 +99,7 @@ test("enter on the highlighted option selects it (j moves to Open)", async () =>
 test("o opens the README url", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("o");
     expect(ui.spies.open).toHaveBeenCalledWith(URL);
     expect(ui.frame()).toContain(`opened README for ${ui.id} in browser`);
@@ -110,7 +110,7 @@ for (const ok of [true, false]) {
   test(`c copies the README url${ok ? "" : " and shows the link when no tool exists"}`, async () => {
     const ui = await mount({ url: URL, copyOk: ok });
     try {
-      await ui.press("D");
+      await ui.press("S"); await ui.press("D");
       await ui.press("c");
       expect(ui.spies.copy).toHaveBeenCalledWith(URL);
       expect(ui.frame()).toContain(ok ? `copied README link for ${ui.id}` : `no clipboard tool found · ${URL}`);
@@ -121,13 +121,13 @@ for (const ok of [true, false]) {
 test("without a README, open and copy only show a notice", async () => {
   const ui = await mount({ url: null });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     expect(ui.frame()).toContain("(not generated yet)");
     await ui.press("o");
-    expect(ui.frame()).toContain("no README yet · r to generate");
-    await ui.press("D");
+    expect(ui.frame()).toContain("no README yet · S → D → r to generate");
+    await ui.press("S"); await ui.press("D");
     await ui.press("c");
-    expect(ui.frame()).toContain("no README yet · r to generate");
+    expect(ui.frame()).toContain("no README yet · S → D → r to generate");
     expect(ui.spies.open).not.toHaveBeenCalled();
     expect(ui.spies.copy).not.toHaveBeenCalled();
   } finally { ui.cleanup(); }
@@ -136,7 +136,7 @@ test("without a README, open and copy only show a notice", async () => {
 test("r names the destination that owns the current README in the confirm", async () => {
   const ui = await mount({ url: "https://acme.atlassian.net/wiki/spaces/~me/pages/1/Readme" });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("r");
     expect(ui.frame()).toContain(`Generate a README for ${ui.id} and publish it to Confluence (private)? (y/N)`);
     await ui.press("y");
@@ -147,9 +147,9 @@ test("r names the destination that owns the current README in the confirm", asyn
 test("p opens the destination picker listing all four destinations; esc cancels", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("p");
-    expect(ui.frame()).toContain(`README · ${ui.id} · publish to`);
+    expect(ui.frame()).toContain(`README actions · ${ui.id} · publish to`);
     for (const row of ["a  Claude Artifact", "c  Confluence (private page)", "g  Google Doc (unshared)", "l  Local file", "a/c/g/l · esc/q cancel"]) expect(ui.frame()).toContain(row);
     await ui.press("\u001b");
     expect(ui.frame()).toContain("cancelled");
@@ -160,7 +160,7 @@ test("p opens the destination picker listing all four destinations; esc cancels"
 test("picker hotkey g confirms with the destination named, then spawns the readmer for it", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("p");
     await ui.press("g");
     expect(ui.frame()).toContain(`Generate a README for ${ui.id} and publish it to Google Doc (private)? (y/N)`);
@@ -172,14 +172,14 @@ test("picker hotkey g confirms with the destination named, then spawns the readm
 test("picker j/enter selects the highlighted destination; n at the confirm spawns nothing", async () => {
   const ui = await mount({ url: URL });
   try {
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("p");
     await ui.press("j");
     await ui.press("\r");
     expect(ui.frame()).toContain("publish it to Confluence (private)? (y/N)");
     await ui.press("n");
     expect(ui.spies.readmer).not.toHaveBeenCalled();
-    await ui.press("D");
+    await ui.press("S"); await ui.press("D");
     await ui.press("p");
     await ui.press("l");
     expect(ui.frame()).toContain("and save it locally? (y/N)");

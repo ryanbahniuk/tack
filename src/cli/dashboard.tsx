@@ -180,7 +180,20 @@ export function agentViewTarget(a: AgentRow, exists: (path: string) => boolean):
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-/** The `D` README menu: hotkey, label, and whether it needs an existing link. */
+const SESSION_ACTIONS = [
+  { key: "c", label: "New session" }, { key: "m", label: "View amendments" },
+  { key: "D", label: "README actions…" }, { key: "r", label: "Restart" },
+  { key: "b", label: "Boot" }, { key: "B", label: "Unboot" },
+  { key: "h", label: "Hold" }, { key: "x", label: "Stop" },
+  { key: "a", label: "Archive" }, { key: "d", label: "Delete" },
+] as const;
+type SessionAction = (typeof SESSION_ACTIONS)[number]["key"];
+const TICKET_ACTIONS = [
+  { key: "o", label: "Open this session's tickets in the browser" },
+  { key: "t", label: "Browse all tickets" }, { key: "p", label: "Poll Jira now" },
+] as const;
+type TicketAction = (typeof TICKET_ACTIONS)[number]["key"];
+
 const README_ACTIONS = [
   { key: "r", label: "Refresh (regenerate)", needsUrl: false },
   { key: "o", label: "Open in browser", needsUrl: true },
@@ -250,7 +263,7 @@ type Confirm =
   | { action: "unboot"; id: string }
   | { action: "steal"; id: string; projects: string[]; agents: Record<string, string>; holders: string[] };
 
-const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · m amendments · p PR actions · D README · J open tickets · t tickets · P poll Jira · c new · O ops · C config · r restart · b boot · B unboot · x stop · a archive/unarchive · h hold/unhold · d delete · z archived · q quit";
+const KEY_HINT = "s layout · [/] range · j/k move · enter/o open · v agents/output · S session actions · p PR actions · t ticket actions · c new · O ops · h hold/unhold · a archive/unarchive · d delete · C config · z archived · q quit";
 
 /** Render the same wrapped rows we count, including wide characters in notices.
  * Explicit rows avoid a mismatch between footer wrapping and the body budget. */
@@ -505,6 +518,8 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   const [personaPick, setPersonaPick] = useState<{ options: string[]; cursor: number; sessionId: string; prId?: string } | null>(null);
   /** The `p` PR actions menu; null when closed. */
   const [prPick, setPrPick] = useState<PrPick | null>(null);
+  const [sessionPick, setSessionPick] = useState<{ sessionId: string; cursor: number } | null>(null);
+  const [ticketPick, setTicketPick] = useState<{ cursor: number } | null>(null);
   const [readmePick, setReadmePick] = useState<{ sessionId: string; url: string | null; cursor: number; step?: "action" | "destination" } | null>(null);
   /** The `n` project chooser inside the agents picker; null when not choosing. */
   const [projectPick, setProjectPick] = useState<{ options: { label: string; project: string; prId?: string }[]; cursor: number } | null>(null);
@@ -727,6 +742,87 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     }
   };
 
+  const runSessionAction = (view: View | undefined, action: SessionAction) => {
+    if (action === "c") { onLaunch({ kind: "create" }); exit(); return; }
+    if (!view) return;
+    switch (action) {
+    case "D": setReadmePick({ sessionId: view.session.id, url: view.session.readme_url, cursor: 0 }); break;
+    case "b":
+      if (!config) return setNotice("config is unavailable");
+      if (bootBusy) return setNotice("boot operation already running");
+      const groups = config.projects.filter(p => p.boot).map(p => ({ project: p.name, agents: view.agents.filter(a => a.project_name === p.name && a.kind !== "pr_fix" && a.worktree_path && existsSync(a.worktree_path)) })).filter(g => g.agents.length > 1);
+      if (groups.length) setBootPick({ session: view.session.id, groups, choices: {}, cursor: 0 });
+      else runBootWorker(view.session.id, "boot");
+      break;
+    case "B":
+      if (bootBusy) return setNotice("boot operation already running");
+      setConfirm({ action: "unboot", id: view.session.id });
+      break;
+    case "m":
+      if (view.amendments.length === 0) {
+        setNotice(`${view.session.id} has no pending amendments`);
+        return;
+      }
+      setPickerId(view.session.id);
+      setAmendmentCursor(0);
+      setMode("amendments");
+      break;
+    case "r": {
+      const s = view.session;
+      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
+      setConfirm({ action: "restart", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
+        stale: view.stale, midTurn: Boolean(s.supervisor_turn_started_at),
+        planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
+      break; }
+    case "x":
+      setConfirm({ action: "stop", id: view.session.id });
+      break;
+    case "h": {
+      const s = view.session;
+      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
+      if (s.status === "on_hold") {
+        void unholdSession(s.id, config ?? undefined).then(() => setNotice(`${s.id} off hold · PR auto-fix on`))
+          .catch(err => setNotice(`unhold failed: ${(err as Error).message}`)).finally(refresh);
+      } else {
+        holdSession(s.id); setNotice(`put ${s.id} on hold · PR auto-fix off · h to resume`);
+        refresh();
+      }
+      break; }
+    case "a":
+      if (view.session.status === "archived") {
+        setConfirm({ action: "unarchive", id: view.session.id, count: listInterruptedAgents(view.session.id).length });
+      } else {
+        archiveSession(view.session.id);
+        setNotice(`archived ${view.session.id} · z to show archived, a to restore`);
+        refresh();
+      }
+      break;
+    case "d":
+      setConfirm({ action: "delete", id: view.session.id });
+      break;
+    }
+  };
+  const runTicketAction = (view: View | undefined, action: TicketAction) => {
+    if (action === "p") return startJiraPoll();
+    if (action === "t") {
+      setTicketSel({ id: null, index: 0 }); setTicketFilter(DEFAULT_TICKET_FILTER);
+      setTicketTyping(false); refreshTickets(); setMode("tickets"); return;
+    }
+    if (!view) return setNotice("select a session to open its tickets");
+
+      const id = view.session.id;
+      const total = view.tickets.length;
+      if (total === 0) return setNotice(`${id} has no tickets yet`);
+      // Without a stored url or a `jira` siteUrl a ticket has nowhere to link.
+      const urls = view.tickets.map((t) => resolveTicketUrl(config, t)).filter((u): u is string => Boolean(u));
+      if (urls.length === 0) {
+        return setNotice(`${id} has ${total} ticket${total === 1 ? "" : "s"} but no Jira site is configured — add a \`jira\` block (siteUrl) to your Tack config`);
+      }
+      for (const url of urls) openUrl(url);
+      const skipped = total - urls.length;
+      setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
+  };
+
   useInput((input, key) => {
     // Quit is the one gesture that works from everywhere.
     if (key.ctrl && input === "c") return exit();
@@ -882,6 +978,24 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       return;
     }
 
+    if (sessionPick) {
+      const view = rows.find(r => r.session.id === sessionPick.sessionId);
+      if (input === "q" || key.escape || !view) { setSessionPick(null); setNotice("cancelled"); return; }
+      if (key.downArrow || input === "j") return setSessionPick({ ...sessionPick, cursor: Math.min(sessionPick.cursor + 1, SESSION_ACTIONS.length - 1) });
+      if (key.upArrow || input === "k") return setSessionPick({ ...sessionPick, cursor: Math.max(sessionPick.cursor - 1, 0) });
+      const action = key.return ? SESSION_ACTIONS[sessionPick.cursor]!.key : SESSION_ACTIONS.find(a => a.key === input)?.key;
+      if (action) { setSessionPick(null); runSessionAction(view, action); }
+      return;
+    }
+    if (ticketPick) {
+      if (input === "q" || key.escape) { setTicketPick(null); setNotice("cancelled"); return; }
+      if (key.downArrow || input === "j") return setTicketPick({ cursor: Math.min(ticketPick.cursor + 1, TICKET_ACTIONS.length - 1) });
+      if (key.upArrow || input === "k") return setTicketPick({ cursor: Math.max(ticketPick.cursor - 1, 0) });
+      const action = key.return ? TICKET_ACTIONS[ticketPick.cursor]!.key : TICKET_ACTIONS.find(a => a.key === input)?.key;
+      if (action) { setTicketPick(null); runTicketAction(selected, action); }
+      return;
+    }
+
     // README menu: swallows every key while open and closes after any action
     // (including a refused open/copy), so it never lingers behind a notice.
     if (readmePick?.step === "destination") {
@@ -911,7 +1025,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         const publisher = selectReadmePublisher(config, url);
         return setConfirm({ action: "readme", id, label: publisher.label, local: publisher.kind === "local" });
       }
-      if (!url) return setNotice("no README yet · r to generate");
+      if (!url) return setNotice("no README yet · S → D → r to generate");
       if (action === "o") { openUrl(url); return setNotice(`opened README for ${id} in browser`); }
       void copyToClipboard(url).then(ok => setNotice(ok ? `copied README link for ${id}` : `no clipboard tool found · ${url}`));
       return;
@@ -1016,17 +1130,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         return RANGES[Math.max(0, Math.min(RANGES.length - 1, index))]!;
       });
     }
-    // Cross-session Jira: independent of the selected session, so they work with an
-    // empty list and in the full-screen insights layout too.
-    if (input === "t") {
-      setTicketSel({ id: null, index: 0 });
-      setTicketFilter(DEFAULT_TICKET_FILTER);
-      setTicketTyping(false);
-      // Read now so the first frame already has the history, not an empty list.
-      refreshTickets();
-      return setMode("tickets");
-    }
-    if (input === "P") return startJiraPoll();
+    if (input === "t") return setTicketPick({ cursor: 0 });
     if (input === "q") return exit();
     if (input === "C") {
       onLaunch({ kind: "config" });
@@ -1044,17 +1148,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     } else if (input === "z") {
       setShowArchived((v) => !v);
     } else if (input === "c") {
-      // Same hand-off as opening a session, but for a brand-new one — works even
-      // with zero sessions, which is exactly when this is most useful.
-      onLaunch({ kind: "create" });
-      exit();
+      runSessionAction(selected, "c");
     } else if (input === "O") {
       onLaunch({ kind: "ops" });
       exit();
+    } else if (input === "S") {
+      if (!selected) return setNotice("no session selected · c to create one");
+      setSessionPick({ sessionId: selected.session.id, cursor: 0 });
     } else if (!selected) {
       return;
-    } else if (input === "D") {
-      setReadmePick({ sessionId: selected.session.id, url: selected.session.readme_url, cursor: 0 });
     } else if (input === "o" || key.return) {
       // Hand the terminal to the interactive supervisor. Tearing down Ink and
       // launching the session happens in `runDashboard` once this unmounts — we just
@@ -1067,68 +1169,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
       setAgentCursor(0);
       setProjectPick(null);
       setMode("agents");
-    } else if (input === "b") {
-      if (!config) return setNotice("config is unavailable");
-      if (bootBusy) return setNotice("boot operation already running");
-      const groups = config.projects.filter(p => p.boot).map(p => ({ project: p.name, agents: selected.agents.filter(a => a.project_name === p.name && a.kind !== "pr_fix" && a.worktree_path && existsSync(a.worktree_path)) })).filter(g => g.agents.length > 1);
-      if (groups.length) setBootPick({ session: selected.session.id, groups, choices: {}, cursor: 0 });
-      else runBootWorker(selected.session.id, "boot");
-    } else if (input === "B") {
-      if (bootBusy) return setNotice("boot operation already running");
-      setConfirm({ action: "unboot", id: selected.session.id });
-    } else if (input === "m") {
-      if (selected.amendments.length === 0) {
-        setNotice(`${selected.session.id} has no pending amendments`);
-        return;
-      }
-      setPickerId(selected.session.id);
-      setAmendmentCursor(0);
-      setMode("amendments");
     } else if (input === "p") {
       if (selected.prs.length === 0) return setNotice(`${selected.session.id} has no PRs yet`);
-      // One PR is its own target, so skip straight to the actions.
       const only = selected.prs.length === 1 ? selected.prs[0]! : null;
       setPrPick({ sessionId: selected.session.id, step: only ? "action" : "target", target: only ? only.id : "all", cursor: 0 });
-    } else if (input === "J") {
-      const id = selected.session.id;
-      const total = selected.tickets.length;
-      if (total === 0) return setNotice(`${id} has no tickets yet`);
-      // Without a stored url or a `jira` siteUrl a ticket has nowhere to link.
-      const urls = selected.tickets.map((t) => resolveTicketUrl(config, t)).filter((u): u is string => Boolean(u));
-      if (urls.length === 0) {
-        return setNotice(`${id} has ${total} ticket${total === 1 ? "" : "s"} but no Jira site is configured — add a \`jira\` block (siteUrl) to your Tack config`);
-      }
-      for (const url of urls) openUrl(url);
-      const skipped = total - urls.length;
-      setNotice(`opened ${urls.length} ticket${urls.length === 1 ? "" : "s"} in browser${skipped ? ` · ${skipped} without a link (no jira siteUrl)` : ""}`);
-    } else if (input === "r") {
-      const s = selected.session;
-      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
-      setConfirm({ action: "restart", id: s.id, count: selectAgentsToRevive(listAgents(s.id)).length,
-        stale: selected.stale, midTurn: Boolean(s.supervisor_turn_started_at),
-        planPending: Boolean(s.awaiting_input_at && s.awaiting_reason === "plan") });
-    } else if (input === "x") {
-      setConfirm({ action: "stop", id: selected.session.id });
-    } else if (input === "h") {
-      const s = selected.session;
-      if (s.status === "archived") return setNotice(`${s.id} is archived · a to unarchive`);
-      if (s.status === "on_hold") {
-        void unholdSession(s.id, config ?? undefined).then(() => setNotice(`${s.id} off hold · PR auto-fix on`))
-          .catch(err => setNotice(`unhold failed: ${(err as Error).message}`)).finally(refresh);
-      } else {
-        holdSession(s.id); setNotice(`put ${s.id} on hold · PR auto-fix off · h to resume`);
-        refresh();
-      }
-    } else if (input === "a") {
-      if (selected.session.status === "archived") {
-        setConfirm({ action: "unarchive", id: selected.session.id, count: listInterruptedAgents(selected.session.id).length });
-      } else {
-        archiveSession(selected.session.id);
-        setNotice(`archived ${selected.session.id} · z to show archived, a to restore`);
-        refresh();
-      }
-    } else if (input === "d") {
-      setConfirm({ action: "delete", id: selected.session.id });
+    } else if (input === "h" || input === "a" || input === "d") {
+      runSessionAction(selected, input);
+
     }
   });
 
@@ -1152,12 +1199,24 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
 
   if (personaPick) return <Box flexDirection="column"><Text bold>Review {personaPick.sessionId}{personaPick.prId ? ` · #${rows.find(r => r.session.id === personaPick.sessionId)?.prs.find(p => p.id === personaPick.prId)?.number ?? "?"}` : ""} · choose a persona</Text>{personaPick.options.map((p, i) => <Text key={p} color={i === personaPick.cursor ? "cyan" : undefined}>{i === personaPick.cursor ? "❯ " : "  "}{p}</Text>)}<Text dimColor>j/k move · enter review · esc/q cancel</Text></Box>;
 
-  if (readmePick?.step === "destination") return <Box flexDirection="column"><Text bold>README · {readmePick.sessionId} · publish to</Text>{README_DESTINATIONS.map((d, i) => {
+  const sessionPickView = sessionPick ? rows.find(r => r.session.id === sessionPick.sessionId) : undefined;
+  if (sessionPick && sessionPickView) return <Box flexDirection="column"><Text bold>Session actions · {sessionPickView.session.id} · {sessionPickView.session.status}</Text>{SESSION_ACTIONS.map((a, i) => {
+    const current = i === sessionPick.cursor;
+    const label = a.key === "m" ? `View amendments (${sessionPickView.amendments.length})` : a.key === "h" ? (sessionPickView.session.status === "on_hold" ? "Unhold (turns PR auto-fix on)" : "Hold (turns PR auto-fix off)") : a.key === "a" ? (sessionPickView.session.status === "archived" ? "Unarchive" : "Archive") : a.label;
+    const disabled = (a.key === "m" && !sessionPickView.amendments.length) || ((a.key === "r" || a.key === "h") && sessionPickView.session.status === "archived");
+    return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={disabled}>{current ? "❯ " : "  "}{a.key}  {label}</Text>;
+  })}<Text dimColor>j/k move · enter select · c/m/D/r/b/B/h/x/a/d · esc/q cancel</Text></Box>;
+  if (ticketPick) return <Box flexDirection="column"><Text bold>Ticket actions{selected ? ` · ${selected.session.id}` : ""}</Text>{TICKET_ACTIONS.map((a, i) => {
+    const current = i === ticketPick.cursor;
+    return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.key === "o" && !selected?.tickets.length}>{current ? "❯ " : "  "}{a.key}  {a.label}{a.key === "o" ? ` (${selected?.tickets.length ?? 0})` : ""}</Text>;
+  })}<Text dimColor>j/k move · enter select · o/t/p · esc/q cancel</Text></Box>;
+
+  if (readmePick?.step === "destination") return <Box flexDirection="column"><Text bold>README actions · {readmePick.sessionId} · publish to</Text>{README_DESTINATIONS.map((d, i) => {
     const current = i === readmePick.cursor;
     return <Text key={d.kind} color={current ? "cyan" : undefined}>{current ? "❯ " : "  "}{d.key}  {d.label}</Text>;
   })}<Text dimColor>j/k move · enter select · a/c/g/l · esc/q cancel</Text></Box>;
 
-  if (readmePick) return <Box flexDirection="column"><Text bold>README · {readmePick.sessionId}</Text><Text>{readmePick.url ?? "(not generated yet)"}</Text>{README_ACTIONS.map((a, i) => {
+  if (readmePick) return <Box flexDirection="column"><Text bold>README actions · {readmePick.sessionId}</Text><Text>{readmePick.url ?? "(not generated yet)"}</Text>{README_ACTIONS.map((a, i) => {
     const current = i === readmePick.cursor;
     return <Text key={a.key} color={current ? "cyan" : undefined} dimColor={a.needsUrl && !readmePick.url}>{current ? "❯ " : "  "}{a.key}  {a.label}</Text>;
   })}<Text dimColor>j/k move · enter select · r/o/c/p · esc/q cancel</Text></Box>;
@@ -1166,7 +1225,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   if (prPick && prPickView) {
     if (prPick.step === "target") {
       const labels = [`All PRs (${prPickView.prs.length})`, ...prPickView.prs.map(prTargetLabel)];
-      return <Box flexDirection="column"><Text bold>PRs · {prPickView.session.id} · choose a target</Text>{labels.map((l, i) => {
+      return <Box flexDirection="column"><Text bold>PR actions · {prPickView.session.id} · choose a target</Text>{labels.map((l, i) => {
         const current = i === prPick.cursor;
         return <Text key={i} color={current ? "cyan" : undefined}>{current ? "❯ " : "  "}{l}</Text>;
       })}<Text dimColor>j/k move · enter choose · esc/q cancel</Text></Box>;
@@ -1174,7 +1233,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
     const pr = prPick.target === "all" ? null : prPickView.prs.find((p) => p.id === prPick.target) ?? null;
     const fixOn = pr ? !!pr.pr_fix_enabled : !!prPickView.session.pr_fix_enabled;
     return <Box flexDirection="column">
-      <Text bold>{pr ? `#${pr.number ?? "?"} · ${pr.title ?? ""}` : `PRs · ${prPickView.session.id}`}</Text>
+      <Text bold>{pr ? `PR actions · #${pr.number ?? "?"} · ${pr.title ?? ""}` : `PR actions · ${prPickView.session.id}`}</Text>
       {pr ? <Text>{pr.url}</Text> : null}
       {PR_ACTIONS.map((a, i) => {
         const current = i === prPick.cursor;

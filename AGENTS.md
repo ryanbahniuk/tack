@@ -156,7 +156,7 @@ review/auto-fix on all of a session's PRs or one.
 
 ## Restarting sessions
 
-`tack session restart <id>` (dashboard `r`) stops the supervisor even mid-turn or
+`tack session restart <id>` (dashboard `S` → `r`) stops the supervisor even mid-turn or
 with a pending plan, revives orphaned or transient-failed agents except manual and
 `pr_fix` agents, and restarts dead or stale PR watchers when needed. The supervisor
 is parked detached in tmux; without tmux it stays stopped until resume. `--all`
@@ -169,4 +169,4 @@ refresh of stale processes without reviving agents. Logic lives in
 
 Release-gated dependencies use `open_pr` with `awaitsRelease` after opening the upstream PR. PR watch waits for a containing GitHub release or tag, queues an uncapped dependency fix, and blocks draft promotion while it waits. No package registry or configuration setting determines publication.
 
-Session READMEs can be linked or unlinked with `tack session readme <id> --link <url>` / `--unlink` or supervisor tools `link_readme` / `unlink_readme`. Regeneration republishes into and overwrites the linked URL when the chosen destination owns it; `--no-publish` keeps the link. `readme.publisher` sets the default destination (`claude-artifact`, `confluence`, `google-doc`, `local`); `--to <kind>` or the dashboard `D` → `p` picker overrides it for one run, and a plain refresh keeps the destination that owns the current URL. Confluence and Google Docs publishing need the claude runtime plus the user's Atlassian MCP / Google Drive connector (`claude mcp list` shows server names): the publish run sets `inheritUserMcp` (drops `--strict-mcp-config`) but stays read-only and shell-less, allowing only `Read` and the listed connector tools. Every other run keeps strict MCP isolation. Tests inject runners; never make live publish calls.
+Session READMEs can be linked or unlinked with `tack session readme <id> --link <url>` / `--unlink` or supervisor tools `link_readme` / `unlink_readme`. Regeneration republishes into and overwrites the linked URL when the chosen destination owns it; `--no-publish` keeps the link. `readme.publisher` sets the default destination (`claude-artifact`, `confluence`, `google-doc`, `local`); `--to <kind>` or the dashboard `S` → `D` → `p` picker overrides it for one run, and a plain refresh keeps the destination that owns the current URL. Confluence and Google Docs publishing need the claude runtime plus the user's Atlassian MCP / Google Drive connector (`claude mcp list` shows server names): the publish run sets `inheritUserMcp` (drops `--strict-mcp-config`) but stays read-only and shell-less, allowing only `Read` and the listed connector tools. Every other run keeps strict MCP isolation. Tests inject runners; never make live publish calls.

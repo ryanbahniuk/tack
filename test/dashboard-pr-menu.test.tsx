@@ -99,7 +99,7 @@ test("several PRs show the target step; All PRs opens every PR", async () => {
     expect(ui.frame()).toContain("#1 Change 1 · app · open");
     expect(ui.frame()).toContain("#2 Change 2 · app · open · pr-fix off");
     await ui.press("\r");
-    expect(ui.frame()).toContain(`PRs · ${ui.id}`);
+    expect(ui.frame()).toContain(`PR actions · ${ui.id}`);
     await ui.press("o");
     expect(ui.spies.open.mock.calls).toEqual([[`${URL_BASE}/1`], [`${URL_BASE}/2`]]);
     expect(ui.frame()).toContain("opened 2 PRs in browser");
@@ -229,12 +229,12 @@ test("All PRs toggle flips the session flag and leaves PR flags alone", async ()
   } finally { ui.cleanup(); }
 });
 
-test("the old O, R and F shortcuts no longer act", async () => {
+test("the old R and F PR shortcuts no longer act (O now opens ops)", async () => {
   const ui = await mount({ prs: 1, personas: ["strict"] });
   try {
     expect(ui.initial).toContain("p PR actions");
     expect(ui.initial).not.toContain("O open PR");
-    for (const key of ["O", "R", "F"]) await ui.press(key);
+    for (const key of ["R", "F"]) await ui.press(key);
     expect(ui.spies.open).not.toHaveBeenCalled();
     expect(ui.frame()).not.toContain("choose a persona");
     expect(getSession(ui.id)!.pr_fix_enabled).toBe(1);
