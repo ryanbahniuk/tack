@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import type { Model } from "../src/config/schema";
+import { sessionNeedsInput } from "../src/cli/liveness";
+import { ClaudeRuntime } from "../src/runtimes/claude";
+import { guardOnPermissionMarker, permissionMarkerPath } from "../src/supervisor/permission-prompt";
+import { permissionPromptHookArgs, permissionResolvedHookArgs } from "../src/supervisor/supervise";
 import { tmpdir } from "node:os";
 import { supervisorPromptPath } from "../src/supervisor/prompt";
 import { join, resolve } from "node:path";
@@ -172,5 +177,102 @@ describe("question answers", () => {
     hook(["__await-input", session.id, "question", "--clear"]);
     expect(getSession(session.id)!.awaiting_reason).toBe("plan");
     hook(["__await-input"]);
+  });
+});
+
+describe("permission dialogs", () => {
+  const tack = (sessionId: string) => ({
+    command: process.execPath,
+    args: [resolve(import.meta.dir, "../bin/tack.ts"), ...permissionResolvedHookArgs(sessionId)],
+  });
+  const notify = (sessionId: string, type: string) =>
+    hook(permissionPromptHookArgs(sessionId), JSON.stringify({ hook_event_name: "Notification", notification_type: type }));
+  const pending = (sessionId: string) => {
+    notify(sessionId, "permission_prompt");
+    expect(getSession(sessionId)!.awaiting_reason).toBe("permission");
+    expect(existsSync(permissionMarkerPath(sessionId))).toBe(true);
+  };
+  const cleared = (sessionId: string) => {
+    expect(getSession(sessionId)!.awaiting_input_at).toBeNull();
+    expect(existsSync(permissionMarkerPath(sessionId))).toBe(false);
+  };
+
+  test("a permission_prompt notification makes the session need input", () => {
+    const session = createSession({});
+    pending(session.id);
+    expect(sessionNeedsInput(getSession(session.id)!, [])).toBe(true);
+  });
+
+  test("a permission prompt never overwrites a pending plan, and its clear leaves the plan", () => {
+    const session = createSession({});
+    setSessionAwaitingInput(session.id, "plan");
+    notify(session.id, "permission_prompt");
+    expect(getSession(session.id)!.awaiting_reason).toBe("plan");
+    hook(permissionResolvedHookArgs(session.id));
+    expect(getSession(session.id)!.awaiting_reason).toBe("plan");
+  });
+
+  test("answering Yes (the --clear after the tool runs) clears it", () => {
+    const session = createSession({});
+    pending(session.id);
+    hook(permissionResolvedHookArgs(session.id));
+    cleared(session.id);
+    expect(sessionNeedsInput(getSession(session.id)!, [])).toBe(false);
+  });
+
+  test("answering No then typing a prompt clears it", () => {
+    const session = createSession({});
+    pending(session.id);
+    expect(submit(session.id, JSON.stringify({ prompt: "don't search there" }))).toBe("");
+    cleared(session.id);
+  });
+
+  test("Stop clears it as a backstop", () => {
+    const session = createSession({});
+    pending(session.id);
+    turnEnd(session.id, { hook_event_name: "Stop", last_assistant_message: "Done." });
+    cleared(session.id);
+  });
+
+  test("idle_prompt leaves a pending permission prompt set", () => {
+    const session = createSession({});
+    pending(session.id);
+    turnEnd(session.id, { hook_event_name: "Notification", notification_type: "idle_prompt" });
+    expect(getSession(session.id)!.awaiting_reason).toBe("permission");
+    expect(existsSync(permissionMarkerPath(session.id))).toBe(true);
+  });
+
+  test("the all-tools PostToolUse guard skips tack without a marker and clears the flag with one", () => {
+    const session = createSession({});
+    const settings = (() => {
+      const { args } = new ClaudeRuntime().interactiveCommand({
+        readOnly: true, model: { id: "m" } as Model, bin: "claude", cwd: "/tmp/x", prompt: "", mcpServers: [],
+        logPath: "/dev/null", onPermissionResolved: guardOnPermissionMarker(session.id, tack(session.id)),
+      });
+      return JSON.parse(args[args.indexOf("--settings") + 1]!);
+    })();
+    const command: string = settings.hooks.PostToolUse[0].hooks[0].command;
+    const run = () => {
+      const result = Bun.spawnSync(["sh", "-c", command], {
+        env: { ...process.env }, stdin: Buffer.from("{}"), stdout: "pipe", stderr: "pipe",
+      });
+      expect(result.stderr.toString()).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString()).toBe("");
+    };
+
+    // Flag set without a marker: if tack ran, --clear would have cleared it.
+    setSessionAwaitingInput(session.id, "permission");
+    run();
+    expect(getSession(session.id)!.awaiting_reason).toBe("permission");
+
+    pending(session.id);
+    run();
+    cleared(session.id);
+  });
+
+  test("rejects session ids that would escape the logs dir", () => {
+    expect(() => permissionMarkerPath("../x")).toThrow();
+    hook(["__await-input", "../x", "permission"]);
   });
 });

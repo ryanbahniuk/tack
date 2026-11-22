@@ -64,6 +64,7 @@ import { RESTART_MESSAGE, isSessionStale, refreshBlockedReason, refreshSession }
 import { resolveEditTarget, worktreeEditSummary } from "../src/session/edit";
 import { createManualWorkspace, resolveManualProject } from "../src/session/manual";
 import { isApprovePrompt } from "../src/supervisor/approve-prompt";
+import { PERMISSION_REASON, clearPermissionPrompt, markPermissionPrompt } from "../src/supervisor/permission-prompt";
 import { AUTO_LINK_BUDGET_MS, autoLinkNote, autoLinkPromptPrs, autoLinkablePrompt, extractPrUrls } from "../src/session/auto-link-prs";
 import { summarizeProject } from "../src/projects/summarize";
 import {
@@ -1812,6 +1813,8 @@ if (hidden === "__mcp") {
       // The human replied, so an open question is answered. A pending plan keeps
       // its own lifecycle (elicitation / /approve), so only "question" clears here.
       clearSessionAwaitingInputFor(sessionId, "question");
+      // A typed prompt after a dialog means the human said No or pressed Esc.
+      try { clearPermissionPrompt(sessionId); } catch { /* best-effort */ }
     }
     if (sessionId && prompt !== null && isApprovePrompt(prompt)) {
       approveSessionPlan(sessionId);
@@ -1871,6 +1874,7 @@ if (hidden === "__mcp") {
     // idle_prompt (Notification) never touches the awaiting flag: it fires while
     // the human is still reading, and must not clear a question or plan.
     if (sessionId && input?.hook_event_name === "Stop") {
+      clearPermissionPrompt(sessionId);
       const text = finalAssistantText(input);
       if (text && endsWithQuestion(text)) setSessionAwaitingInputIfFree(sessionId, "question");
     }
@@ -1880,10 +1884,14 @@ if (hidden === "__mcp") {
   // Silent PreToolUse / PostToolUse hook around the native question tool:
   // `__await-input <id> <reason>` marks the session awaiting (never overwriting a
   // different reason, e.g. a pending plan); `--clear` clears only that reason.
+  // Reason "permission" also maintains the marker file the PostToolUse guard checks.
   // Prints nothing so it can't affect the tool's permission decision.
   try {
     const [, , , sessionId, reason, flag] = process.argv;
-    if (sessionId && reason) {
+    if (sessionId && reason === PERMISSION_REASON) {
+      if (flag === "--clear") clearPermissionPrompt(sessionId);
+      else markPermissionPrompt(sessionId);
+    } else if (sessionId && reason) {
       if (flag === "--clear") clearSessionAwaitingInputFor(sessionId, reason);
       else setSessionAwaitingInputIfFree(sessionId, reason);
     }

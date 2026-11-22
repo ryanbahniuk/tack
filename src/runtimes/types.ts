@@ -118,6 +118,17 @@ export interface RunOptions {
   onQuestionAsked?: { command: string; args: string[] };
   /** Counterpart of `onQuestionAsked`, run (PostToolUse) once the human answers. */
   onQuestionAnswered?: { command: string; args: string[] };
+  /**
+   * A silent command to run when the runtime raises its native permission dialog
+   * (claude: the `permission_prompt` Notification). Tack uses it to mark the session
+   * awaiting input ("permission"). Unsupported runtimes ignore it.
+   */
+  onPermissionPrompt?: { command: string; args: string[] };
+  /**
+   * Counterpart of `onPermissionPrompt`, run after every tool call (claude:
+   * all-tools PostToolUse), so it must be cheap and silent when nothing is pending.
+   */
+  onPermissionResolved?: { command: string; args: string[] };
   /** Best-effort notification when an attended turn finishes; unsupported runtimes ignore it. */
   onTurnEnd?: { command: string; args: string[] };
   /** Raw runtime stdout is teed here for the dashboard's log view. */

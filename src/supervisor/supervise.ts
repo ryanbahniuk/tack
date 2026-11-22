@@ -35,6 +35,7 @@ import {
   SUPERVISOR_PLAN_APPROVAL_TOOL,
 } from "../mcp/supervisor-server";
 import { supervisorPromptPath } from "./prompt";
+import { PERMISSION_REASON, guardOnPermissionMarker } from "./permission-prompt";
 import { buildSupervisorContext } from "./context";
 import { promptWithAutoLinks } from "../session/auto-link-prs";
 import { sessionSnapshotsRoot } from "../worktree/worktree";
@@ -210,6 +211,14 @@ export function answeredQuestionHookArgs(sessionId: string): string[] {
   return ["__await-input", sessionId, "question", "--clear"];
 }
 
+/** Arguments for the silent hooks that mark / clear a native permission dialog. */
+export function permissionPromptHookArgs(sessionId: string): string[] {
+  return ["__await-input", sessionId, PERMISSION_REASON];
+}
+export function permissionResolvedHookArgs(sessionId: string): string[] {
+  return ["__await-input", sessionId, PERMISSION_REASON, "--clear"];
+}
+
 /**
  * Runs the supervisor as an attended, interactive session: launches the pinned
  * runtime's real TUI (claude / codex) with the SAME read-only, delegate-only
@@ -313,6 +322,10 @@ export async function superviseInteractive(opts: {
     // Claude only (like the plan hook): flag native questions as needing input.
     onQuestionAsked: usesPlanHook ? selfCommand(awaitQuestionHookArgs(session.id)) : undefined,
     onQuestionAnswered: usesPlanHook ? selfCommand(answeredQuestionHookArgs(session.id)) : undefined,
+    onPermissionPrompt: usesPlanHook ? selfCommand(permissionPromptHookArgs(session.id)) : undefined,
+    onPermissionResolved: usesPlanHook
+      ? guardOnPermissionMarker(session.id, selfCommand(permissionResolvedHookArgs(session.id)))
+      : undefined,
     onUserPrompt: selfCommand(["__approve-prompt", session.id]),
     onTurnEnd: selfCommand(["__turn-end", session.id]),
     // With auto-open off, keep opening a PR behind an explicit per-call human ok even

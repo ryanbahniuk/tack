@@ -296,6 +296,44 @@ describe("ClaudeRuntime.interactiveCommand question hooks", () => {
     expect(settings.permissions).toEqual(base.permissions);
   });
 
+  const permission = {
+    onPermissionPrompt: { command: "/path with spaces/tack", args: ["__await-input", "ses_x", "permission"] },
+    onPermissionResolved: { command: "sh", args: ["-c", 'exec "$@"', "sh", "tack", "--clear"] },
+  };
+
+  test("permission_prompt joins idle_prompt and the all-tools clear joins AskUserQuestion without clobbering either", () => {
+    const base = settingsOf({ ...gates, ...question });
+    const settings = settingsOf({ ...gates, ...question, ...permission });
+    expect(settings.hooks.Notification).toEqual([
+      ...base.hooks.Notification,
+      { matcher: "permission_prompt", hooks: [{
+        type: "command", command: "'/path with spaces/tack' '__await-input' 'ses_x' 'permission'",
+      }] },
+    ]);
+    expect(settings.hooks.Notification[0].matcher).toBe("idle_prompt");
+    expect(settings.hooks.PostToolUse).toEqual([
+      ...base.hooks.PostToolUse,
+      { hooks: [{ type: "command", command: `'sh' '-c' 'exec "$@"' 'sh' 'tack' '--clear'` }] },
+    ]);
+    expect(settings.hooks.PostToolUse[0].matcher).toBe("AskUserQuestion");
+    for (const key of ["PreToolUse", "UserPromptSubmit", "Stop"])
+      expect(settings.hooks[key]).toEqual(base.hooks[key]);
+    expect(settings.permissions).toEqual(base.permissions);
+  });
+
+  test("permission hooks stand alone when no other Notification or PostToolUse hook is requested", () => {
+    const settings = settingsOf(permission);
+    expect(settings.hooks.Notification.map((e: HookEntry) => e.matcher)).toEqual(["permission_prompt"]);
+    expect(settings.hooks.PostToolUse).toHaveLength(1);
+    expect(settings.hooks.PostToolUse[0].matcher).toBeUndefined();
+  });
+
+  test("omits the permission hooks when not requested", () => {
+    const settings = settingsOf({ ...gates, ...question });
+    expect(settings.hooks.Notification.map((e: HookEntry) => e.matcher)).toEqual(["idle_prompt"]);
+    expect(settings.hooks.PostToolUse.map((e: HookEntry) => e.matcher)).toEqual(["AskUserQuestion"]);
+  });
+
   test("omits the question hooks when not requested", () => {
     const settings = settingsOf(gates);
     expect((settings.hooks.PreToolUse as HookEntry[]).some((e) => e.matcher === "AskUserQuestion")).toBe(false);
