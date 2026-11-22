@@ -260,31 +260,23 @@ export class ClaudeRuntime implements Runtime {
         ...(allow.length ? { allow } : {}),
         ...(ask.length ? { ask } : {}),
       };
-    if (preToolUse.length) settings.hooks = { PreToolUse: preToolUse };
-    if (opts.onQuestionAnswered) {
-      const command = shellJoin([opts.onQuestionAnswered.command, ...opts.onQuestionAnswered.args]);
-      settings.hooks = {
-        ...settings.hooks,
-        PostToolUse: [{ matcher: ASK_USER_QUESTION_TOOL, hooks: [{ type: "command", command }] }],
-      };
-    }
-    if (opts.onUserPrompt) {
-      const command = shellJoin([opts.onUserPrompt.command, ...opts.onUserPrompt.args]);
-      settings.hooks = {
-        ...settings.hooks,
-        UserPromptSubmit: [{ hooks: [{ type: "command", command }] }],
-      };
-    }
+    const hooks: Record<string, unknown[]> = {};
+    const addHook = (event: string, cmd: { command: string; args: string[] }, matcher?: string) => {
+      const command = shellJoin([cmd.command, ...cmd.args]);
+      (hooks[event] ??= []).push({ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", command }] });
+    };
+    if (preToolUse.length) hooks.PreToolUse = preToolUse;
+    if (opts.onQuestionAnswered) addHook("PostToolUse", opts.onQuestionAnswered, ASK_USER_QUESTION_TOOL);
+    if (opts.onPermissionResolved) addHook("PostToolUse", opts.onPermissionResolved);
+    if (opts.onUserPrompt) addHook("UserPromptSubmit", opts.onUserPrompt);
     if (opts.onTurnEnd) {
-      const command = shellJoin([opts.onTurnEnd.command, ...opts.onTurnEnd.args]);
       // Esc interrupts don't fire Stop. Clear the turn flag on idle_prompt too,
       // so an interrupted supervisor doesn't look busy forever in the dashboard.
-      settings.hooks = {
-        ...settings.hooks,
-        Stop: [{ hooks: [{ type: "command", command }] }],
-        Notification: [{ matcher: "idle_prompt", hooks: [{ type: "command", command }] }],
-      };
+      addHook("Stop", opts.onTurnEnd);
+      addHook("Notification", opts.onTurnEnd, "idle_prompt");
     }
+    if (opts.onPermissionPrompt) addHook("Notification", opts.onPermissionPrompt, "permission_prompt");
+    if (Object.keys(hooks).length) settings.hooks = hooks;
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
     args.push(
       "--mcp-config",

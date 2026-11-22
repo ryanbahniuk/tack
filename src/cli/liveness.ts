@@ -33,7 +33,7 @@ export function sessionActive(s: SessionRow, agents: AgentRow[]): boolean {
 
 /**
  * Whether a session needs the human's attention — either the supervisor is blocked
- * on a decision (a plan awaiting approval, a question it asked, etc.) or there's completed agent work the
+ * on a decision (a plan awaiting approval, a question it asked, a native permission dialog) or there's completed agent work the
  * human hasn't looked at yet. Both signals are ephemeral/re-armable: the awaiting
  * flag toggles per plan iteration, and unread work clears once the human views the
  * session (`stampSessionSeen`). `finished_at`/`last_seen_at` are ISO-UTC, so a plain

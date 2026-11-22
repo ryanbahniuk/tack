@@ -763,6 +763,18 @@ The detector ignores trailing fenced code, emphasis, closing quotes and brackets
 the turn marker. Adapters without
 these hooks leave it null. A live headless runner is always treated as busy.
 
+A native permission dialog ("Do you want to proceed?") also flags the session.
+Claude's `Notification` hook with matcher `permission_prompt` runs `__await-input
+<id> permission`. That sets reason `"permission"` only if no plan or question is
+pending, and touches the marker `LOGS_DIR/<id>/permission-pending`. Three events clear
+reason `"permission"` and remove the marker:
+- the all-tools PostToolUse hook, after the human answers Yes and the tool runs;
+- a submitted prompt, after the human answers No or presses Esc;
+- `Stop`, as a backstop.
+
+`idle_prompt` doesn't clear it. The PostToolUse hook is an `sh` guard on the marker,
+so an ordinary tool call never starts a Tack process.
+
 ### Worktree editing and manual workspaces
 
 `tack session edit <session> [agent]` (`src/session/edit.ts`) opens an existing
