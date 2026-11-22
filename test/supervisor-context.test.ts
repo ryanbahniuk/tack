@@ -146,3 +146,8 @@ test("personal guidance is last and omitted when missing", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("project guidance directs the supervisor to check current projects", () => {
+  expect(context(true)).toContain("This list is as of session start. `list_projects` is always current; check it and sync from it when the human names a project not listed here.");
+});
