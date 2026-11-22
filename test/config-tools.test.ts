@@ -1,11 +1,11 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "../src/config/load";
 import { STARTER_CONFIG } from "../src/config/starter";
-import { readConfigView, requestConfigUpdate } from "../src/mcp/supervisor-server";
+import { createConfigReloader, readConfigView, requestConfigUpdate } from "../src/mcp/supervisor-server";
 
 const dirs: string[] = [];
 function configFile(src = STARTER_CONFIG): string {
@@ -104,4 +104,28 @@ test("smoke: a scratch TACK_HOME starter config edited through the engine still 
   expect(config.autoOpenPrs).toBe(false);
   // Comments outside the touched blocks survive.
   expect(readFileSync(path, "utf8")).toContain("// Pin the CLI runtimes.");
+});
+
+
+test("config reloader caches unchanged files, retains the last good edit, and recovers", async () => {
+  const path = configFile();
+  const initial = await loadConfig(path);
+  const reloader = createConfigReloader(path, initial);
+  expect(await reloader.get()).toBe(initial);
+  let time = statSync(path).mtimeMs + 2000;
+  const rewrite = (source: string) => {
+    writeFileSync(path, source);
+    utimesSync(path, time / 1000, time / 1000);
+    time += 2000;
+  };
+  const valid = STARTER_CONFIG.replace("projects: [", 'projects: [\n    { name: "added", path: "/tmp/added", description: "Added" },');
+  rewrite(valid);
+  const updated = await reloader.get();
+  expect(updated.projects.some((project) => project.name === "added")).toBe(true);
+  expect(await reloader.get()).toBe(updated);
+  rewrite("export default {");
+  expect(await reloader.get()).toBe(updated);
+  expect(await reloader.get()).toBe(updated);
+  rewrite(valid.replace('name: "added"', 'name: "recovered"'));
+  expect((await reloader.get()).projects.some((project) => project.name === "recovered")).toBe(true);
 });

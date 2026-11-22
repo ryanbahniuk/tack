@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { inferPackage, readManifests } from "../prwatch/dependency";
 import { insertPrDependency, listPrDependencies } from "../db";
 import { computePreflight } from "../agent/preflight";
@@ -335,6 +335,27 @@ export async function requestConfigUpdate(
   return { written: true, changedPaths, note: CONFIG_WRITTEN_NOTE };
 }
 
+export function createConfigReloader(path: string, initial: TackConfig) {
+  let config = initial;
+  let mtime: number | undefined;
+  try { mtime = statSync(path).mtimeMs; } catch { /* retry when the file returns */ }
+  let pending: Promise<TackConfig> = Promise.resolve(config);
+  return {
+    get(): Promise<TackConfig> {
+      pending = pending.then(async () => {
+        let current: number;
+        try { current = statSync(path).mtimeMs; } catch { return config; }
+        if (current !== mtime) {
+          mtime = current;
+          try { config = await loadConfig(path); } catch { /* keep the last good config */ }
+        }
+        return config;
+      });
+      return pending;
+    },
+  };
+}
+
 /**
  * The supervisor's tool server. The supervisor is itself a runtime session
  * (claude|codex) running read-only; these tools are how it plans, delegates to
@@ -342,11 +363,8 @@ export async function requestConfigUpdate(
  * whole coordination loop, runtime-agnostic.
  */
 export async function runSupervisorServer(sessionId: string): Promise<void> {
-  // Reassignable: `update_config` reloads it after a write, and every tool closure
-  // reads it at call time, so per-call settings (roles.agent, projects, models)
-  // take effect in this session immediately. Launch-time consumers (the base-cache
-  // refresher below, the supervisor's own flags) keep their values until refresh.
-  let config: TackConfig = await loadConfig();
+  const config = await loadConfig();
+  const reloader = createConfigReloader(CONFIG_PATH, config);
   const stopBaseCache = startBaseCacheRefresher(config);
   const server = new McpServer({ name: "tack-supervisor", version: "1.0.0" });
 
@@ -365,7 +383,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     },
     async () =>
       text(
-        config.projects.map((p) => ({
+        (await reloader.get()).projects.map((p) => ({
           name: p.name,
           description: p.description,
           language: p.metadata?.language,
@@ -377,12 +395,13 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
   server.registerTool("list_personas", {
     description: "List configured reviewer personas when the human explicitly asks.",
     inputSchema: {}, annotations: { readOnlyHint: true },
-  }, async () => text(config.personas));
+  }, async () => text((await reloader.get()).personas));
 
   server.registerTool("review_agent", {
     description: "Run a persona review only when the human explicitly asks. Returns immediately.",
     inputSchema: { persona: z.string(), agentId: z.string(), prompt: z.string().optional(), model: z.string().optional() },
   }, async ({ persona: name, agentId, prompt, model }) => {
+    const config = await reloader.get();
     const session = requireSession();
     if (!session.plan_approved_at) throw new Error("Plan not approved. Use request_plan_approval before review_agent.");
     return text(startPersonaReview(config, sessionId, { agentId, persona: name, prompt, model }));
@@ -408,6 +427,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       annotations: { readOnlyHint: true },
     },
     async ({ projects }) => {
+      const config = await reloader.get();
       const names = [...new Set(projects)]; // a duplicate would race two syncs on one path
       const unknown = names.filter((n) => !config.projects.some((p) => p.name === n));
       if (unknown.length)
@@ -513,6 +533,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ project, prompt, model, touches, dependsOn }) => {
+      const config = await reloader.get();
       const session = requireSession();
       // Plan-gate: agents only run once the human has approved the plan (attended
       // claude sessions flip this via `request_plan_approval`; background and codex
@@ -594,6 +615,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ agentId, prompt, model }) => {
+      const config = await reloader.get();
       const agent = prepareContinuation(sessionId, agentId, prompt, config, model);
       let preflight;
       try { preflight = computePreflight(config, resolveModel(config, agent.model!)); } catch { /* runner reports the failure */ }
@@ -630,6 +652,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ agentId, title, body, slug, base, draft, awaitsRelease }) => {
+      const config = await reloader.get();
       const session = requireSession();
       let a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
@@ -786,6 +809,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ pr: ref, prompt, model, fresh: forceFresh, includeExisting }) => {
+      const config = await reloader.get();
       const session = requireSession();
       // Same plan-gate as spawn_agent: a fix run is an agent run.
       if (!session.plan_approved_at)
@@ -923,13 +947,14 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
     async ({ changes, reason }) => {
       const result = await requestConfigUpdate(server.server, changes, reason);
       if (result.written) {
-        try { config = await loadConfig(); } catch { /* validated before the write; keep the old copy */ }
+        await reloader.get();
       }
       return text(result);
     },
   );
 
   server.registerTool("set_pr_fix", { description: "Set PR auto-fix only when the human asks.", inputSchema: { enabled: z.boolean() } }, async ({ enabled }) => {
+    const config = await reloader.get();
     requireSession();
     await setPrFix(sessionId, enabled, config);
     return text({ prFixEnabled: enabled });
@@ -949,6 +974,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       annotations: { readOnlyHint: false },
     },
     async ({ refresh }) => {
+      const config = await reloader.get();
       requireSession();
       const pollTriggered = refresh ? await triggerPrWatch(sessionId, config) : undefined;
       const s = requireSession();
@@ -1031,6 +1057,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ key, agentId, title, status }) => {
+      const config = await reloader.get();
       requireSession();
       const k = key.trim().toUpperCase();
       if (!JIRA_KEY_RE.test(k)) throw new Error(`"${key}" isn't a JIRA ticket key (expected e.g. ABC-123)`);
@@ -1100,6 +1127,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       },
     },
     async ({ url, project }) => {
+      const config = await reloader.get();
       requireSession();
       const result = await linkSessionPr({ sessionId, config, url, project });
       try {
@@ -1248,6 +1276,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       annotations: { readOnlyHint: true },
     },
     async ({ agentId }) => {
+      const config = await reloader.get();
       const a = getAgent(agentId);
       if (!a) throw new Error(`Unknown agent ${agentId}`);
       const output = readArtifact(a.output_ref);
@@ -1284,6 +1313,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       annotations: { readOnlyHint: true },
     },
     async () => {
+      const config = await reloader.get();
       const collisions = sessionFileCollisions(listAgents(sessionId), config);
       return text({
         clean: collisions.length === 0,

@@ -249,6 +249,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "  confirm.",
     "",
     "## Projects",
+    "This list is as of session start. `list_projects` is always current; check it and sync from it when the human names a project not listed here.",
     projects || "(none configured)",
   ].join("\n");
   const guidance = userGuidanceSection(opts?.guidancePath);
