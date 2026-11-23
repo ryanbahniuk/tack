@@ -258,13 +258,14 @@ test("post-fix publishes a useful dependency reply", async () => {
   recordPrFeedbackDecision(row.id, "fixed", writePrFeedbackArtifact(f.session.id, f.downstream.id, row.source_id, "reply", "Updated pkg to 1.0."));
   setAgentStatus(agent.id, "done");
   const post = spyOn(prs, "postIssueComment").mockResolvedValue("https://github.com/comment/1");
+  const login = spyOn(prs, "ghViewerLogin").mockResolvedValue(null);
   try {
     await postFix(getAgent(agent.id)!, f.downstream, { path: "/tmp" } as Project, { ...f.config, prWatch: { ...f.config.prWatch, reply: true } }, () => {});
     const body = post.mock.calls[0]![2];
     expect(body).toContain("[Upstream release]"); expect(body).toContain("Updated pkg to 1.0.");
     expect(body).not.toContain("@Tack"); expect(body).toContain(prs.PR_WATCH_MARKER);
     expect(f.dependency().status).toBe("bumped");
-  } finally { post.mockRestore(); }
+  } finally { post.mockRestore(); login.mockRestore(); }
 });
 
 

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { Project, RuntimeKind, TackConfig } from "../config/schema";
+import type { Project, TackConfig } from "../config/schema";
 import {
   listAgents,
   listSessionPrs,
@@ -603,6 +603,19 @@ export function ghRepo(repoPath: string): Promise<{ owner: string; name: string 
   return p;
 }
 
+const ghViewerLoginCache = new Map<string, Promise<string | null>>();
+
+export function ghViewerLogin(repoPath: string): Promise<string | null> {
+  let p = ghViewerLoginCache.get(repoPath);
+  if (!p) {
+    p = runOk(["gh", "api", "user", "--jq", ".login"], repoPath, "gh api user")
+      .then((out) => out.trim() || null);
+    p.catch(() => ghViewerLoginCache.delete(repoPath));
+    ghViewerLoginCache.set(repoPath, p);
+  }
+  return p;
+}
+
 /** `gh pr view` omits actor types, so fetch conversation feedback through GraphQL.
  * Node ids match the old input exactly: changing them would re-ingest handled items.
  * Page each connection independently so busy PRs don't lose feedback after 100 items. */
@@ -810,9 +823,8 @@ export function normalizeFeedback(
   return out;
 }
 
-/** Standard runtime attribution; runtimes without a standard footer stay unsigned. */
-export function runtimeAttribution(runtime: RuntimeKind | null | undefined): string {
-  return runtime === "claude" ? "🤖 Generated with [Claude Code](https://claude.com/claude-code)" : "";
+export function agentAttribution(login?: string | null): string {
+  return login ? `— Sent from ${login}'s AI agent` : "— Sent from an AI agent";
 }
 
 /**
@@ -831,7 +843,7 @@ export function buildReplyBody(input: {
   reply: string;
   /** Short sha of the pushed fix, when this item's fix reached the PR. */
   fixSha?: string | null;
-  runtime?: RuntimeKind | null;
+  sender?: string | null;
 }): string {
   const parts: string[] = [];
   if (input.kind !== "review_thread") {
@@ -844,8 +856,7 @@ export function buildReplyBody(input: {
   }
   parts.push(input.reply.trim());
   if (input.fixSha) parts.push("", `Fix: ${input.fixSha}`);
-  const attribution = runtimeAttribution(input.runtime);
-  if (attribution) parts.push("", attribution);
+  parts.push("", agentAttribution(input.sender));
   return `${parts.join("\n")}\n${PR_WATCH_MARKER}`;
 }
 
@@ -865,7 +876,7 @@ export function buildConversationReplyBody(items: Array<{
   original: string;
   reply: string;
   fixSha?: string | null;
-}>, input: { runtime?: RuntimeKind | null } = {}): string {
+}>, input: { sender?: string | null } = {}): string {
   const mentioned = new Set<string>();
   const sections = items.map((item) => {
     const login = item.author;
@@ -882,8 +893,7 @@ export function buildConversationReplyBody(items: Array<{
       ...(item.fixSha ? ["", `Fix: ${item.fixSha}`] : []),
     ].join("\n");
   });
-  const attribution = runtimeAttribution(input.runtime);
-  return `${sections.join("\n\n---\n\n")}${attribution ? `\n\n${attribution}` : ""}\n${PR_WATCH_MARKER}`;
+  return `${sections.join("\n\n---\n\n")}\n\n${agentAttribution(input.sender)}\n${PR_WATCH_MARKER}`;
 }
 
 /** Replies inside a review thread (attached to the thread's root comment). Returns

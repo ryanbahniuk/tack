@@ -55,6 +55,7 @@ import { readArtifact, writeContinuationPrompt, writePrFeedbackArtifact, writePr
 import { prepareAgent } from "../agent/execute";
 import { spawnAgentRunner } from "../agent/detached";
 import {
+  ghViewerLogin,
   buildReplyBody,
   buildConversationReplyBody,
   fetchPrStatus,
@@ -996,6 +997,17 @@ export async function postFix(
   }
 
   const conversation: PrFeedbackRow[] = [];
+  let login: string | null | undefined;
+  const sender = async () => {
+    if (login === undefined) {
+      try { login = await ghViewerLogin(project.path); }
+      catch (err) {
+        log(`${tag}: GitHub login lookup failed: ${(err as Error).message}`);
+        login = null;
+      }
+    }
+    return login;
+  };
   for (const f of items) {
     if (f.handled_at) continue;
     // Never reported by the agent: declined, no reply (nothing to say on its behalf).
@@ -1020,7 +1032,7 @@ export async function postFix(
       continue;
     }
     const body = buildReplyBody({
-      runtime: agent.runtime,
+      sender: await sender(),
       kind: f.source_kind,
       author: f.author,
       isBot: f.author_is_bot === 1,
@@ -1050,7 +1062,7 @@ export async function postFix(
       original: readArtifact(f.body_ref),
       reply: readArtifact(f.reply_ref),
       fixSha: f.decision === "fixed" ? pushedSha?.slice(0, 7) : null,
-    })), { runtime: agent.runtime });
+    })), { sender: await sender() });
     let url: string | null = null;
     try {
       url = await postIssueComment(project.path, pr.number!, body);
