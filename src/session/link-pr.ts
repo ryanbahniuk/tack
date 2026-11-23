@@ -1,3 +1,4 @@
+import { PrWatchSchema } from "../config/schema";
 import type { Project, TackConfig } from "../config/schema";
 import {
   deleteLinkedSessionPr,
@@ -121,12 +122,12 @@ export async function baselinePrFeedback(
   project: Project,
   number: number,
   headSha: string | null,
-  ignoreAuthors: readonly string[] = [],
+  allowAuthors: readonly string[],
 ): Promise<number> {
   const status = await prs.fetchPrStatus(project.path, number);
   const threads = (await prs.fetchReviewThreads(project.path, number)).map((t) => ({ ...t, isResolved: false }));
   const known = prFeedbackSourceIds(pr.id);
-  const items = prs.normalizeFeedback(status, threads, known, ignoreAuthors);
+  const items = prs.normalizeFeedback(status, threads, known, allowAuthors);
   const checks = await prs.fetchPrChecks(project.path, number);
   items.push(...prs.normalizeCiFailures(checks, status.headRefOid ?? headSha, known));
   let added = 0;
@@ -204,7 +205,7 @@ export async function linkSessionPr(input: {
   let baselined = 0;
   let baselineWarning: string | undefined;
   try {
-    baselined = await baselinePrFeedback(input.sessionId, row, project, gh.number, gh.headRefOid, prs.ignoredAuthorsFor({ prWatch: input.config.prWatch ?? { ignoreAuthors: [] } }, project));
+    baselined = await baselinePrFeedback(input.sessionId, row, project, gh.number, gh.headRefOid, prs.allowedAuthorsFor({ prWatch: input.config.prWatch ?? PrWatchSchema.parse(undefined) }, project));
   } catch (err) {
     baselineWarning =
       `Linked, but recording the PR's existing feedback as already handled failed (${(err as Error).message}); ` +

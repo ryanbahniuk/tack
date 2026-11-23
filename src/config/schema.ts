@@ -37,7 +37,7 @@ export const ProjectSchema = z.object({
   description: z.string().min(1),
   /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
   metadata: ProjectMetadataSchema.optional(),
-  prWatch: z.object({ ignoreAuthors: z.array(z.string().min(1)).default([]) }).optional(),
+  prWatch: z.object({ allowAuthors: z.array(z.string().min(1)).default([]) }).optional(),
   boot: BootRecipeSchema.extend({ recipe: z.string().min(1).optional() }).optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
@@ -155,7 +155,7 @@ export type McpServer = z.infer<typeof McpServerSchema>;
 /**
  * PR watch: each session with open PRs runs a background watcher that polls them
  * every `intervalSeconds`. This also sets how often `tack dashboard` refreshes PR
- * status and restarts missing watchers. New review feedback (bots included),
+ * status and restarts missing watchers. New review feedback from allowed authors,
  * failing CI (`fixCi`, default true), or a merge conflict spawns a `pr_fix` agent;
  * afterwards Tack pushes its commits
  * (`autoPush`, always non-force) and replies to each comment on GitHub (`reply`).
@@ -163,6 +163,8 @@ export type McpServer = z.infer<typeof McpServerSchema>;
  * `maxFixRunsPerDay` caps automatic (watcher) fix runs per PR per rolling 24h;
  * supervisor fix_pr runs are exempt. Failed automatic runs count to prevent loops.
  */
+export const DEFAULT_ALLOWED_AUTHORS = ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"] as const;
+
 export const PrWatchSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -171,7 +173,7 @@ export const PrWatchSchema = z
     autoPush: z.boolean().default(true),
     reply: z.boolean().default(true),
     fixCi: z.boolean().default(true),
-    ignoreAuthors: z.array(z.string().min(1)).default([]),
+    allowAuthors: z.array(z.string().min(1)).default([...DEFAULT_ALLOWED_AUTHORS]),
     maxFixRunsPerDay: z.number().int().nonnegative().default(5),
   })
   .default({
@@ -181,7 +183,7 @@ export const PrWatchSchema = z
     autoPush: true,
     reply: true,
     fixCi: true,
-    ignoreAuthors: [],
+    allowAuthors: [...DEFAULT_ALLOWED_AUTHORS],
     maxFixRunsPerDay: 5,
   });
 export type PrWatch = z.infer<typeof PrWatchSchema>;

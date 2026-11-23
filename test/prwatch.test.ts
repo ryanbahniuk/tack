@@ -12,8 +12,8 @@ import {
   feedbackQuote,
   fetchPrStatus,
   isBotAuthor,
-  isIgnoredAuthor,
-  ignoredAuthorsFor,
+  isAllowedAuthor,
+  allowedAuthorsFor,
   isBotPrSummary,
   normalizeFeedback,
   type PrStatus,
@@ -82,18 +82,29 @@ function thread(isResolved: boolean, ids: number[], body = "please fix"): Review
   };
 }
 
-describe("ignored feedback authors", () => {
+describe("allowed feedback authors", () => {
   test("matches exact logins without case or bot suffix differences", () => {
     for (const [login, ignored] of [["TFYouDoing[bot]", "tfyoudoing"], ["tfyoudoing", "TFYOUDOING[bot]"], ["alice", "ALICE"]]) {
-      expect(isIgnoredAuthor(login, [ignored])).toBe(true);
+      expect(isAllowedAuthor(login, [ignored])).toBe(true);
     }
-    expect(isIgnoredAuthor("alice-extra", ["alice"])).toBe(false);
-    expect(isIgnoredAuthor("alice", [])).toBe(false);
+    expect(isAllowedAuthor("alice-extra", ["alice"])).toBe(false);
+    expect(isAllowedAuthor("alice", [])).toBe(false);
+  });
+  test("only ingests allowed bots and rejects missing authors", () => {
+    const items = normalizeFeedback(status({ comments: [
+      { id: "cursor", author: { login: "Cursor[bot]" }, body: "fix" },
+      { id: "human", author: { login: "coworker" }, body: "fix" },
+      { id: "other", author: { login: "other[bot]" }, body: "fix" },
+      { id: "missing", author: null, body: "fix" },
+    ] }), [], [], ["CURSOR"]);
+    expect(items.map(item => item.sourceId)).toEqual(["cursor"]);
+    expect(isAllowedAuthor(null, ["cursor"])).toBe(false);
+    expect(isAllowedAuthor("", ["cursor"])).toBe(false);
   });
   test("combines global and project lists", () => {
-    const project = { name: "app", path: "/app", description: "app", prWatch: { ignoreAuthors: ["project", "global"] } };
-    expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: ["global"] } }, project)).toEqual(["global", "project"]);
-    expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: [] } }, { name: "app", path: "/app", description: "app" })).toEqual([]);
+    const project = { name: "app", path: "/app", description: "app", prWatch: { allowAuthors: ["project", "global"] } };
+    expect(allowedAuthorsFor({ prWatch: { allowAuthors: ["global"] } }, project)).toEqual(["global", "project"]);
+    expect(allowedAuthorsFor({ prWatch: { allowAuthors: [] } }, { name: "app", path: "/app", description: "app" })).toEqual([]);
   });
   test("filters every feedback kind while keeping another author's thread reply", () => {
     const t = thread(false, [1, 2]);
@@ -101,7 +112,7 @@ describe("ignored feedback authors", () => {
     const items = normalizeFeedback(status({
       comments: [{ id: "ignored-comment", author: { login: "noise" }, body: "fix" }, { id: "kept-comment", author: { login: "bob" }, body: "fix" }],
       reviews: [{ id: "ignored-review", author: { login: "NOISE" }, body: "fix" }, { id: "kept-review", author: { login: "bob" }, body: "fix" }],
-    }), [t], [], ["noise"]);
+    }), [t], [], ["alice", "bob"]);
     expect(items.map(item => item.sourceId)).toEqual(["2", "kept-review", "kept-comment"]);
     expect(items[0]!.inReplyTo).toBe("1");
   });
@@ -109,7 +120,7 @@ describe("ignored feedback authors", () => {
 
 describe("normalizeFeedback", () => {
   test("includes unresolved thread comments and excludes resolved threads", () => {
-    const items = normalizeFeedback(status(), [thread(false, [1, 2]), thread(true, [3])], []);
+    const items = normalizeFeedback(status(), [thread(false, [1, 2]), thread(true, [3])], [], ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"]);
     expect(items.map((i) => i.sourceId)).toEqual(["1", "2"]);
     expect(items[0]).toMatchObject({ kind: "review_thread", path: "src/a.ts", line: 10, inReplyTo: "1" });
     // A reply inside a thread still targets the thread's root comment.
@@ -136,6 +147,7 @@ describe("normalizeFeedback", () => {
         },
       ],
       [],
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items.map((i) => i.sourceId)).toEqual(["10", "IC_human"]);
   });
@@ -150,6 +162,7 @@ describe("normalizeFeedback", () => {
       }),
       [thread(false, [5, 6])],
       new Set(["5", "IC_old"]),
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items.map((i) => i.sourceId)).toEqual(["6", "IC_new"]);
   });
@@ -167,6 +180,7 @@ describe("normalizeFeedback", () => {
         },
       ],
       [],
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items.map((i) => [i.sourceId, i.isBot])).toEqual([
       ["9", true],
@@ -187,6 +201,7 @@ describe("normalizeFeedback", () => {
       }),
       [],
       [],
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ sourceId: "PRR_real", kind: "review", author: "alice", url: PR_URL });
@@ -213,6 +228,7 @@ describe("normalizeFeedback", () => {
         },
       ],
       [],
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items.map((i) => i.sourceId)).toEqual(["9", "IC_human", "IC_bot_real"]);
   });
@@ -232,6 +248,7 @@ describe("normalizeFeedback", () => {
       status({ comments: [{ id: "IC_hidden", author: { login: "x" }, body: "spam", isMinimized: true }] }),
       [],
       [],
+      ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
     );
     expect(items).toEqual([]);
   });
@@ -243,6 +260,7 @@ describe("buildPrFixPrompt", () => {
     status({ comments: [{ id: "IC_1", author: { login: "bob" }, body: "Rename `foo` to `bar`." }] }),
     [thread(false, [42], "Off by one")],
     [],
+    ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"],
   );
 
   test("quotes an optional description before guidance and rules", () => {
@@ -607,11 +625,11 @@ describe("GraphQL conversation feedback", () => {
     await withGh({}, async (root, calls) => {
       const fetched = await fetchPrStatus(root, 7);
       expect(fetched.comments.map(c => c.id)).toEqual(["IC_existing", "IC_hidden"]);
-      const feedback = normalizeFeedback(fetched, [], []);
+      const feedback = normalizeFeedback(fetched, [], [], ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"]);
       expect(feedback.map(f => [f.sourceId, f.isBot, f.url])).toEqual([
         ["PRR_existing", true, "review-url"], ["IC_existing", true, "comment-url"],
       ]);
-      expect(normalizeFeedback(fetched, [], ["IC_existing", "PRR_existing"])).toEqual([]);
+      expect(normalizeFeedback(fetched, [], ["IC_existing", "PRR_existing"], ["alice", "bob", "me", "coderabbitai", "copilot-pull-request-reviewer", "cursor", "lint", "x", "reviewer", "bot", "custom-app", "other-app"])).toEqual([]);
       expect(calls().filter(args => args.includes("graphql"))).toHaveLength(3);
     });
   });

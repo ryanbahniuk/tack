@@ -106,7 +106,7 @@ Prefer the CLI? `tack` (same as `tack session create`) or `tack -m "…"` does t
 - **This spends real money.** Every supervisor and agent run is billed to your runtime logins. You can see per-session cost in `tack dashboard` and `tack session list`.
 - **Your own checkouts are never touched.** The supervisor investigates Tack-owned snapshot worktrees of each project's latest default branch, and each agent works in its own worktree.
 - **PRs open without asking, by default.** With `autoOpenPrs: true`, the supervisor commits, pushes and opens draft PRs on its own. Set `autoOpenPrs: false` and it asks first, then confirms each PR before opening it.
-- **PR watch acts on its own.** For every open PR it fixes review comments (bots included), failing CI and merge conflicts, pushes, refreshes an out-of-date PR description and replies on GitHub. Once a draft is addressed and green, it marks the PR ready to review. To turn this off, use these settings:
+- **PR watch acts on its own.** For every open PR it fixes review comments from allowed authors, failing CI and merge conflicts, pushes, refreshes an out-of-date PR description and replies on GitHub. Once a draft is addressed and green, it marks the PR ready to review. To turn this off, use these settings:
   - `prWatch.enabled: false`: no watcher at all.
   - `prWatch.fixCi: false`, `prWatch.reply: false`, `prWatch.autoPush: false` or
     `prWatch.autoReady: false`: turn off individual behaviours.
@@ -398,9 +398,9 @@ tack projects remove <name|path>
 | `path` | yes | `~` is expanded. |
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
-| `projects[].prWatch.ignoreAuthors` | no | GitHub authors to ignore for this project, in addition to the global list. |
+| `projects[].prWatch.allowAuthors` | no | GitHub authors added to the global allow-list for this project. |
 
-For example, set `prWatch: { ignoreAuthors: ["tfyoudoing"] }` on the `chime-tf` project.
+For example, set `prWatch: { allowAuthors: ["project-review-bot"] }` on a project.
 
 `projects add` and `projects refresh` have the summary model write `description`
 and `metadata` for you. `tack session create` also auto-registers the current git
@@ -492,7 +492,7 @@ different from the author's when one is available.
 | `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
 | `prWatch.autoPush` | `true` | Push fix commits (never force). |
 | `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
-| `prWatch.ignoreAuthors` | `[]` | GitHub authors whose feedback is ignored across all projects. Matching is case-insensitive and ignores a trailing `[bot]`. |
+| `prWatch.allowAuthors` | `["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]` | Only listed authors’ comments are fixed and replied to. Matching is case-insensitive and ignores a trailing `[bot]`; project entries add to this global list. |
 | `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
 | `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
 | `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |

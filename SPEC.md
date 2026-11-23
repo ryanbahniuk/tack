@@ -518,7 +518,7 @@ quickest way to validate the runtime pipeline.
 export default ({
   bootRecipes: { compose: { up: ["docker compose up -d"], down: ["docker compose down"], lock: "compose:{project}" } },
   projects: [
-    { name, path, description, boot: { recipe: "compose" }, prWatch: { ignoreAuthors: ["tfyoudoing"] } },
+    { name, path, description, boot: { recipe: "compose" }, prWatch: { allowAuthors: ["project-review-bot"] } },
     { name: "web", path, description, boot: { run: "bun run dev", env: { PORT: "3001" } } },
   ],
   models: [
@@ -530,7 +530,7 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
-  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, ignoreAuthors: [], maxFixRunsPerDay: 5 },
+  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, allowAuthors: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
   autoLinkPrs: true,
   draftPrs: true,
@@ -834,7 +834,7 @@ Each pass, per PR: `gh pr view` plus, for a PR that isn't merged or closed,
 `gh pr checks` → persist state/mergeable/base/head, `review_status` and `ci_status`;
 skip merged or closed; wait if a `pr_fix` agent is in flight; finish (post-fix) any fix agent that
 completed; otherwise gather **new** feedback — unresolved review-thread comments,
-non-empty review bodies, conversation comments, bots included, minus anything
+non-empty review bodies, conversation comments from allowed authors, minus anything
 already in `pr_feedback` or carrying the `<!-- tack:pr-watch -->` marker — and,
 if there is any or `mergeable == CONFLICTING` (UNKNOWN = retry next tick), spawn a
 fix run with origin `auto`, subject to `maxFixRunsPerDay` per PR per rolling
