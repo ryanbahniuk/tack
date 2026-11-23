@@ -1,3 +1,4 @@
+import { triggerJiraWatch, jiraWatchFinished, spawnJiraWatcher } from "../jirawatch/watch";
 import { isSessionOpen } from "../db";
 import { spawnSessionReadmer } from "../session/readme";
 import { PUBLISHER_KINDS, selectReadmePublisher, type PublisherKind } from "../publish";
@@ -64,7 +65,7 @@ interface View {
   agents: AgentRow[];
   boots: string[];
   prs: SessionPrRow[];
-  /** JIRA tickets the supervisor linked to this session (track-only). */
+  /** Jira tickets the supervisor linked to this session. */
   tickets: SessionJiraTicketRow[];
   cost: number;
   live: boolean;
@@ -153,7 +154,7 @@ function signature(views: View[]): string {
   return views
     .map(
       (v) =>
-        `${v.session.id}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.session.readme_url ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.active ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
+        `${v.session.id}:${v.session.pr_watch_pid}/${isAlive(v.session.pr_watch_pid)}:${v.session.jira_watch_pid}/${isAlive(v.session.jira_watch_pid)}:${v.boots.join(",")}:${v.session.pr_fix_enabled}:${v.stale}:${v.session.status}:${v.session.title ?? ""}:${v.session.readme_url ?? ""}:${v.cost}:${v.live ? 1 : 0}:${v.active ? 1 : 0}:${v.working ? 1 : 0}:${v.session.supervisor_turn_started_at ?? ""}:${v.needsInput ? 1 : 0}:${v.amendments.length}:` +
         v.agents
           .map((a) => `${a.id}/${a.status}/${a.post_fixed_at ?? ""}/${a.fix_outcome ?? ""}/${a.cost}/${a.activity ?? ""}/${a.error ?? ""}`)
           .join(",") +
@@ -165,7 +166,7 @@ function signature(views: View[]): string {
           })
           .join(",") +
         ";" +
-        v.tickets.map((t) => `${t.key}/${t.status ?? ""}/${t.title ?? ""}`).join(","),
+        v.tickets.map((t) => `${t.key}/${t.status ?? ""}/${t.title ?? ""}/${t.check_result ?? ""}/${t.check_reason ?? ""}`).join(","),
     )
     .join("|");
 }
@@ -192,7 +193,7 @@ const SESSION_ACTIONS = [
 type SessionAction = (typeof SESSION_ACTIONS)[number]["key"];
 const TICKET_ACTIONS = [
   { key: "o", label: "Open this session's tickets in the browser" },
-  { key: "t", label: "Browse all tickets" }, { key: "p", label: "Poll Jira now" },
+  { key: "t", label: "Browse all tickets" }, { key: "p", label: "Poll Jira now" }, { key: "c", label: "Check tickets now" },
 ] as const;
 type TicketAction = (typeof TICKET_ACTIONS)[number]["key"];
 
@@ -357,6 +358,8 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         ) : null}
         {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
         {!v.session.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}
+        {isAlive(v.session.pr_watch_pid) ? <Text color="green"> PR watcher live</Text> : null}
+        {isAlive(v.session.jira_watch_pid) ? <Text color="green"> Jira watcher live</Text> : null}
         {v.stale ? <Text color="yellow"> stale</Text> : null}
         {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
         {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
@@ -450,6 +453,7 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
               <Text color={color}>
                 {glyph} {t.status ?? "?"}
               </Text>
+              {t.check_result === "updated" ? <Text color="green"> ✔ updated</Text> : t.check_result === "would_update" ? <Text> ≈ looks done</Text> : t.check_result === "not_done" ? <Text dimColor> ✗ not done: {oneLine(t.check_reason ?? "", 50)}</Text> : t.check_result === "error" ? <Text color="yellow"> ⚠ check failed</Text> : null}
               {t.title ? <Text dimColor>{"  "}{oneLine(t.title, 60)}</Text> : null}
               {url ? (
                 <>
@@ -635,6 +639,7 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
         })
         .catch(() => {})
         .finally(() => {
+          ensureJiraWatchers(config, ids);
           refreshing.current = false;
         });
     };
@@ -823,6 +828,15 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   };
   const runTicketAction = (view: View | undefined, action: TicketAction) => {
     if (action === "p") return startJiraPoll();
+    if (action === "c") {
+      if (!view) return setNotice("select a session");
+      if (!config?.jira) return setNotice("Jira is not configured");
+      if (config.jira.watch.mode === "off") return setNotice("Jira watch is off");
+      if (!isSessionOpen(view.session)) return setNotice("session is not open");
+      if (!view.tickets.length) return setNotice("no linked tickets");
+      try { triggerJiraWatch(view.session.id, config); setNotice("Jira check requested"); } catch (err) { setNotice((err as Error).message); }
+      return;
+    }
     if (action === "t") {
       setTicketSel({ id: null, index: 0 }); setTicketFilter(DEFAULT_TICKET_FILTER);
       setTicketTyping(false); refreshTickets(); setMode("tickets"); return;
@@ -1703,6 +1717,15 @@ function ensurePrWatchers(config: TackConfig, sessionIds: string[]): void {
     } catch {
       /* try again next refresh */
     }
+  }
+}
+
+export function ensureJiraWatchers(config: TackConfig, sessionIds: string[]): void {
+  for (const id of sessionIds) {
+    try {
+      const session = getSession(id);
+      if (session && !isAlive(session.jira_watch_pid) && !jiraWatchFinished(id, config)) spawnJiraWatcher(id, config);
+    } catch { }
   }
 }
 

@@ -564,8 +564,7 @@ normal Claude session. First-run OAuth uses an MCP elicitation prompt, which nee
 interactive client to answer — so the cache is seeded once (via the plugin or an
 interactive `tack` supervisor), after which headless runs reuse the refresh token.
 
-`jira` (optional) turns on **session ticket tracking — track only**: Tack never
-creates, edits, or transitions a ticket. The supervisor links the keys a session
+`jira` (optional) turns on **session ticket tracking**. In update mode the Jira watcher may transition a ticket to Done and add one comment. The supervisor links the keys a session
 works on (`link_jira_ticket`, local state in `session_jira_tickets`), and Tack
 refreshes their title/status by acting as an MCP *client* of the
 `supervisorMcpServers` entry named by `mcpServer` — spawned with the same inherited
@@ -674,7 +673,7 @@ refresh tick.
   (text) filter it, `g` jumps to the session (turning `z` on for an archived one) and
   `P` polls the filtered entries' sessions. Done is green, so it reads apart from
   merged-PR magenta.
-  Track-only — never writes to Jira.
+  The Jira watcher may transition a ticket to Done and add one comment in update mode.
 - **Lifecycle** — nested under `tack session`: `stop` (SIGTERM the session +
   agents + PR watcher), `archive`/`unarchive`, `delete` (kill pids, purge worktrees
   + artifacts, cascade DB rows). Archive stamps `agents.interrupted_at` only on
@@ -1043,6 +1042,16 @@ The JSON artifact is referenced by `agents.review_ref`; `persona` and
 `reviews_agent_id` identify its lens and author. Normal output remains `output_ref`.
 Reviews can be continued for questions, are excluded from file collision checks,
 and appear as `review:<persona>` with their reported verdict in the dashboard.
+
+### Jira watch
+
+Each open session with linked tickets can run a detached Jira watcher (`tack __watch-jira <session>`, `src/jirawatch/watch.ts`, pid in `sessions.jira_watch_pid`, log at `logs/<ses>/jira-watch.log`). `jira.watch.mode` defaults to `off`; `evaluate` records local verdicts and `update` permits Jira writes. Linking a ticket or opening a PR starts or wakes the watcher; the dashboard restarts a missing watcher, and PR watch wakes it when a PR merges or closes and before PR watch exits. SIGUSR1 requests an early pass; requests during a pass coalesce and passes never overlap. Stop, archive and delete signal the watcher; stale code or config causes refresh or restart to replace it.
+
+Each pass claims the session atomically, refreshes ticket status, then runs registered checks. Manual `tack session jira-check <id>` uses the same claim, so it cannot overlap the watcher. A claim older than 15 minutes can be taken over. `--force` ignores the settled-PR gate and marker latch, while `--dry-run` suppresses Jira writes; manual checks also work with mode off.
+
+The completion check runs when at least one PR has merged and none is open or draft. Closed unmerged PRs remain evidence. The latest merge timestamp is the evidence marker: each non-Done ticket is evaluated once at that marker and a later merge makes it due again. The model receives bounded ticket, contract, PR and diff-stat evidence in a read-only, shell-less run, with no Jira tools. Only a high-confidence positive verdict can qualify. Unmet requirements, unfinished subtasks or scope beyond this session mean not done; malformed output is an error. Full output lives in an artifact; the database stores its reference and a short reason.
+
+The watcher exits when the session is gone or closed, watch is off, no tickets remain, every ticket is Done, or no PR is open or draft and each non-Done ticket already has a result at the current marker. In update mode only, deterministic code selects a Done-category transition, preferring one named Done, and optionally posts one comment with the reason, merged PR links and session id. No available transition is recorded as `no_transition`. Jira writes are limited to that transition and comment.
 
 ### Release-gated PR dependencies
 

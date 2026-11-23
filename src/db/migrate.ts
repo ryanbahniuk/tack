@@ -157,9 +157,8 @@ const migrations: Migration[] = [
   {
     version: 5,
     name: "session_jira_tickets",
-    // Session-scoped JIRA ticket tracking, the sibling of `session_prs`. TRACK ONLY:
-    // Tack never creates/edits/transitions a ticket — the supervisor links keys it's
-    // working on (`link_jira_ticket`) and the dashboard refreshes title/status
+    // Session-scoped Jira tracking, the sibling of `session_prs`. The supervisor links
+    // keys it is working on, and the dashboard refreshes title/status
     // read-only through the configured Atlassian MCP server. Keyed by
     // (session, key) so re-linking or a status refresh upserts in place; a ticket
     // can be tracked by several sessions independently. `status` is the workflow
@@ -422,6 +421,18 @@ const migrations: Migration[] = [
   { version: 26, name: "session_pr_ci_review", sql: ``, addColumns: [
     { table: "session_prs", column: "ci_status", type: "TEXT" },
     { table: "session_prs", column: "review_status", type: "TEXT" },
+  ] },
+  { version: 27, name: "jira_watch", sql: ``, addColumns: [
+    { table: "sessions", column: "jira_watch_pid", type: "INTEGER" },
+    { table: "sessions", column: "jira_watch_code_version", type: "TEXT" },
+    { table: "sessions", column: "jira_watch_config_version", type: "TEXT" },
+    { table: "sessions", column: "jira_check_claimed_at", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_name", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_at", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_result", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_reason", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_ref", type: "TEXT" },
+    { table: "session_jira_tickets", column: "check_marker", type: "TEXT" },
   ] },
 ];
 

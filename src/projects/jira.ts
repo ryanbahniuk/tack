@@ -4,10 +4,8 @@ import type { McpServer, TackConfig } from "../config/schema";
 import { listSessionJiraTickets, upsertSessionJiraTicket, type SessionJiraTicketRow } from "../db";
 
 /**
- * Session JIRA ticket tracking — the read side. TRACK ONLY: nothing here (or
- * anywhere in Tack) creates, edits, comments on, or transitions a ticket. The
- * supervisor links keys (`link_jira_ticket`); this module only refreshes each linked
- * ticket's title/status so the dashboard and `tack session show` can display them.
+ * Session Jira tracking and watcher operations. Jira writes are limited to the
+ * watcher in update mode: transition a ticket to Done and add one comment.
  *
  * Tack reads Jira as an MCP *client* of the Atlassian server already configured in
  * `supervisorMcpServers` (named by `config.jira.mcpServer`), not via the REST API.
@@ -344,4 +342,59 @@ export async function refreshSessionJiraTickets(config: TackConfig, sessionIds: 
   } catch {
     return { tickets: union(), skipped, unavailable: true };
   }
+}
+
+export interface JiraIssueDetail {
+  key: string;
+  title: string | null;
+  status: string | null;
+  statusCategory: string | null;
+  description: string;
+  subtasks: Array<{ key: string; title: string | null; statusCategory: string | null }>;
+}
+
+export async function fetchJiraIssueDetail(config: TackConfig, key: string): Promise<JiraIssueDetail> {
+  const c = await getConn(config);
+  const cloudId = await resolveCloudId(config, c);
+  const data = asObj(await callJson(c, "getJiraIssue", { cloudId, issueIdOrKey: key, fields: ["summary", "status", "description", "issuetype", "subtasks"], responseContentFormat: "markdown" }));
+  const fields = asObj(data?.fields);
+  if (!fields) throw new Error(`Jira issue ${key} has no fields`);
+  const status = asObj(fields.status);
+  const description = typeof fields.description === "string" ? fields.description : JSON.stringify(fields.description ?? "");
+  return {
+    key, title: typeof fields.summary === "string" ? fields.summary : null,
+    status: typeof status?.name === "string" ? status.name : null,
+    statusCategory: typeof asObj(status?.statusCategory)?.key === "string" ? asObj(status?.statusCategory)!.key as string : null,
+    description,
+    subtasks: (Array.isArray(fields.subtasks) ? fields.subtasks : []).map((item: unknown) => {
+      const sub = asObj(item), f = asObj(sub?.fields), st = asObj(f?.status), cat = asObj(st?.statusCategory);
+      return { key: typeof sub?.key === "string" ? sub.key : "", title: typeof f?.summary === "string" ? f.summary : null, statusCategory: typeof cat?.key === "string" ? cat.key : null };
+    }),
+  };
+}
+
+export function selectDoneTransition(data: unknown): { id: string; name: string } | null {
+  const obj = asObj(data);
+  const entries = Array.isArray(data) ? data : Array.isArray(obj?.transitions) ? obj.transitions : [];
+  const choices = entries.map(asObj).filter((t): t is Record<string, unknown> => {
+    const to = asObj(t?.to), category = asObj(to?.statusCategory);
+    return typeof t?.id === "string" && category?.key === "done";
+  });
+  const chosen = choices.find(t => typeof t.name === "string" && t.name.toLowerCase() === "done") ?? choices[0];
+  if (!chosen) return null;
+  const target = asObj(chosen.to);
+  return { id: chosen.id as string, name: typeof target?.name === "string" ? target.name : "Done" };
+}
+
+export async function transitionJiraIssueToDone(config: TackConfig, key: string): Promise<{ kind: "updated"; status: string } | { kind: "no_transition" }> {
+  const c = await getConn(config), cloudId = await resolveCloudId(config, c);
+  const transition = selectDoneTransition(await callJson(c, "getTransitionsForJiraIssue", { cloudId, issueIdOrKey: key }));
+  if (!transition) return { kind: "no_transition" };
+  await callJson(c, "transitionJiraIssue", { cloudId, issueIdOrKey: key, transition: { id: transition.id } });
+  return { kind: "updated", status: transition.name };
+}
+
+export async function addJiraComment(config: TackConfig, key: string, markdown: string): Promise<void> {
+  const c = await getConn(config), cloudId = await resolveCloudId(config, c);
+  await callJson(c, "addCommentToJiraIssue", { cloudId, issueIdOrKey: key, commentBody: markdown, contentFormat: "markdown" });
 }

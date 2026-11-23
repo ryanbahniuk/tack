@@ -47,6 +47,10 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     return { ...persona, model };
   });
 
+  if (parsed.jira?.watch.model && !byKey.has(parsed.jira.watch.model)) {
+    throw new Error(`jira.watch.model = "${parsed.jira.watch.model}" is not a defined model. Known: ${[...byKey.keys()].join(", ") || "(none)"}`);
+  }
+
   // `jira.mcpServer` must name a mounted server — a typo would otherwise surface only
   // as a silent "jira unavailable" on the dashboard, so fail loudly here instead.
   if (parsed.jira && !parsed.supervisorMcpServers.some((s) => s.name === parsed.jira!.mcpServer)) {

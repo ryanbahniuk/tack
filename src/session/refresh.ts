@@ -1,3 +1,4 @@
+import { jiraWatchFinished, spawnJiraWatcher } from "../jirawatch/watch";
 import { isSessionOpen } from "../db";
 import { hasUnresolvedDependencies } from "../db";
 import type { TackConfig } from "../config/schema";
@@ -25,7 +26,9 @@ export function isSessionStale(session: SessionRow, probes = {
   const watcherLive = probes.alive(session.pr_watch_pid);
   const supervisor = supervisorLive && (isCodeVersionStale(session.supervisor_code_version, probes.current) || isCodeVersionStale(session.supervisor_config_version, probes.config));
   const watcher = watcherLive && (isCodeVersionStale(session.pr_watch_code_version, probes.current) || isCodeVersionStale(session.pr_watch_config_version, probes.config));
-  return { stale: supervisor || watcher, supervisor, watcher, supervisorLive, watcherLive };
+  const jiraWatcherLive = probes.alive(session.jira_watch_pid);
+  const jiraWatcher = jiraWatcherLive && (isCodeVersionStale(session.jira_watch_code_version, probes.current) || isCodeVersionStale(session.jira_watch_config_version, probes.config));
+  return { stale: supervisor || watcher || jiraWatcher, supervisor, watcher, jiraWatcher, supervisorLive, watcherLive, jiraWatcherLive };
 }
 
 /** Stale flags for many sessions from ONE probe set: the config is hashed once and
@@ -106,6 +109,11 @@ export async function refreshSession(id: string, config: TackConfig, opts: { for
     if (!await waitUntilGone(() => isAlive(session.pr_watch_pid))) throw new Error(`PR watcher ${id} did not exit`);
     if (getSession(id)?.pr_watch_pid === session.pr_watch_pid) setSessionPrWatchPid(id, null);
     if ((listSessionPrs(id).some(isWatchablePr) || hasUnresolvedDependencies(id))) spawnPrWatcher(id, config);
+  }
+  if (stale.jiraWatcher) {
+    try { process.kill(session.jira_watch_pid!, "SIGTERM"); } catch { /* exited */ }
+    if (!await waitUntilGone(() => isAlive(session.jira_watch_pid))) throw new Error(`Jira watcher ${id} did not exit`);
+    if (!jiraWatchFinished(id, config)) spawnJiraWatcher(id, config);
   }
   return { ...stale, refreshed: true, blocked: null };
 }

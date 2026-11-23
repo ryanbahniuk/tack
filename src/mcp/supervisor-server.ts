@@ -1,3 +1,4 @@
+import { triggerJiraWatch } from "../jirawatch/watch";
 import { existsSync, statSync } from "node:fs";
 import { inferPackage, readManifests } from "../prwatch/dependency";
 import { insertPrDependency, listPrDependencies } from "../db";
@@ -724,6 +725,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         state: asDraft ? "draft" : "open",
         headBranch: pr.headBranch,
       });
+      try { triggerJiraWatch(sessionId, config); } catch {}
       const downstreamPr = listSessionPrs(sessionId).find(p => p.url === pr.url);
       if (downstreamPr) for (const dep of dependencies) insertPrDependency(sessionId, downstreamPr.id, dep.upstreamPr.id, dep.inferred.ecosystem, dep.inferred.package);
       // Keep the PR description and (re)write the session summary so it covers every
@@ -1047,7 +1049,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       description:
         "Link a JIRA ticket this session is working on (e.g. one named in the problem, or one you found via " +
         "the Atlassian MCP) so the human sees it beside the session's agents and PRs, with its live status. " +
-        "Local tracking only — this NEVER creates, edits, comments on, or transitions anything in Jira. " +
+        "The Jira watcher may transition tickets to Done and comment when update mode is enabled. " +
         "Idempotent: re-linking updates the existing entry.",
       inputSchema: {
         key: z.string().describe("Ticket key, e.g. ABC-123"),
@@ -1073,6 +1075,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
         title,
         status,
       });
+      try { triggerJiraWatch(sessionId, config); } catch {}
       return text({ ok: true, key: row.key, url: row.url });
     },
   );
