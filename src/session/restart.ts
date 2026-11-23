@@ -1,3 +1,4 @@
+import { jiraWatchFinished, spawnJiraWatcher } from "../jirawatch/watch";
 import { hasUnresolvedDependencies, isSessionOpen } from "../db";
 import type { TackConfig } from "../config/schema";
 import { getSession, listAgents, listSessionPrs, listSessions, resetAgentAttempt, setAgentError, setAgentStatus, setSessionPrWatchPid, type AgentRow, type SessionRow } from "../db";
@@ -99,6 +100,12 @@ export async function restartSession(id: string, config: TackConfig): Promise<Re
       watcherRestarted = true;
     }
   }
+
+  if (stale.jiraWatcher && isAlive(fresh.jira_watch_pid)) {
+    try { process.kill(fresh.jira_watch_pid!, "SIGTERM"); } catch { /* exited */ }
+    if (!await waitUntilGone(() => isAlive(fresh.jira_watch_pid))) throw new Error(`Jira watcher ${id} did not exit`);
+  }
+  if (!isAlive(getSession(id)?.jira_watch_pid) && !jiraWatchFinished(id, config)) spawnJiraWatcher(id, config);
 
   return { supervisorRestarted, wasStale: stale.stale, wasMidTurn, planPending, revivedAgents, failedAgents, watcherRestarted };
 }

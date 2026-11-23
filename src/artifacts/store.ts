@@ -139,3 +139,7 @@ export function writeSessionReadmeMarkdown(id: string, markdown: string): string
 export function writeSessionReadmeDigest(id: string, digest: string): string {
   return write(join(ARTIFACTS_DIR, id, "readme", "digest.md"), digest);
 }
+
+export function writeJiraCheckArtifact(sessionId: string, key: string, body: string): string {
+  return write(join(ARTIFACTS_DIR, sessionId, "jira-check", `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.md`), body);
+}

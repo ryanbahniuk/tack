@@ -47,7 +47,7 @@ export function buildSessionReadmeDigest(session: SessionRow, sources: Partial<t
   add("Seed prompt", read(join(LOGS_DIR, session.id, "supervisor.prompt")), 4000);
   const contract = safe(() => src.contract(session.id), null);
   if (contract) add(`Shared contract (v${contract.version})`, read(contract.body_ref), 7000);
-  add("Jira tickets", safe(() => src.tickets(session.id), []).map(t => `${t.key} ${t.title ?? ""} ${t.status ?? ""} ${t.url ?? ""}`).join("\n"), 3000);
+  add("Jira tickets", safe(() => src.tickets(session.id), []).map(t => `${t.key} ${t.title ?? ""} ${t.status ?? ""} ${t.url ?? ""} ${t.check_result ?? ""} ${t.check_reason ?? ""}`).join("\n"), 3000);
   const agents = safe(() => src.agents(session.id), []).slice(-25);
   add("Agents", agents.map(a => `### ${a.id}\nProject: ${a.project_name}\nKind: ${a.kind ?? "worker"}\nStatus: ${a.status}\nModel/runtime: ${a.model ?? ""} / ${a.runtime ?? ""}\nError: ${reportExcerpt(a.error ?? "", 250)}\nPrompt: ${reportExcerpt(read(a.prompt_ref ?? agentArtifactPath(session.id, a.id, "prompt")), 400)}\nOutput: ${reportExcerpt(read(a.output_ref ?? agentArtifactPath(session.id, a.id, "output"), true), 650, true)}\nDiff stat:\n${reportExcerpt(parseDiffStat(read(a.diff_ref ?? agentArtifactPath(session.id, a.id, "diff"))), 450)}`).join("\n\n"), 30000);
   add("Pull requests", safe(() => src.prs(session.id), []).slice(-30).map(p => `${p.title ?? ""}\nProject: ${p.project_name ?? ""}\nURL: ${p.url}\nState: ${p.state ?? "unknown"}\nMerged: ${p.merged_at ?? ""}\nHead: ${p.head_branch ?? ""}\nBody: ${reportExcerpt(read(p.body_ref), 1200)}`).join("\n\n"), 7000);

@@ -53,6 +53,10 @@ export interface SessionRow {
   last_seen_at: string | null;
   /** The session's PR-watch process (src/prwatch/watch.ts); null when none started. */
   pr_watch_pid: number | null;
+  jira_watch_pid: number | null;
+  jira_watch_code_version: string | null;
+  jira_watch_config_version: string | null;
+  jira_check_claimed_at: string | null;
   pr_fix_enabled: number;
   supervisor_config_version: string | null;
   pr_watch_config_version: string | null;
@@ -222,6 +226,12 @@ export interface PrFeedbackRow {
  * but `key` is a cached, best-effort mirror of Jira refreshed via the Atlassian MCP
  * server, so any of it may be null until the first successful refresh. */
 export interface SessionJiraTicketRow {
+  check_name: string | null;
+  check_at: string | null;
+  check_result: string | null;
+  check_reason: string | null;
+  check_ref: string | null;
+  check_marker: string | null;
   id: string;
   session_id: string;
   agent_id: string | null;
@@ -1557,4 +1567,17 @@ export function finalizeBootLink(row: BootLink): boolean {
 export function deleteOwnedBootLink(row: BootLink): boolean {
   return getDb().query(`DELETE FROM boot_links WHERE lock = ? AND session_id = ? AND plan_path IS ?`)
     .run(row.lock, row.session_id, row.plan_path).changes > 0;
+}
+
+export function claimJiraCheck(sessionId: string, now = new Date()): boolean {
+  const stale = new Date(now.getTime() - 15 * 60_000).toISOString();
+  return getDb().prepare(`UPDATE sessions SET jira_check_claimed_at = ? WHERE id = ? AND (jira_check_claimed_at IS NULL OR jira_check_claimed_at < ?)`).run(now.toISOString(), sessionId, stale).changes > 0;
+}
+
+export function releaseJiraCheck(sessionId: string, claimedAt: string): void {
+  getDb().prepare(`UPDATE sessions SET jira_check_claimed_at = NULL WHERE id = ? AND jira_check_claimed_at = ?`).run(sessionId, claimedAt);
+}
+
+export function setJiraCheckResult(sessionId: string, key: string, result: string, reason: string, ref: string | null, marker: string | null): void {
+  getDb().prepare(`UPDATE session_jira_tickets SET check_name = 'completion', check_at = ?, check_result = ?, check_reason = ?, check_ref = ?, check_marker = ? WHERE session_id = ? AND key = ?`).run(nowIso(), result, reason.slice(0, 500), ref, marker, sessionId, key);
 }

@@ -136,13 +136,13 @@ export default ({
   // Force drafts even if open_pr requests ready; PR watch promotes when ready.
   draftPrs: true,
 
-  // Optional session JIRA ticket tracking (track-only — Tack never creates, edits,
-  // or transitions tickets). The supervisor links the tickets a session works on;
+  // Optional session Jira tracking. In update mode the watcher may transition a
+  // ticket to Done and add one comment. The supervisor links tickets a session works on;
   // \`tack dashboard\` refreshes their status read-only through the server named by
   // \`mcpServer\` (one of supervisorMcpServers above, reusing its cached auth), and
   // \`siteUrl\` builds the browse links. \`cloudId\` is optional: it falls back to
   // that server's CONFLUENCE_CLOUD_ID env, then to asking the server.
-  // jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
+  // jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net", watch: { mode: "off", intervalSeconds: 300, comment: true } },
 });
 `;
 

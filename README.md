@@ -130,7 +130,7 @@ supervisorMcpServers: [
   },
 ],
 
-// Track-only ticket status for each session (Tack never creates, edits or transitions tickets)
+// Track tickets and optionally check completion after PRs settle
 jira: { mcpServer: "Atlassian", siteUrl: "https://chime.atlassian.net" },
 ```
 
@@ -381,7 +381,7 @@ export default ({
 | `autoOpenPrs` | `true` | Supervisor opens PRs without asking; `false` asks and confirms each one. |
 | `autoLinkPrs` | `true` | Adopt GitHub PR URLs from your messages into the session automatically; `false` leaves it to the supervisor's `link_pr`. |
 | `draftPrs` | `true` | Force new PRs to draft; `false` honours `open_pr`'s `draft` argument. |
-| `jira` | unset | `{ mcpServer, siteUrl, cloudId? }`: track-only ticket status. |
+| `jira` | unset | `{ mcpServer, siteUrl, cloudId?, watch? }`: ticket tracking and optional completion checks. |
 
 ### Projects
 
@@ -577,3 +577,5 @@ readme: {
 The Confluence and Google Docs publishers require the claude runtime and the matching connector already set up in your Claude Code (the Atlassian MCP for Confluence, the Google Drive connector for Docs); Tack holds no credentials and makes no direct API calls. It runs a headless, read-only `claude -p` turn that loads your own MCP servers and connectors and may call only `Read` plus the listed connector tools: for Confluence, `atlassianUserInfo`, `getAccessibleAtlassianResources`, `getConfluenceSpaces`, `getConfluencePage`, `createConfluencePage` and `updateConfluencePage` on `readme.confluence.mcpServer` (default `Atlassian`); for Google Docs, the whole `readme.googleDoc.mcpServer` server (default `claude_ai_Google_Drive`) unless `readme.googleDoc.tools` names specific tools. Run `claude mcp list` to find your server names. Confluence pages are created with `isPrivate: true`; Google Docs are never shared. If the run can't confirm the page is private, Tack keeps the URL and prints a warning to check its sharing settings.
 
 **Privacy:** publishing sends session information from the digest, including the contract, PR bodies and agent output excerpts, to the chosen destination: claude.ai as a private artifact, or your organization's internal Atlassian or Google Workspace tenant. Nothing is published unless you explicitly run `tack session readme` or confirm a dashboard refresh / publish. Use `--link <url>` or `--unlink` to manage an existing page, or ask the supervisor to use `link_readme` / `unlink_readme`. Regenerating a linked README republishes into and overwrites that URL; `--no-publish` keeps the link while saving the new page locally.
+
+Jira completion checks are off by default. Set `jira.watch.mode` to `evaluate` to record verdicts locally, or `update` to let the Jira watcher transition met tickets to a Done-category status and add one comment. Run `tack session jira-check <id> [--dry-run] [--force]` for an inline check.

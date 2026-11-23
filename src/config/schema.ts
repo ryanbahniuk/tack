@@ -189,7 +189,7 @@ export const PrWatchSchema = z
 export type PrWatch = z.infer<typeof PrWatchSchema>;
 
 /**
- * Session-scoped JIRA ticket tracking (track-only: Tack never writes to Jira). Tack
+ * Session-scoped Jira tracking and optional completion checks. Tack
  * reads ticket title/status by acting as an MCP *client* of one of the
  * `supervisorMcpServers` — `mcpServer` names that entry — so it reuses whatever auth
  * that server already caches and never handles a token itself. `siteUrl` builds the
@@ -202,6 +202,12 @@ export const JiraConfigSchema = z.object({
   mcpServer: z.string().min(1),
   siteUrl: z.string().min(1),
   cloudId: z.string().min(1).optional(),
+  watch: z.object({
+    mode: z.enum(["off", "evaluate", "update"]).default("off"),
+    intervalSeconds: z.number().int().positive().default(300),
+    comment: z.boolean().default(true),
+    model: z.string().min(1).optional(),
+  }).prefault({}),
 });
 export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 

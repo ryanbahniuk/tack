@@ -48,6 +48,7 @@ export function stopSession(sessionId: string): void {
   const s = getSession(sessionId);
   if (s) {
     kill(s.pid);
+    kill(s.jira_watch_pid);
     if (s.pr_watch_pid) {
       kill(s.pr_watch_pid);
       setSessionPrWatchPid(sessionId, null);

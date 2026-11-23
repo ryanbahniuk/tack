@@ -1,3 +1,4 @@
+import { triggerJiraWatch } from "../jirawatch/watch";
 import { isSessionOpen } from "../db";
 import { computePreflight } from "../agent/preflight";
 import { commitSubject } from "../worktree/commit-message";
@@ -260,7 +261,13 @@ export async function triggerPrWatch(
   const targets = () => listSessionPrs(sessionId).filter((pr) => isWatchablePr(pr) && (!prId || pr.id === prId));
   await Promise.allSettled(targets().map(async (pr) => {
     const project = config.projects.find((p) => p.name === pr.project_name);
-    if (pr.number !== null && project) await deps.poll(pr, project);
+    if (pr.number !== null && project) {
+      await deps.poll(pr, project);
+      const current = getSessionPr(pr.id);
+      if (current && (current.state === "merged" || current.state === "closed")) {
+        try { triggerJiraWatch(sessionId, config); } catch {}
+      }
+    }
   }));
   if (prId ? !targets().length : !targets().length && !hasUnresolvedDependencies(sessionId)) return { kind: "no-open-prs" };
   if (session.pr_watch_pid && deps.isAlive(session.pr_watch_pid)) {
@@ -338,6 +345,7 @@ export async function runPrWatcher(sessionId: string, config: TackConfig): Promi
         break;
       }
       if (!listSessionPrs(sessionId).some(isWatchablePr) && !hasUnresolvedDependencies(sessionId)) {
+        try { triggerJiraWatch(sessionId, config); } catch {}
         log("no open PRs remain; exiting");
         break;
       }
@@ -409,7 +417,10 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   const { status, state, mergeable, checks, checksError } = await pollPrStatus(pr.id, project.path, pr.number);
 
   // 2. Nothing to do on a finished PR.
-  if (state === "merged" || state === "closed") return;
+  if (state === "merged" || state === "closed") {
+    try { triggerJiraWatch(session.id, config); } catch {}
+    return;
+  }
 
   // 3. One fix at a time per PR. A non-terminal fix agent whose runner died (crash,
   // reboot) would block the PR forever, so it's failed here and post-fixed below.

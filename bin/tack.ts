@@ -86,6 +86,8 @@ import { renderStreamEvent, type Pending } from "../src/cli/render";
 import { captureViaEditor, openInEditor, openWorktreeInEditor } from "../src/util/editor";
 import { runCoordinationServer } from "../src/mcp/coordination-server";
 import { runSupervisorServer } from "../src/mcp/supervisor-server";
+import { closeJiraClient } from "../src/projects/jira";
+import { runJiraWatcher, jiraWatchPass } from "../src/jirawatch/watch";
 import { runPrWatcher, triggerPrWatch } from "../src/prwatch/watch";
 import {
   ensureRuntimeInstalled,
@@ -1380,6 +1382,7 @@ const sessionShow = defineCommand({
     if (tickets.length === 0) console.log(pc.dim("  none linked"));
     for (const t of tickets) {
       const parts = [pc.cyan(t.key), ticketStatusLabel(t.status, t.status_category)];
+      if (t.check_result) parts.push(`${t.check_result}: ${t.check_reason ?? ""}`);
       if (t.title) parts.push(firstLine(t.title, 80));
       if (t.url) parts.push(pc.dim(t.url));
       console.log(`  ${parts.join("  ")}`);
@@ -1596,6 +1599,20 @@ const sessionPrFix = defineCommand({
   },
 });
 
+const sessionJiraCheck = defineCommand({
+  meta: { name: "jira-check", description: "Run Jira ticket checks now" },
+  args: { session: { type: "positional", required: true }, "dry-run": { type: "boolean" }, force: { type: "boolean" } },
+  async run({ args }) {
+    const id = String(args.session); requireSession(id);
+    const config = await loadConfig();
+    if (!config.jira) throw new Error("Jira is not configured");
+    try {
+      if (!await jiraWatchPass(id, config, { dryRun: args["dry-run"], force: args.force })) throw new Error("A Jira check is already running");
+      for (const ticket of listSessionJiraTickets(id)) console.log(`${ticket.key}: ${ticket.check_result ?? "not checked"} ${ticket.check_reason ?? ""}`);
+    } finally { await closeJiraClient(); }
+  },
+});
+
 const sessionPollPrs = defineCommand({
   meta: { name: "poll-prs", description: "Ask a session's PR watcher to poll now" },
   args: { session: { type: "positional", description: "Session id" } },
@@ -1659,7 +1676,7 @@ const session = defineCommand({
     alias: "sessions",
     description: "Create sessions and manage them (resume, restart, show, boot, unboot, boot-status, edit, context, retitle, readme (generate/link/unlink), poll-prs, review, pr-fix, list, approve, archive, unarchive, hold, unhold, stop, delete)",
   },
-  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, hold, unhold, stop, delete: del },
+  subCommands: { boot: sessionBoot, unboot: sessionUnboot, "boot-status": sessionBootStatus, follow: sessionFollow, create: sessionCreate, resume: sessionResume, restart: sessionRestart, refresh: deprecatedSessionAction("refresh"), reconnect: deprecatedSessionAction("reconnect"), show: sessionShow, edit: sessionEdit, context: sessionContext, retitle: sessionRetitle, readme: sessionReadme, "poll-prs": sessionPollPrs, "jira-check": sessionJiraCheck, review: sessionReview, "pr-fix": sessionPrFix, list: sessionsList, approve: sessionApprove, archive, unarchive, hold, unhold, stop, delete: del },
   default: "list",
 });
 
@@ -1773,6 +1790,10 @@ if (hidden === "__mcp") {
   const [, , , sessionId, mode] = process.argv;
   const config = await loadConfig();
   await runSupervisorToCompletion(sessionId!, mode === "resume" ? "resume" : "fresh", config);
+} else if (hidden === "__watch-jira") {
+  const [, , , sessionId] = process.argv;
+  await runJiraWatcher(sessionId!, await loadConfig());
+  process.exit(0);
 } else if (hidden === "__watch-prs") {
   // The session's detached PR watcher (spawned by `spawnPrWatcher`): polls open PRs,
   // spawns fix agents, pushes + replies. Exits on its own when nothing is left to watch.

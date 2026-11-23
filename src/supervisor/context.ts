@@ -115,7 +115,7 @@ export function buildSupervisorContext(sessionId: string, config: TackConfig, op
     "- `read_past_session` — a past session's full summary, its PRs, and how their review feedback was addressed.",
     "- `link_jira_ticket` / `unlink_jira_ticket` — track the JIRA ticket(s) this session",
     "  works on so the human sees them (with live status) beside its PRs. Local",
-    "  bookkeeping only: they never create, edit, or transition anything in Jira.",
+    "  bookkeeping locally; the Jira watcher may transition a ticket to Done and add one comment in update mode.",
     "- `link_pr` / `unlink_pr` — adopt an existing GitHub PR (by URL) in one of your projects",
     "  into this session, or drop one linked by mistake. Read-only on GitHub; feedback that",
     "  predates the link counts as handled. For existing comments call `fix_pr` with `includeExisting: true`.",
