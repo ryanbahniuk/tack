@@ -70,8 +70,8 @@ import {
   normalizeCiFailures,
   fetchReviewThreads,
   normalizeFeedback,
-  ignoredAuthorsFor,
-  isIgnoredAuthor,
+  allowedAuthorsFor,
+  isAllowedAuthor,
   isSelfAuthor,
   ghViewerLogin,
   postIssueComment,
@@ -163,9 +163,9 @@ export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
   return pr.state !== "merged" && pr.state !== "closed";
 }
 
-export function markIgnoredPendingFeedback(sessionPrId: string, ignoreAuthors: readonly string[]): void {
+export function markDisallowedPendingFeedback(sessionPrId: string, allowAuthors: readonly string[]): void {
   for (const row of listUnassignedPrFeedback(sessionPrId)) {
-    if (row.source_kind !== "ci_check" && row.source_kind !== "dependency_release" && isIgnoredAuthor(row.author, ignoreAuthors)) {
+    if (row.source_kind !== "ci_check" && row.source_kind !== "dependency_release" && !isAllowedAuthor(row.author, allowAuthors)) {
       markPrFeedbackHandled(row.id, { decision: "not_applicable" });
     }
   }
@@ -184,7 +184,7 @@ export function readyToPromote(input: {
   releasedCount: number;
   feedback: (Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref"> & { author?: string | null })[];
   checks: PrCheck[] | null;
-  ignoredAuthors?: readonly string[];
+  allowedAuthors: readonly string[];
   unresolvedDependencies?: number;
 }): boolean {
   return input.enabled && input.autoReady && !!input.isDraft && !input.readyPromotedAt &&
@@ -192,7 +192,7 @@ export function readyToPromote(input: {
     input.freshCount === 0 && input.releasedCount === 0 &&
     input.feedback.every((row) => row.decision !== "pending" && row.decision !== "failed" &&
       (row.source_kind === "ci_check" ||
-        (!!row.handled_at && row.decision === "not_applicable" && isIgnoredAuthor(row.author, input.ignoredAuthors ?? [])) ||
+        (!!row.handled_at && row.decision === "not_applicable" && row.source_kind !== "dependency_release" && !isAllowedAuthor(row.author, input.allowedAuthors)) ||
         (!!row.handled_at && ["fixed", "declined", "not_applicable"].includes(row.decision) && !!row.reply_ref))) &&
     input.checks !== null && ciGreen(input.checks);
 }
@@ -435,9 +435,9 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
   // still computing it; it's simply not a conflict yet and the next tick re-checks.
   const conflict = mergeable === "CONFLICTING";
   const threads = await fetchReviewThreads(project.path, pr.number);
-  const ignoredAuthors = ignoredAuthorsFor(config, project);
-  markIgnoredPendingFeedback(pr.id, ignoredAuthors);
-  const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), ignoredAuthors);
+  const allowedAuthors = allowedAuthorsFor(config, project);
+  markDisallowedPendingFeedback(pr.id, allowedAuthors);
+  const fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), allowedAuthors);
   if (checks === null) {
     log(`${tag}: fetching CI checks failed: ${checksError ?? "unknown error"}`);
   } else if (config.prWatch.fixCi) {
@@ -456,7 +456,7 @@ export async function watchPr(session: SessionRow, pr: SessionPrRow, config: Tac
     freshCount: fresh.length,
     releasedCount: released.length,
     feedback: listPrFeedback(pr.id),
-    ignoredAuthors,
+    allowedAuthors,
     checks,
     unresolvedDependencies: listPrDependencies(session.id).filter(d => d.downstream_pr_id === pr.id && ["waiting_merge", "waiting_release", "bump_queued"].includes(d.status)).length,
   })) {

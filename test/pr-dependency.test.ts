@@ -38,7 +38,7 @@ describe("release dependencies", () => {
     expect(p).toContain("never hand-edit a lockfile");
   });
   test("unresolved dependency blocks promotion", () => {
-    expect(readyToPromote({ enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null, mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0, feedback: [], checks: [], unresolvedDependencies: 1 })).toBe(false);
+    expect(readyToPromote({ enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null, mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0, feedback: [], checks: [], allowedAuthors: [], unresolvedDependencies: 1 })).toBe(false);
   });
 });
 
@@ -112,7 +112,7 @@ test("merge, release and fixed post-fix transition once and unblock promotion", 
   await postFix(getAgent(agent.id)!, f.downstream, { path: "/tmp" } as Project, f.config, () => {});
   expect(f.dependency().status).toBe("bumped");
   expect(hasUnresolvedDependencies(f.session.id)).toBe(false);
-  expect(readyToPromote({ enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null, mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0, feedback: listPrFeedback(f.downstream.id), checks: [], unresolvedDependencies: 0 })).toBe(true);
+  expect(readyToPromote({ enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null, mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0, feedback: listPrFeedback(f.downstream.id), checks: [], allowedAuthors: [], unresolvedDependencies: 0 })).toBe(true);
   const text = buildConversationReplyBody([{ kind: "dependency_release", url: f.upstream.url, author: "Tack", original: "Ecosystem: ruby", reply: "Updated to 1.2." }]);
   expect(text).toContain("[Upstream release]"); expect(text).toContain("Updated to 1.2."); expect(text).not.toContain("@Tack");
 });

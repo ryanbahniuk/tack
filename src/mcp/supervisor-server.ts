@@ -66,14 +66,14 @@ import {
   normalizeCiFailures,
   fetchReviewThreads,
   normalizeFeedback,
-  ignoredAuthorsFor,
-  isIgnoredAuthor,
+  allowedAuthorsFor,
+  isAllowedAuthor,
   openSessionPr,
   parseGithubPrUrl,
 } from "../projects/prs";
 import {
   isWatchablePr,
-  markIgnoredPendingFeedback,
+  markDisallowedPendingFeedback,
   pollPrStatus,
   prFixBusy,
   prFixLineageLabel,
@@ -844,8 +844,8 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       const { status, state, mergeable, checks } = await pollPrStatus(pr.id, project.path, pr.number);
       if (state === "merged" || state === "closed") throw new Error(`${tag} is ${state}; there's nothing to fix.`);
       const conflict = mergeable === "CONFLICTING";
-      const ignoredAuthors = ignoredAuthorsFor(config, project);
-      markIgnoredPendingFeedback(pr.id, ignoredAuthors);
+      const allowedAuthors = allowedAuthorsFor(config, project);
+      markDisallowedPendingFeedback(pr.id, allowedAuthors);
       // Fold in feedback the watcher hasn't ingested yet so this run addresses it
       // too, rather than a second run right after. Best-effort: the fix still runs
       // on the conflict / guidance / already-pending items if gh can't list threads.
@@ -854,7 +854,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       let ciIds = new Set<string>();
       try {
         threads = await fetchReviewThreads(project.path, pr.number);
-        fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), ignoredAuthors);
+        fresh = normalizeFeedback(status, threads, prFeedbackSourceIds(pr.id), allowedAuthors);
       } catch {
         /* the watcher's next tick picks them up */
       }
@@ -870,7 +870,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       }
 
       const baselines = listPrFeedback(pr.id);
-      const reopen = includeExisting ? liveBaselineSourceIds(baselines.filter(row => row.source_kind === "ci_check" || row.source_kind === "dependency_release" || !isIgnoredAuthor(row.author, ignoredAuthors)), threads, ciIds, config.prWatch.fixCi) : [];
+      const reopen = includeExisting ? liveBaselineSourceIds(baselines.filter(row => row.source_kind === "ci_check" || row.source_kind === "dependency_release" || isAllowedAuthor(row.author, allowedAuthors)), threads, ciIds, config.prWatch.fixCi) : [];
       const spawned = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
         reopen,

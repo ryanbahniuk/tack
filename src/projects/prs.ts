@@ -724,10 +724,10 @@ export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
 
 const normalizeLogin = (value: string) => value.replace(/\[bot\]$/i, "").toLowerCase();
 
-export function isIgnoredAuthor(login: string | null | undefined, ignoreList: readonly string[]): boolean {
+export function isAllowedAuthor(login: string | null | undefined, allowList: readonly string[]): boolean {
   if (!login) return false;
   const author = normalizeLogin(login);
-  return ignoreList.some((entry) => normalizeLogin(entry) === author);
+  return allowList.some((entry) => normalizeLogin(entry) === author);
 }
 
 export function isSelfAuthor(author: string | null | undefined, viewerLogin: string | null | undefined): boolean {
@@ -735,8 +735,8 @@ export function isSelfAuthor(author: string | null | undefined, viewerLogin: str
   return normalizeLogin(author) === normalizeLogin(viewerLogin);
 }
 
-export function ignoredAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "ignoreAuthors"> }, project: Project): string[] {
-  return [...new Set([...(config.prWatch.ignoreAuthors ?? []), ...(project.prWatch?.ignoreAuthors ?? [])])];
+export function allowedAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "allowAuthors"> }, project: Project): string[] {
+  return [...new Set([...(config.prWatch.allowAuthors ?? []), ...(project.prWatch?.allowAuthors ?? [])])];
 }
 
 /** Headings that open informational bot PR summaries (Cursor, CodeRabbit, Copilot).
@@ -755,7 +755,7 @@ function firstVisibleLine(body: string): string {
 
 /** A bot's auto-generated PR summary describes the PR rather than asking for changes,
  * so feeding it to a fix agent only yields a useless "nothing to do" reply. Only
- * conversation-level bot posts qualify: inline threads and humans are always feedback. */
+ * conversation-level bot posts qualify: inline threads do not qualify. */
 export function isBotPrSummary(item: Pick<PrFeedbackItem, "kind" | "body" | "isBot">): boolean {
   if (!item.isBot || (item.kind !== "issue_comment" && item.kind !== "review")) return false;
   const first = firstVisibleLine(item.body).replace(/[*_`:]+/g, "").trim().toLowerCase();
@@ -770,7 +770,7 @@ export function isBotPrSummary(item: Pick<PrFeedbackItem, "kind" | "body" | "isB
  *  - reviews with a non-empty summary body (`review`; an empty body is just the
  *    envelope for inline comments, which arrive as threads),
  *  - conversation comments (`issue_comment`) that aren't minimized.
- * Bots are included, except their informational PR summaries (`isBotPrSummary`).
+ * Only allowed authors are included; informational bot PR summaries are excluded (`isBotPrSummary`).
  * Anything containing `PR_WATCH_MARKER` (Tack's own replies) is dropped, as is any
  * sourceId already in `alreadyHandledIds` (ingested earlier).
  */
@@ -778,14 +778,14 @@ export function normalizeFeedback(
   status: Pick<PrStatus, "comments" | "reviews" | "url">,
   threads: ReviewThread[],
   alreadyHandledIds: Iterable<string>,
-  ignoreAuthors: readonly string[] = [],
+  allowAuthors: readonly string[],
 ): PrFeedbackItem[] {
   const seen = new Set(alreadyHandledIds);
   const out: PrFeedbackItem[] = [];
   const take = (item: PrFeedbackItem) => {
     if (!item.body.trim()) return;
     if (item.body.includes(PR_WATCH_MARKER)) return;
-    if (isBotPrSummary(item) || isIgnoredAuthor(item.author, ignoreAuthors)) return;
+    if (isBotPrSummary(item) || !isAllowedAuthor(item.author, allowAuthors)) return;
     if (seen.has(item.sourceId)) return;
     seen.add(item.sourceId); // de-dupe within one pass too
     out.push(item);
