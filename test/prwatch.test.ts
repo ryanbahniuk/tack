@@ -13,6 +13,7 @@ import {
   fetchPrStatus,
   isBotAuthor,
   isIgnoredAuthor,
+  isSelfAuthor,
   ignoredAuthorsFor,
   isBotPrSummary,
   normalizeFeedback,
@@ -41,6 +42,7 @@ import {
   setSessionStatus,
   upsertSessionPr,
   type AgentStatus,
+  type PrFeedbackKind,
 } from "../src/db";
 import { createWakeableSleep, postFix, prFixCommitSubject, triggerPrWatch, prFixBusy, prFixCapReached } from "../src/prwatch/watch";
 import * as prs from "../src/projects/prs";
@@ -94,6 +96,18 @@ describe("ignored feedback authors", () => {
     const project = { name: "app", path: "/app", description: "app", prWatch: { ignoreAuthors: ["project", "global"] } };
     expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: ["global"] } }, project)).toEqual(["global", "project"]);
     expect(ignoredAuthorsFor({ prWatch: { ignoreAuthors: [] } }, { name: "app", path: "/app", description: "app" })).toEqual([]);
+  });
+  test("isSelfAuthor matches the gh viewer without case or bot suffix differences", () => {
+    expect(isSelfAuthor("Alice", "alice")).toBe(true);
+    expect(isSelfAuthor("alice[bot]", "ALICE")).toBe(true);
+    expect(isSelfAuthor("alice", "alice[bot]")).toBe(true);
+  });
+  test("isSelfAuthor is false for another user or an unknown viewer", () => {
+    expect(isSelfAuthor("bob", "alice")).toBe(false);
+    expect(isSelfAuthor("alice-extra", "alice")).toBe(false);
+    expect(isSelfAuthor("alice", null)).toBe(false);
+    expect(isSelfAuthor("alice", "")).toBe(false);
+    expect(isSelfAuthor(null, "alice")).toBe(false);
   });
   test("filters every feedback kind while keeping another author's thread reply", () => {
     const t = thread(false, [1, 2]);
@@ -560,7 +574,7 @@ describe("conversation reply formatting", () => {
 
 // Exercise the actual gh command arguments without GitHub access or module mocks.
 async function withGh(
-  fixture: { failPost?: boolean } = {},
+  fixture: { failPost?: boolean; viewer?: string } = {},
   check: (root: string, calls: () => string[][]) => Promise<void>,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "tack-gh-"));
@@ -571,6 +585,12 @@ const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(root, "calls"))}, JSON.stringify(args) + "\\n");
 const query = args.find(a => a.startsWith("query=")) || "";
 let result;
+if (args[0] === "api" && args[1] === "user") {
+  const viewer = ${JSON.stringify(fixture.viewer ?? null)};
+  if (!viewer) { console.error("not logged in"); process.exit(1); }
+  console.log(viewer);
+  process.exit(0);
+}
 if (args[0] === "repo") result = { owner: { login: "acme" }, name: "app" };
 else if (args[0] === "pr") result = { state: "OPEN", url: ${JSON.stringify(PR_URL)} };
 else if (args.includes("graphql")) {
@@ -921,12 +941,9 @@ describe("triggerPrWatch", () => {
 
 
 describe("postFix replies", () => {
+  type ReplyEntry = { id: string; kind: PrFeedbackKind; author?: string; bot?: boolean; decision: "fixed" | "declined" | "not_applicable" | "pending"; reply?: string };
+
   async function runReplies(root: string, reply = true, single = false, runtime?: RuntimeKind | null, notApplicable = false) {
-    const session = createSession({ title: "post-fix replies" });
-    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open" });
-    const pr = listSessionPrs(session.id)[0]!;
-    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id, runtime });
-    setAgentStatus(a.id, "done");
     const entries = [
       { id: "IC_1", kind: "issue_comment", author: "cursor", decision: "fixed", reply: "Fixed cursor feedback." },
       ...(!single ? [
@@ -942,17 +959,26 @@ describe("postFix replies", () => {
         { id: "IC_human_na", kind: "issue_comment", author: "bob", decision: "not_applicable", reply: "Human question answered." },
       ] : []),
     ] as const;
+    return postEntries(root, entries, reply, runtime);
+  }
+
+  async function postEntries(root: string, entries: readonly ReplyEntry[], reply = true, runtime?: RuntimeKind | null) {
+    const session = createSession({ title: "post-fix replies" });
+    upsertSessionPr({ sessionId: session.id, url: `${PR_URL}/${session.id}`, number: 7, state: "open" });
+    const pr = listSessionPrs(session.id)[0]!;
+    const a = createAgent({ sessionId: session.id, projectName: "app", kind: "pr_fix", sessionPrId: pr.id, runtime });
+    setAgentStatus(a.id, "done");
     for (const entry of entries) {
       const f = insertPrFeedback({
         sessionPrId: pr.id, sourceId: entry.id, sourceKind: entry.kind,
-        author: "author" in entry ? entry.author : "alice", url: `${PR_URL}#${entry.id}`,
-        authorIsBot: "bot" in entry,
+        author: entry.author ?? "alice", url: `${PR_URL}#${entry.id}`,
+        authorIsBot: !!entry.bot,
         inReplyTo: entry.kind === "review_thread" ? "10" : null,
         bodyRef: writePrFeedbackArtifact(session.id, pr.id, entry.id, "body", "<!-- meta -->\n### Please fix"),
       });
       assignPrFeedback([f.id], a.id);
       if (entry.decision !== "pending") recordPrFeedbackDecision(f.id, entry.decision,
-        "reply" in entry ? writePrFeedbackArtifact(session.id, pr.id, entry.id, "reply", entry.reply) : null);
+        entry.reply !== undefined ? writePrFeedbackArtifact(session.id, pr.id, entry.id, "reply", entry.reply) : null);
     }
     const logs: string[] = [];
     await postFix(getAgent(a.id)!, pr, { path: root } as Project,
@@ -1036,6 +1062,58 @@ describe("postFix replies", () => {
       expect(rows.every(f => f.handled_at && f.reply_url === null)).toBe(true);
       expect(logs.some(l => l.includes("conversation reply failed"))).toBe(true);
       expect(logs.some(l => l.includes("reply to 10 failed"))).toBe(true);
+    });
+  });
+
+  test("self-authored review thread is handled silently with its verdict kept", async () => {
+    await withGh({ viewer: "Me" }, async (root, calls) => {
+      const { rows } = await postEntries(root, [
+        { id: "10", kind: "review_thread", author: "me", decision: "fixed", reply: "Fixed inline." },
+      ]);
+      expect(calls().filter(args => args.includes("POST"))).toEqual([]);
+      expect(rows[0]).toMatchObject({ decision: "fixed", reply_url: null });
+      expect(rows[0]!.handled_at).toBeTruthy();
+      expect(rows[0]!.reply_ref).toBeTruthy();
+    });
+  });
+
+  test("mixed batch replies only to other authors and leaves self items out of the conversation post", async () => {
+    await withGh({ viewer: "me" }, async (root, calls) => {
+      const { rows } = await postEntries(root, [
+        { id: "10", kind: "review_thread", author: "me", decision: "fixed", reply: "Self inline." },
+        { id: "11", kind: "review_thread", author: "bob", decision: "fixed", reply: "Bob inline." },
+        { id: "IC_self", kind: "issue_comment", author: "ME", decision: "fixed", reply: "Self conversation." },
+        { id: "PRR_bob", kind: "review", author: "bob", decision: "declined", reply: "Bob conversation." },
+      ]);
+      const bodies = calls().filter(args => args.includes("POST")).map(args => args.find(arg => arg.startsWith("body="))!);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0]).toContain("Bob inline.");
+      expect(bodies[1]).toContain("Bob conversation.");
+      expect(bodies.join("\n")).not.toContain("Self");
+      expect(bodies[1]).not.toContain("@me");
+      for (const id of ["10", "IC_self"]) expect(rows.find(f => f.source_id === id)?.reply_url).toBeNull();
+      expect(rows.find(f => f.source_id === "11")?.reply_url).toBe("https://github.com/reply/thread");
+      expect(rows.find(f => f.source_id === "PRR_bob")?.reply_url).toBe("https://github.com/reply/batch");
+      expect(rows.every(f => f.handled_at)).toBe(true);
+    });
+  });
+
+  test("skips the conversation post entirely when every conversation item is self-authored", async () => {
+    await withGh({ viewer: "me" }, async (root, calls) => {
+      await postEntries(root, [{ id: "IC_self", kind: "issue_comment", author: "me", decision: "fixed", reply: "Self." }]);
+      expect(calls().filter(args => args.includes("POST"))).toEqual([]);
+    });
+  });
+
+  test("viewer lookup failure falls back to replying to everyone", async () => {
+    await withGh({}, async (root, calls) => {
+      const { rows } = await postEntries(root, [
+        { id: "10", kind: "review_thread", author: "me", decision: "fixed", reply: "Self inline." },
+        { id: "IC_self", kind: "issue_comment", author: "me", decision: "fixed", reply: "Self conversation." },
+      ]);
+      expect(calls().some(args => args[0] === "api" && args[1] === "user")).toBe(true);
+      expect(calls().filter(args => args.includes("POST"))).toHaveLength(2);
+      expect(rows.every(f => f.reply_url)).toBe(true);
     });
   });
 

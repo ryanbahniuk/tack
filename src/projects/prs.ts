@@ -603,6 +603,28 @@ export function ghRepo(repoPath: string): Promise<{ owner: string; name: string 
   return p;
 }
 
+const ghViewerCache = new Map<string, Promise<string>>();
+
+/** Login of the account `gh` is authenticated as for `repoPath` (cached per path;
+ * failures are evicted and resolve to null). PR-watch replies post as this user. */
+export async function ghViewerLogin(repoPath: string): Promise<string | null> {
+  let p = ghViewerCache.get(repoPath);
+  if (!p) {
+    p = runOk(["gh", "api", "user", "--jq", ".login"], repoPath, "gh api user").then((out) => {
+      const login = out.trim();
+      if (!login) throw new Error("gh api user returned no login");
+      return login;
+    });
+    ghViewerCache.set(repoPath, p);
+  }
+  try {
+    return await p;
+  } catch {
+    if (ghViewerCache.get(repoPath) === p) ghViewerCache.delete(repoPath);
+    return null;
+  }
+}
+
 /** `gh pr view` omits actor types, so fetch conversation feedback through GraphQL.
  * Node ids match the old input exactly: changing them would re-ingest handled items.
  * Page each connection independently so busy PRs don't lose feedback after 100 items. */
@@ -700,11 +722,17 @@ export function isBotAuthor(a: GhAuthor | null | undefined): boolean {
     || KNOWN_BOT_LOGINS.has((a.login ?? "").replace(/\[bot\]$/i, "").toLowerCase());
 }
 
+const normalizeLogin = (value: string) => value.replace(/\[bot\]$/i, "").toLowerCase();
+
 export function isIgnoredAuthor(login: string | null | undefined, ignoreList: readonly string[]): boolean {
   if (!login) return false;
-  const normalize = (value: string) => value.replace(/\[bot\]$/i, "").toLowerCase();
-  const author = normalize(login);
-  return ignoreList.some((entry) => normalize(entry) === author);
+  const author = normalizeLogin(login);
+  return ignoreList.some((entry) => normalizeLogin(entry) === author);
+}
+
+export function isSelfAuthor(author: string | null | undefined, viewerLogin: string | null | undefined): boolean {
+  if (!author || !viewerLogin) return false;
+  return normalizeLogin(author) === normalizeLogin(viewerLogin);
 }
 
 export function ignoredAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "ignoreAuthors"> }, project: Project): string[] {

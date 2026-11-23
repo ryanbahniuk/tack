@@ -491,7 +491,7 @@ different from the author's when one is available.
 | `prWatch.intervalSeconds` | `300` | Poll cadence for the watcher and the dashboard's PR refresh (min 60). |
 | `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
 | `prWatch.autoPush` | `true` | Push fix commits (never force). |
-| `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
+| `prWatch.reply` | `true` | Reply on GitHub to each handled comment. Your own comments (the `gh` user) are still fixed but never replied to. |
 | `prWatch.ignoreAuthors` | `[]` | GitHub authors whose feedback is ignored across all projects. Matching is case-insensitive and ignores a trailing `[bot]`. |
 | `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
 | `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |

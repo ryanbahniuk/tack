@@ -72,6 +72,8 @@ import {
   normalizeFeedback,
   ignoredAuthorsFor,
   isIgnoredAuthor,
+  isSelfAuthor,
+  ghViewerLogin,
   postIssueComment,
   postReviewThreadReply,
   pushBranch,
@@ -996,6 +998,9 @@ export async function postFix(
   }
 
   const conversation: PrFeedbackRow[] = [];
+  const viewer = config.prWatch.reply && items.some((f) => !f.handled_at && f.reply_ref && f.decision !== "pending")
+    ? await ghViewerLogin(project.path)
+    : null;
   for (const f of items) {
     if (f.handled_at) continue;
     // Never reported by the agent: declined, no reply (nothing to say on its behalf).
@@ -1007,6 +1012,10 @@ export async function postFix(
     // backstops summary-like bot posts that `isBotPrSummary` didn't filter at ingest.
     // reply_ref stays set, so readiness still counts the row as an explicit verdict.
     if (!config.prWatch.reply || (f.decision === "not_applicable" && f.author_is_bot === 1)) {
+      markPrFeedbackHandled(f.id);
+      continue;
+    }
+    if (f.source_kind !== "ci_check" && f.source_kind !== "dependency_release" && isSelfAuthor(f.author, viewer)) {
       markPrFeedbackHandled(f.id);
       continue;
     }
