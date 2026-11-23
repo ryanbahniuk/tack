@@ -73,17 +73,17 @@ describe("path resolution", () => {
     expect((await readAuthoredConfig(path)).prWatch).toEqual({ autoReady: false });
   });
 
-  test("sets and unsets global and project ignored authors", async () => {
+  test("sets and unsets global and project allowed authors", async () => {
     const path = configFile(BASE);
-    const paths = [["prWatch", "ignoreAuthors"], ["projects", "tack", "prWatch", "ignoreAuthors"]];
+    const paths = [["prWatch", "allowAuthors"], ["projects", "tack", "prWatch", "allowAuthors"]];
     await apply(path, paths.map(path => ({ op: "set" as const, path, value: ["tfyoudoing"] })));
     let config = await loadConfig(path);
-    expect(config.prWatch.ignoreAuthors).toEqual(["tfyoudoing"]);
-    expect(config.projects.find(p => p.name === "tack")!.prWatch?.ignoreAuthors).toEqual(["tfyoudoing"]);
+    expect(config.prWatch.allowAuthors).toEqual(["tfyoudoing"]);
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual(["tfyoudoing"]);
     await apply(path, paths.map(path => ({ op: "unset" as const, path })));
     config = await loadConfig(path);
-    expect(config.prWatch.ignoreAuthors).toEqual([]);
-    expect(config.projects.find(p => p.name === "tack")!.prWatch?.ignoreAuthors ?? []).toEqual([]);
+    expect(config.prWatch.allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors ?? []).toEqual([]);
   });
 
   test("unknown identifiers and settings are errors", async () => {

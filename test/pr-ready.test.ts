@@ -7,12 +7,12 @@ import {
   setAgentRefs, setAgentWorktree, setSessionPrStatus, upsertSessionPr,
 } from "../src/db";
 import { ciGreen, isFailingCheck, isPendingCheck } from "../src/projects/prs";
-import { readyToPromote, watchPr } from "../src/prwatch/watch";
+import { markDisallowedPendingFeedback, readyToPromote, watchPr } from "../src/prwatch/watch";
 
 const ready: Parameters<typeof readyToPromote>[0] = {
   enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null,
   mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0,
-  feedback: [], checks: [],
+  feedback: [], checks: [], allowedAuthors: ["alice"],
 };
 const addressed = {
   source_kind: "review_thread", decision: "fixed", handled_at: "then", reply_ref: "/reply",
@@ -47,6 +47,10 @@ describe("readyToPromote", () => {
       });
     }
   }
+  test("disallowed feedback settled without a reply does not block promotion", () => {
+    expect(readyToPromote({ ...ready, feedback: [{ ...addressed, author: "coworker", decision: "not_applicable", reply_ref: null }] })).toBe(true);
+    expect(readyToPromote({ ...ready, feedback: [{ ...addressed, author: "alice", decision: "not_applicable", reply_ref: null }] })).toBe(false);
+  });
   test("handled historical CI failures need no reply when current CI is green", () => {
     expect(readyToPromote({ ...ready, feedback: [{ ...addressed, source_kind: "ci_check", reply_ref: null }] })).toBe(true);
   });
@@ -84,13 +88,14 @@ describe("PR readiness config and persistence", () => {
     const base = { roles: { supervisor: "x", agent: "x", summary: "x" } };
     expect(ConfigSchema.parse(base).draftPrs).toBe(true);
     expect(ConfigSchema.parse({ ...base, draftPrs: false }).draftPrs).toBe(false);
-    expect(PrWatchSchema.parse(undefined).ignoreAuthors).toEqual([]);
-    expect(PrWatchSchema.parse({}).ignoreAuthors).toEqual([]);
-    expect(PrWatchSchema.parse({ ignoreAuthors: ["bot"] }).ignoreAuthors).toEqual(["bot"]);
+    expect(PrWatchSchema.parse(undefined).allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
+    expect(PrWatchSchema.parse({}).allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
+    expect(PrWatchSchema.parse({ allowAuthors: ["bot"] }).allowAuthors).toEqual(["bot"]);
+    expect(PrWatchSchema.parse({ allowAuthors: [] }).allowAuthors).toEqual([]);
     const project = { name: "app", path: "/app", description: "app" };
     expect(ProjectSchema.parse(project).prWatch).toBeUndefined();
-    expect(ProjectSchema.parse({ ...project, prWatch: {} }).prWatch?.ignoreAuthors).toEqual([]);
-    expect(ProjectSchema.parse({ ...project, prWatch: { ignoreAuthors: ["bot"] } }).prWatch?.ignoreAuthors).toEqual(["bot"]);
+    expect(ProjectSchema.parse({ ...project, prWatch: {} }).prWatch?.allowAuthors).toEqual([]);
+    expect(ProjectSchema.parse({ ...project, prWatch: { allowAuthors: ["bot"] } }).prWatch?.allowAuthors).toEqual(["bot"]);
     expect(PrWatchSchema.parse(undefined).autoReady).toBe(true);
     expect(PrWatchSchema.parse({}).autoReady).toBe(true);
     expect(PrWatchSchema.parse({ autoReady: false }).autoReady).toBe(false);
@@ -204,15 +209,25 @@ describe("watcher promotion", () => {
     try { await run({ session, pr, config, logs: [], checks, promote }); }
     finally { for (const mock of mocks.reverse()) mock.mockRestore(); }
   }
-  test("settles ignored pending feedback without spawning or blocking promotion", async () => {
+  test("settles disallowed pending feedback without spawning or blocking promotion", async () => {
     await fixture(async ({ session, pr, config, promote }) => {
       const db = await import("../src/db");
-      config.projects[0]!.prWatch = { ignoreAuthors: ["noise"] };
+      config.projects[0]!.prWatch = { allowAuthors: [] };
       db.insertPrFeedback({ sessionPrId: pr.id, sourceId: "ignored", sourceKind: "issue_comment", author: "NOISE[bot]", bodyRef: "/body", url: pr.url });
       await watchPr(session, pr, config, () => {});
       expect(db.listPrFeedback(pr.id)[0]).toMatchObject({ decision: "not_applicable", handled_at: expect.any(String), reply_ref: null, reply_url: null });
       expect(db.listPrFixAgents(pr.id)).toHaveLength(0);
       expect(promote).toHaveBeenCalledTimes(1);
+    });
+  });
+  test("cleanup leaves CI and dependency feedback pending", async () => {
+    await fixture(async ({ pr }) => {
+      const db = await import("../src/db");
+      for (const sourceKind of ["ci_check", "dependency_release"] as const) {
+        db.insertPrFeedback({ sessionPrId: pr.id, sourceId: sourceKind, sourceKind, bodyRef: "/body", url: pr.url });
+      }
+      markDisallowedPendingFeedback(pr.id, []);
+      expect(db.listPrFeedback(pr.id).map(row => row.decision)).toEqual(["pending", "pending"]);
     });
   });
   test("fetches checks with fixCi disabled and promotes a clean PR before the fix cap", async () => {
