@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite";
 import { migrate } from "../src/db/migrate";
 import {
   PR_WATCH_MARKER,
-  runtimeAttribution,
+  agentAttribution,
   buildReplyBody,
   buildConversationReplyBody,
   feedbackQuote,
@@ -47,7 +47,7 @@ import * as prs from "../src/projects/prs";
 import { writePrDescription, readPrDescription, readArtifact, writePrFeedbackArtifact } from "../src/artifacts/store";
 import type { Project, RuntimeKind, TackConfig } from "../src/config/schema";
 
-const CLAUDE_ATTRIBUTION = "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+const SIGNATURE = "— Sent from octo's AI agent";
 
 const PR_URL = "https://github.com/acme/app/pull/7";
 
@@ -542,7 +542,7 @@ describe("conversation reply formatting", () => {
     const body = buildConversationReplyBody([
       { ...item, fixSha: "abc1234" }, { ...item, author: "Alice" },
       { ...item, author: "cursor" }, { ...item, author: "custom-app", isBot: true },
-    ], { runtime: "claude" });
+    ], { sender: "octo" });
     expect(body).toContain(`[Original feedback](${item.url}) — @alice`);
     expect(body).toContain("**Alice**");
     expect(body).toContain("> Rename it");
@@ -552,9 +552,9 @@ describe("conversation reply formatting", () => {
     expect(body).toContain("**custom-app**");
     expect(body).not.toContain("@cursor");
     expect(body).not.toContain("@custom-app");
-    expect(body.split(CLAUDE_ATTRIBUTION)).toHaveLength(2);
+    expect(body.split(SIGNATURE)).toHaveLength(2);
     expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
-    expect(body.endsWith(`\n\n${CLAUDE_ATTRIBUTION}\n${PR_WATCH_MARKER}`)).toBe(true);
+    expect(body.endsWith(`\n\n${SIGNATURE}\n${PR_WATCH_MARKER}`)).toBe(true);
   });
 });
 
@@ -571,6 +571,7 @@ const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(join(root, "calls"))}, JSON.stringify(args) + "\\n");
 const query = args.find(a => a.startsWith("query=")) || "";
 let result;
+if (args[0] === "api" && args[1] === "user") { console.log("octo"); process.exit(0); }
 if (args[0] === "repo") result = { owner: { login: "acme" }, name: "app" };
 else if (args[0] === "pr") result = { state: "OPEN", url: ${JSON.stringify(PR_URL)} };
 else if (args.includes("graphql")) {
@@ -617,37 +618,28 @@ describe("GraphQL conversation feedback", () => {
   });
 });
 
-describe("runtime attribution", () => {
-  test("uses Claude Code's standard footer and leaves other runtimes unsigned", () => {
-    expect(runtimeAttribution("claude")).toBe(CLAUDE_ATTRIBUTION);
-    for (const runtime of ["codex", null, undefined, "unknown"] as const) {
-      expect(runtimeAttribution(runtime as RuntimeKind | null | undefined)).toBe("");
-    }
+describe("agent attribution", () => {
+  test("uses the login or a generic fallback", () => {
+    expect(agentAttribution("octo")).toBe(SIGNATURE);
+    for (const login of [null, undefined, ""]) expect(agentAttribution(login)).toBe("— Sent from an AI agent");
   });
 
-  for (const runtime of ["claude", "codex", null, undefined] as const) {
-    for (const fixSha of ["abc1234", undefined]) {
-      test(`both reply formats end with the marker for ${runtime}, fix ${fixSha}`, () => {
-        const item = { author: "alice", original: "Rename it", reply: "Done.\n\n", fixSha };
-        const bodies = [
-          buildReplyBody({ ...item, kind: "review_thread", runtime }),
-          buildConversationReplyBody([{ ...item, url: PR_URL }], { runtime }),
-        ];
-        for (const body of bodies) {
-          expect(body.endsWith(`\n${PR_WATCH_MARKER}`)).toBe(true);
-          expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
-          expect(body.includes(CLAUDE_ATTRIBUTION)).toBe(runtime === "claude");
-          expect(body).not.toContain("\n\n\n");
-          if (fixSha) expect(body).toContain(`Done.\n\nFix: ${fixSha}`);
-          else expect(body).not.toContain("Fix:");
-          if (runtime === "claude") {
-            expect(body.endsWith(`\n\n${CLAUDE_ATTRIBUTION}\n${PR_WATCH_MARKER}`)).toBe(true);
-          } else {
-            expect(body.endsWith(`${fixSha ? `Fix: ${fixSha}` : "Done."}\n${PR_WATCH_MARKER}`)).toBe(true);
-          }
-        }
-      });
-    }
+  for (const sender of ["octo", undefined]) for (const fixSha of ["abc1234", undefined]) {
+    test(`both reply formats sign sender ${sender} and fix ${fixSha}`, () => {
+      const item = { author: "alice", original: "Rename it", reply: "Done.\n\n", fixSha };
+      const bodies = [
+        buildReplyBody({ ...item, kind: "review_thread", sender }),
+        buildConversationReplyBody([{ ...item, url: PR_URL }], { sender }),
+      ];
+      for (const body of bodies) {
+        expect(body.endsWith(`\n\n${agentAttribution(sender)}\n${PR_WATCH_MARKER}`)).toBe(true);
+        expect(body.split(PR_WATCH_MARKER)).toHaveLength(2);
+        expect(body).not.toContain("\n\n\n");
+        expect(body).not.toContain("Generated with Claude Code");
+        if (fixSha) expect(body).toContain(`Done.\n\nFix: ${fixSha}`);
+        else expect(body).not.toContain("Fix:");
+      }
+    });
   }
 });
 
@@ -667,7 +659,7 @@ describe("buildReplyBody", () => {
 
   test("thread replies are just the reply; bots are not @-mentioned", () => {
     expect(buildReplyBody({ kind: "review_thread", author: "a", original: "x", reply: "Done." })).toBe(
-      `Done.\n${PR_WATCH_MARKER}`,
+      `Done.\n\n— Sent from an AI agent\n${PR_WATCH_MARKER}`,
     );
     const bot = buildReplyBody({ kind: "review", author: "coderabbitai", isBot: true, original: "x", reply: "No." });
     expect(bot).not.toContain("@coderabbitai");
@@ -966,7 +958,7 @@ describe("postFix replies", () => {
       const posts = calls().filter(args => args.includes("POST"));
       expect(posts).toHaveLength(2);
       expect(posts[0]).toContain("repos/acme/app/pulls/7/comments/10/replies");
-      expect(posts[0]).toContain(`body=Fixed inline.\n${PR_WATCH_MARKER}`);
+      expect(posts[0]).toContain(`body=Fixed inline.\n\n${SIGNATURE}\n${PR_WATCH_MARKER}`);
       expect(posts[1]).toContain("repos/acme/app/issues/7/comments");
       const body = posts[1]!.find(a => a.startsWith("body="))!;
       expect(body).toContain(`[Original feedback](${PR_URL}#IC_1) — **cursor**`);
@@ -986,17 +978,21 @@ describe("postFix replies", () => {
     });
   });
 
-  for (const runtime of ["claude", "codex", null] as const) {
-    test(`passes the fix agent's runtime (${runtime}) to both reply formats`, async () => {
+  for (const fails of [false, true]) {
+    test(`post-fix signs both replies when login lookup ${fails ? "fails" : "succeeds"}`, async () => {
       await withGh({}, async (root, calls) => {
-        await runReplies(root, true, false, runtime);
-        const bodies = calls().filter(args => args.includes("POST"))
-          .map(args => args.find(arg => arg.startsWith("body="))!);
-        expect(bodies).toHaveLength(2);
-        for (const body of bodies) {
-          expect(body.includes(CLAUDE_ATTRIBUTION)).toBe(runtime === "claude");
-          expect(body.endsWith(PR_WATCH_MARKER)).toBe(true);
-        }
+        const lookup = spyOn(prs, "ghViewerLogin");
+        if (fails) lookup.mockRejectedValue(new Error("offline"));
+        else lookup.mockResolvedValue("octo");
+        try {
+          const { logs } = await runReplies(root);
+          const bodies = calls().filter(args => args.includes("POST"))
+            .map(args => args.find(arg => arg.startsWith("body="))!);
+          expect(bodies).toHaveLength(2);
+          expect(lookup).toHaveBeenCalledTimes(1);
+          for (const body of bodies) expect(body).toContain(fails ? "— Sent from an AI agent" : SIGNATURE);
+          if (fails) expect(logs.join("\n")).toContain("GitHub login lookup failed: offline");
+        } finally { lookup.mockRestore(); }
       });
     });
   }
@@ -1075,6 +1071,7 @@ describe("postFix outcomes", () => {
       else fetch.mockResolvedValue(scenario === "edited" ? "Human edit" : scenario === "applied" ? " New body " : "Old\nbody");
       const update = spyOn(prs, "updatePrBody").mockResolvedValue();
       const reply = spyOn(prs, "postIssueComment").mockResolvedValue(null);
+      const login = spyOn(prs, "ghViewerLogin").mockResolvedValue(null);
       const logs: string[] = [];
       try {
         await postFix(a, pr, project(), { prWatch: { autoPush: true, reply: true } } as TackConfig, message => logs.push(message));
@@ -1085,7 +1082,7 @@ describe("postFix outcomes", () => {
         expect(readPrDescription(pr.session_id, a.id, "proposed")).toBe("");
         const stored = listSessionPrs(pr.session_id)[0]!;
         expect(readArtifact(stored.body_ref)).toBe(scenario === "update" || scenario === "applied" ? "New body" : "");
-      } finally { fetch.mockRestore(); update.mockRestore(); reply.mockRestore(); }
+      } finally { fetch.mockRestore(); update.mockRestore(); reply.mockRestore(); login.mockRestore(); }
     });
   }
 
