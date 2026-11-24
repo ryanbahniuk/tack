@@ -33,7 +33,7 @@ describe("parseGithubPrUrl", () => {
 });
 
 const config = {
-  prWatch: { allowAuthors: ["human", "alice", "bob", "cursor", "rev"] },
+  prWatch: { allowAuthors: { bots: ["human", "alice", "bob", "cursor", "rev"], humans: [] } },
   projects: [
     { name: "app", path: "/repos/app", description: "" },
     { name: "lib", path: "/repos/lib", description: "" },
@@ -132,7 +132,7 @@ describe("linkSessionPr / unlinkSessionPr", () => {
 
     // The watcher's view: nothing pending from history, CI already seen for this head…
     const known = prFeedbackSourceIds(row.id);
-    expect(normalizeFeedback(status, threads, known, ["human", "alice", "bob", "cursor", "rev"])).toEqual([]);
+    expect(normalizeFeedback(status, threads, known, { bots: ["human", "alice", "bob", "cursor", "rev"], humans: [] })).toEqual([]);
     expect(prs.normalizeCiFailures(checks, "sha1", known)).toEqual([]);
     // …and the linked draft is never auto-promoted.
     expect(readyToPromote({ allowedAuthors: ["human", "alice"],
@@ -142,7 +142,7 @@ describe("linkSessionPr / unlinkSessionPr", () => {
 
     // Feedback that arrives after the link is still picked up.
     status.comments.push({ id: "IC_2", author: { login: "human" }, body: "one more thing", url: `${url}#c2` });
-    expect(normalizeFeedback(status, threads, known, ["human", "alice", "bob", "cursor", "rev"]).map((f) => f.sourceId)).toEqual(["IC_2"]);
+    expect(normalizeFeedback(status, threads, known, { bots: ["human", "alice", "bob", "cursor", "rev"], humans: [] }).map((f) => f.sourceId)).toEqual(["IC_2"]);
   });
 
   test("re-linking refreshes metadata without duplicating or re-baselining", async () => {

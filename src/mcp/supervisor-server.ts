@@ -68,7 +68,7 @@ import {
   fetchReviewThreads,
   normalizeFeedback,
   allowedAuthorsFor,
-  isAllowedAuthor,
+  anyAllowedAuthor,
   openSessionPr,
   parseGithubPrUrl,
 } from "../projects/prs";
@@ -872,7 +872,7 @@ export async function runSupervisorServer(sessionId: string): Promise<void> {
       }
 
       const baselines = listPrFeedback(pr.id);
-      const reopen = includeExisting ? liveBaselineSourceIds(baselines.filter(row => row.source_kind === "ci_check" || row.source_kind === "dependency_release" || isAllowedAuthor(row.author, allowedAuthors)), threads, ciIds, config.prWatch.fixCi) : [];
+      const reopen = includeExisting ? liveBaselineSourceIds(baselines.filter(row => row.source_kind === "ci_check" || row.source_kind === "dependency_release" || anyAllowedAuthor(row.author, allowedAuthors)), threads, ciIds, config.prWatch.fixCi) : [];
       const spawned = await spawnPrFixAgent(session, pr, project, config, {
         origin: "supervisor",
         reopen,

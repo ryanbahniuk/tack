@@ -12,7 +12,7 @@ import { markDisallowedPendingFeedback, readyToPromote, watchPr } from "../src/p
 const ready: Parameters<typeof readyToPromote>[0] = {
   enabled: true, autoReady: true, isDraft: true, readyPromotedAt: null,
   mergeable: "MERGEABLE", prFixBusy: false, freshCount: 0, releasedCount: 0,
-  feedback: [], checks: [], allowedAuthors: ["alice"],
+  feedback: [], checks: [], allowedAuthors: { bots: [], humans: ["alice"] },
 };
 const addressed = {
   source_kind: "review_thread", decision: "fixed", handled_at: "then", reply_ref: "/reply",
@@ -88,14 +88,16 @@ describe("PR readiness config and persistence", () => {
     const base = { roles: { supervisor: "x", agent: "x", summary: "x" } };
     expect(ConfigSchema.parse(base).draftPrs).toBe(true);
     expect(ConfigSchema.parse({ ...base, draftPrs: false }).draftPrs).toBe(false);
-    expect(PrWatchSchema.parse(undefined).allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
-    expect(PrWatchSchema.parse({}).allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
-    expect(PrWatchSchema.parse({ allowAuthors: ["bot"] }).allowAuthors).toEqual(["bot"]);
-    expect(PrWatchSchema.parse({ allowAuthors: [] }).allowAuthors).toEqual([]);
+    const defaults = { bots: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], humans: [] };
+    expect(PrWatchSchema.parse(undefined).allowAuthors).toEqual(defaults);
+    expect(PrWatchSchema.parse({ allowAuthors: {} }).allowAuthors).toEqual(defaults);
+    expect(PrWatchSchema.parse({ allowAuthors: { humans: ["alice"] } }).allowAuthors).toEqual({ ...defaults, humans: ["alice"] });
+    expect(PrWatchSchema.parse({ allowAuthors: ["bot"] }).allowAuthors).toEqual({ bots: ["bot"], humans: [] });
     const project = { name: "app", path: "/app", description: "app" };
     expect(ProjectSchema.parse(project).prWatch).toBeUndefined();
-    expect(ProjectSchema.parse({ ...project, prWatch: {} }).prWatch?.allowAuthors).toEqual([]);
-    expect(ProjectSchema.parse({ ...project, prWatch: { allowAuthors: ["bot"] } }).prWatch?.allowAuthors).toEqual(["bot"]);
+    expect(ProjectSchema.parse({ ...project, prWatch: {} }).prWatch?.allowAuthors).toEqual({ bots: [], humans: [] });
+    expect(ProjectSchema.parse({ ...project, prWatch: { allowAuthors: { humans: ["alice"] } } }).prWatch?.allowAuthors).toEqual({ bots: [], humans: ["alice"] });
+    expect(ProjectSchema.parse({ ...project, prWatch: { allowAuthors: ["bot"] } }).prWatch?.allowAuthors).toEqual({ bots: ["bot"], humans: [] });
     expect(PrWatchSchema.parse(undefined).autoReady).toBe(true);
     expect(PrWatchSchema.parse({}).autoReady).toBe(true);
     expect(PrWatchSchema.parse({ autoReady: false }).autoReady).toBe(false);
@@ -212,7 +214,7 @@ describe("watcher promotion", () => {
   test("settles disallowed pending feedback without spawning or blocking promotion", async () => {
     await fixture(async ({ session, pr, config, promote }) => {
       const db = await import("../src/db");
-      config.projects[0]!.prWatch = { allowAuthors: [] };
+      config.projects[0]!.prWatch = { allowAuthors: { bots: [], humans: [] } };
       db.insertPrFeedback({ sessionPrId: pr.id, sourceId: "ignored", sourceKind: "issue_comment", author: "NOISE[bot]", bodyRef: "/body", url: pr.url });
       await watchPr(session, pr, config, () => {});
       expect(db.listPrFeedback(pr.id)[0]).toMatchObject({ decision: "not_applicable", handled_at: expect.any(String), reply_ref: null, reply_url: null });
@@ -220,14 +222,15 @@ describe("watcher promotion", () => {
       expect(promote).toHaveBeenCalledTimes(1);
     });
   });
-  test("cleanup leaves CI and dependency feedback pending", async () => {
+  test("cleanup leaves listed humans, CI and dependency feedback pending", async () => {
     await fixture(async ({ pr }) => {
       const db = await import("../src/db");
       for (const sourceKind of ["ci_check", "dependency_release"] as const) {
         db.insertPrFeedback({ sessionPrId: pr.id, sourceId: sourceKind, sourceKind, bodyRef: "/body", url: pr.url });
       }
-      markDisallowedPendingFeedback(pr.id, []);
-      expect(db.listPrFeedback(pr.id).map(row => row.decision)).toEqual(["pending", "pending"]);
+      db.insertPrFeedback({ sessionPrId: pr.id, sourceId: "human", sourceKind: "issue_comment", author: "alice", bodyRef: "/body", url: pr.url });
+      markDisallowedPendingFeedback(pr.id, { bots: [], humans: ["alice"] });
+      expect(db.listPrFeedback(pr.id).map(row => row.decision)).toEqual(["pending", "pending", "pending"]);
     });
   });
   test("fetches checks with fixCi disabled and promotes a clean PR before the fix cap", async () => {

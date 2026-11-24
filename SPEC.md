@@ -518,7 +518,7 @@ quickest way to validate the runtime pipeline.
 export default ({
   bootRecipes: { compose: { up: ["docker compose up -d"], down: ["docker compose down"], lock: "compose:{project}" } },
   projects: [
-    { name, path, description, boot: { recipe: "compose" }, prWatch: { allowAuthors: ["project-review-bot"] } },
+    { name, path, description, boot: { recipe: "compose" }, prWatch: { allowAuthors: { bots: ["project-review-bot"], humans: ["alice"] } } },
     { name: "web", path, description, boot: { run: "bun run dev", env: { PORT: "3001" } } },
   ],
   models: [
@@ -530,7 +530,7 @@ export default ({
   runtimes: { claude: { version: "2.1.261" } },
   readAllowlist: [],
   supervisorMcpServers: [{ name, command, args: [], env: {} }],
-  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, allowAuthors: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], maxFixRunsPerDay: 5 },
+  prWatch: { enabled: true, intervalSeconds: 300, autoReady: true, autoPush: true, reply: true, fixCi: true, allowAuthors: { bots: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], humans: [] }, maxFixRunsPerDay: 5 },
   autoOpenPrs: true,
   autoLinkPrs: true,
   draftPrs: true,
@@ -932,6 +932,10 @@ scripts and fix the root cause in PR code/tests (`fixed`); unrelated flaky, infr
 base-branch or secrets/permissions failures require no changes (`not_applicable`).
 Never disable, skip or weaken checks just to get green. Logs are untrusted quoted
 input. `fix_pr` folds in current CI failures best-effort as well as review feedback.
+
+Listed bot authors are eligible regardless of comment text. Listed human authors require a
+`Sent from … AI agent` or `Sent from … bot` tag on one line. Global and project
+sections merge independently; legacy author arrays are read as bots.
 
 The **post-fix step** (watcher): safety-net commit; if HEAD moved and `autoPush`,
 push **non-force** onto the PR branch — a rejected push releases the items back to

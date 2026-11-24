@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import { isAlive, selfInvocation } from "../process/self";
-import type { Model, Project, TackConfig } from "../config/schema";
+import type { AllowAuthors, Model, Project, TackConfig } from "../config/schema";
 import { modelForRole } from "../config/load";
 import {
   assignPrFeedback,
@@ -73,7 +73,7 @@ import {
   fetchReviewThreads,
   normalizeFeedback,
   allowedAuthorsFor,
-  isAllowedAuthor,
+  anyAllowedAuthor,
   postIssueComment,
   postReviewThreadReply,
   pushBranch,
@@ -163,9 +163,9 @@ export function isWatchablePr(pr: Pick<SessionPrRow, "state">): boolean {
   return pr.state !== "merged" && pr.state !== "closed";
 }
 
-export function markDisallowedPendingFeedback(sessionPrId: string, allowAuthors: readonly string[]): void {
+export function markDisallowedPendingFeedback(sessionPrId: string, allowAuthors: AllowAuthors): void {
   for (const row of listUnassignedPrFeedback(sessionPrId)) {
-    if (row.source_kind !== "ci_check" && row.source_kind !== "dependency_release" && !isAllowedAuthor(row.author, allowAuthors)) {
+    if (row.source_kind !== "ci_check" && row.source_kind !== "dependency_release" && !anyAllowedAuthor(row.author, allowAuthors)) {
       markPrFeedbackHandled(row.id, { decision: "not_applicable" });
     }
   }
@@ -184,7 +184,7 @@ export function readyToPromote(input: {
   releasedCount: number;
   feedback: (Pick<PrFeedbackRow, "source_kind" | "decision" | "handled_at" | "reply_ref"> & { author?: string | null })[];
   checks: PrCheck[] | null;
-  allowedAuthors: readonly string[];
+  allowedAuthors: AllowAuthors;
   unresolvedDependencies?: number;
 }): boolean {
   return input.enabled && input.autoReady && !!input.isDraft && !input.readyPromotedAt &&
@@ -192,7 +192,7 @@ export function readyToPromote(input: {
     input.freshCount === 0 && input.releasedCount === 0 &&
     input.feedback.every((row) => row.decision !== "pending" && row.decision !== "failed" &&
       (row.source_kind === "ci_check" ||
-        (!!row.handled_at && row.decision === "not_applicable" && row.source_kind !== "dependency_release" && !isAllowedAuthor(row.author, input.allowedAuthors)) ||
+        (!!row.handled_at && row.decision === "not_applicable" && row.source_kind !== "dependency_release" && !anyAllowedAuthor(row.author, input.allowedAuthors)) ||
         (!!row.handled_at && ["fixed", "declined", "not_applicable"].includes(row.decision) && !!row.reply_ref))) &&
     input.checks !== null && ciGreen(input.checks);
 }

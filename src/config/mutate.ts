@@ -165,6 +165,10 @@ function applyChange(root: Record<string, unknown>, change: ConfigChange): void 
       else container[seg] = structuredClone(change.value);
       return;
     }
+    if (seg === "allowAuthors" && Array.isArray(container[seg]) &&
+      (path.slice(0, i).join(".") === "prWatch" || (i === 3 && path[0] === "projects" && path[2] === "prWatch"))) {
+      container[seg] = { bots: container[seg], humans: [] };
+    }
     if (container[seg] === undefined) {
       if (op === "unset") return; // nothing there to remove
       // Creating an identified array (e.g. the first persona) or a nested object.

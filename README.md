@@ -398,9 +398,9 @@ tack projects remove <name|path>
 | `path` | yes | `~` is expanded. |
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
-| `projects[].prWatch.allowAuthors` | no | GitHub authors added to the global allow-list for this project. |
+| `projects[].prWatch.allowAuthors` | no | GitHub authors added to the global `bots` and `humans` allow-lists for this project. |
 
-For example, set `prWatch: { allowAuthors: ["project-review-bot"] }` on a project.
+For example, set `prWatch: { allowAuthors: { bots: ["project-review-bot"], humans: ["alice"] } }` on a project.
 
 `projects add` and `projects refresh` have the summary model write `description`
 and `metadata` for you. `tack session create` also auto-registers the current git
@@ -492,7 +492,7 @@ different from the author's when one is available.
 | `prWatch.autoReady` | `true` | Promote drafts once feedback is addressed and CI is green. |
 | `prWatch.autoPush` | `true` | Push fix commits (never force). |
 | `prWatch.reply` | `true` | Reply on GitHub to each handled comment. |
-| `prWatch.allowAuthors` | `["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]` | Only listed authors’ comments are fixed and replied to. Matching is case-insensitive and ignores a trailing `[bot]`; project entries add to this global list. |
+| `prWatch.allowAuthors` | `{ bots: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], humans: [] }` | Comments from listed bots are eligible; listed humans must include a `Sent from … AI agent` or `Sent from … bot` tag on one line. Matching is case-insensitive and ignores a trailing `[bot]`; project entries add to each section. Legacy arrays are read as bots. |
 | `prWatch.fixCi` | `true` | Also fix failing CI. Draft readiness still checks CI when this is `false`. |
 | `prWatch.maxFixRunsPerDay` | `5` | Cap on automatic fix runs per PR per rolling 24h. |
 | `agentReuse.enabled` / `maxIdleHours` | `true` / `24` | Reuse the PR's last agent conversation for fixes. |

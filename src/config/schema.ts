@@ -30,6 +30,15 @@ export const BootRecipeSchema = z.object({
 });
 export type BootRecipe = z.infer<typeof BootRecipeSchema>;
 
+export const DEFAULT_ALLOWED_AUTHORS = ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"] as const;
+
+const allowAuthorsSchema = (bots: string[]) => z.preprocess(
+  (value) => Array.isArray(value) ? { bots: value, humans: [] } : value,
+  z.object({ bots: z.array(z.string().min(1)).default(bots), humans: z.array(z.string().min(1)).default([]) }),
+);
+export const AllowAuthorsSchema = allowAuthorsSchema([]);
+export type AllowAuthors = z.infer<typeof AllowAuthorsSchema>;
+
 export const ProjectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
@@ -37,7 +46,7 @@ export const ProjectSchema = z.object({
   description: z.string().min(1),
   /** Auto-filled tech-stack facts; optional so hand-authored configs stay valid. */
   metadata: ProjectMetadataSchema.optional(),
-  prWatch: z.object({ allowAuthors: z.array(z.string().min(1)).default([]) }).optional(),
+  prWatch: z.object({ allowAuthors: AllowAuthorsSchema.default({ bots: [], humans: [] }) }).optional(),
   boot: BootRecipeSchema.extend({ recipe: z.string().min(1).optional() }).optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
@@ -163,8 +172,6 @@ export type McpServer = z.infer<typeof McpServerSchema>;
  * `maxFixRunsPerDay` caps automatic (watcher) fix runs per PR per rolling 24h;
  * supervisor fix_pr runs are exempt. Failed automatic runs count to prevent loops.
  */
-export const DEFAULT_ALLOWED_AUTHORS = ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"] as const;
-
 export const PrWatchSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -173,7 +180,7 @@ export const PrWatchSchema = z
     autoPush: z.boolean().default(true),
     reply: z.boolean().default(true),
     fixCi: z.boolean().default(true),
-    allowAuthors: z.array(z.string().min(1)).default([...DEFAULT_ALLOWED_AUTHORS]),
+    allowAuthors: allowAuthorsSchema([...DEFAULT_ALLOWED_AUTHORS]).default({ bots: [...DEFAULT_ALLOWED_AUTHORS], humans: [] }),
     maxFixRunsPerDay: z.number().int().nonnegative().default(5),
   })
   .default({
@@ -183,7 +190,7 @@ export const PrWatchSchema = z
     autoPush: true,
     reply: true,
     fixCi: true,
-    allowAuthors: [...DEFAULT_ALLOWED_AUTHORS],
+    allowAuthors: { bots: [...DEFAULT_ALLOWED_AUTHORS], humans: [] },
     maxFixRunsPerDay: 5,
   });
 export type PrWatch = z.infer<typeof PrWatchSchema>;
