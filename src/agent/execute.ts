@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { LOGS_DIR } from "../paths";
 import type { Model, Project, TackConfig } from "../config/schema";
-import { modelForRole, resolvePersona, resolveModel, roleModelKeys } from "../config/load";
+import { effectiveAgentSandbox, modelForRole, resolvePersona, resolveModel, roleModelKeys } from "../config/load";
 import {
   createAgent,
   getAgent,
@@ -186,6 +186,7 @@ export async function* runAgent(
     contextFile,
     mcpServers: [{ name: "tack", command: coordination.command, args: coordination.args }],
     logPath,
+    sandbox: effectiveAgentSandbox(config, project.name),
   })) {
     if (firstEvent) { firstEvent = false; setPhase("waiting for first response"); }
     if (!firstResponse && ev.type !== "session") {

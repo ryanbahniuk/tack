@@ -34,11 +34,13 @@ export type ConfigChange = z.infer<typeof ConfigChangeSchema>;
  * Keys a session may never change, at any depth, because each one can run or
  * widen something: `supervisorMcpServers` are arbitrary commands whose tools are
  * auto-allowed, a runtime's `bin` is an arbitrary executable, `readAllowlist`
- * widens what the supervisor can read, and boot recipes are shell commands. These
- * stay with the human, in their editor.
+ * widens what the supervisor can read, boot recipes are shell commands, and
+ * `agentSandbox` widens what agent shell commands can reach. These stay with the
+ * human, in their editor.
  */
-export const CONFIG_DENYLIST = ["supervisorMcpServers", "runtimes", "readAllowlist", "bootRecipes", "projects.<name>.boot"];
-const DENIED_TOP = new Set(["supervisorMcpServers", "runtimes", "readAllowlist", "bootRecipes"]);
+export const CONFIG_DENYLIST = ["supervisorMcpServers", "runtimes", "readAllowlist", "bootRecipes", "agentSandbox", "projects.<name>.boot", "projects.<name>.agentSandbox"];
+const DENIED_TOP = new Set(["supervisorMcpServers", "runtimes", "readAllowlist", "bootRecipes", "agentSandbox"]);
+const DENIED_PROJECT = ["boot", "agentSandbox"] as const;
 
 /** Arrays addressed by an element identifier rather than an index. */
 const IDENTIFIED: Record<string, string> = { projects: "name", personas: "name", models: "key" };
@@ -76,11 +78,13 @@ function denied(path: string[]): never {
 function checkDeniedPath(change: ConfigChange): void {
   const { path } = change;
   if (DENIED_TOP.has(path[0]!)) denied(path);
-  if (path[0] === "projects" && path.length >= 3 && path[2] === "boot") denied(path);
-  const carriesBoot = (v: unknown) => isObject(v) && "boot" in v;
-  if (change.op === "set" && path[0] === "projects") {
-    if (path.length === 2 && carriesBoot(change.value)) denied([...path, "boot"]);
-    if (path.length === 1 && Array.isArray(change.value) && change.value.some(carriesBoot)) denied(["projects", "<name>", "boot"]);
+  if (path[0] === "projects" && path.length >= 3 && (DENIED_PROJECT as readonly string[]).includes(path[2]!)) denied(path);
+  for (const key of DENIED_PROJECT) {
+    const carries = (v: unknown) => isObject(v) && key in v;
+    if (change.op === "set" && path[0] === "projects") {
+      if (path.length === 2 && carries(change.value)) denied([...path, key]);
+      if (path.length === 1 && Array.isArray(change.value) && change.value.some(carries)) denied(["projects", "<name>", key]);
+    }
   }
   if (change.op === "set" && path.length === 1 && isObject(change.value)) {
     // Setting a whole top-level object can't smuggle denylisted keys in either.
@@ -91,20 +95,22 @@ function checkDeniedPath(change: ConfigChange): void {
 /** Every denylisted value must come out of the change exactly as it went in. */
 function checkDenylistInvariant(before: Record<string, unknown>, after: Record<string, unknown>): void {
   for (const key of DENIED_TOP) if (!isDeepStrictEqual(before[key], after[key])) denied([key]);
-  const boots = (raw: Record<string, unknown>) =>
-    new Map(
-      (Array.isArray(raw.projects) ? raw.projects : [])
-        .filter((p): p is Record<string, unknown> => isObject(p) && p.boot !== undefined)
-        .map((p) => [String(p.name), p.boot]),
-    );
-  const was = boots(before);
-  const now = boots(after);
-  for (const [name, boot] of was) {
-    // Dropping a project's boot block (removing the project, or overwriting the
-    // array) is refused too: the human decides what happens to boot commands.
-    if (!now.has(name) || !isDeepStrictEqual(now.get(name), boot)) denied(["projects", name, "boot"]);
+  for (const key of DENIED_PROJECT) {
+    const blocks = (raw: Record<string, unknown>) =>
+      new Map(
+        (Array.isArray(raw.projects) ? raw.projects : [])
+          .filter((p): p is Record<string, unknown> => isObject(p) && p[key] !== undefined)
+          .map((p) => [String(p.name), p[key]]),
+      );
+    const was = blocks(before);
+    const now = blocks(after);
+    for (const [name, block] of was) {
+      // Dropping a project's block (removing the project, or overwriting the
+      // array) is refused too: the human decides what happens to it.
+      if (!now.has(name) || !isDeepStrictEqual(now.get(name), block)) denied(["projects", name, key]);
+    }
+    for (const name of now.keys()) if (!was.has(name)) denied(["projects", name, key]);
   }
-  for (const name of now.keys()) if (!was.has(name)) denied(["projects", name, "boot"]);
 }
 
 /** Applies one change to `root` in place. */
@@ -135,8 +141,9 @@ function applyChange(root: Record<string, unknown>, change: ConfigChange): void 
         }
         const value = structuredClone(change.value);
         const existing = idx >= 0 ? arr[idx] : undefined;
-        // Replacing a project keeps its boot block (which the session can't author).
-        if (isObject(existing) && existing.boot !== undefined && value.boot === undefined) value.boot = existing.boot;
+        // Replacing a project keeps its human-only blocks (which the session can't author).
+        for (const key of DENIED_PROJECT)
+          if (isObject(existing) && existing[key] !== undefined && value[key] === undefined) value[key] = existing[key];
         if (idx >= 0) arr[idx] = value;
         else arr.push(value);
         return;

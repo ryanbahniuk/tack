@@ -30,6 +30,18 @@ export const BootRecipeSchema = z.object({
 });
 export type BootRecipe = z.infer<typeof BootRecipeSchema>;
 
+/**
+ * Extra network hosts and paths a worktree agent's shell commands may use, for
+ * toolchains (private gem/npm registries, version managers) the default sandbox
+ * blocks. Human-only: it widens the agent sandbox, so sessions can't change it.
+ */
+export const AgentSandboxSchema = z.object({
+  allowedDomains: z.array(z.string().min(1)).default([]),
+  readPaths: z.array(z.string().min(1)).default([]),
+  writePaths: z.array(z.string().min(1)).default([]),
+});
+export type AgentSandbox = z.infer<typeof AgentSandboxSchema>;
+
 export const ProjectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
@@ -39,6 +51,8 @@ export const ProjectSchema = z.object({
   metadata: ProjectMetadataSchema.optional(),
   prWatch: z.object({ allowAuthors: z.array(z.string().min(1)).default([]) }).optional(),
   boot: BootRecipeSchema.extend({ recipe: z.string().min(1).optional() }).optional(),
+  /** Unioned with the top-level `agentSandbox` for this project's agents. */
+  agentSandbox: AgentSandboxSchema.optional(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
@@ -227,6 +241,8 @@ export const ConfigSchema = z.object({
   runtimes: RuntimesSchema,
   /** Extra read-only paths the supervisor may investigate beyond project roots. */
   readAllowlist: z.array(z.string()).default([]),
+  /** Sandbox allowances for every worktree agent (see `AgentSandboxSchema`). */
+  agentSandbox: AgentSandboxSchema.optional(),
   /** Extra MCP servers mounted for the supervisor only (see `McpServerSchema`). */
   supervisorMcpServers: z.array(McpServerSchema).default([]),
   /** Background PR polling + auto-fix (see `PrWatchSchema`). */
@@ -274,6 +290,7 @@ export interface TackConfig {
   personas: ResolvedPersona[];
   runtimes: Runtimes;
   readAllowlist: string[];
+  agentSandbox?: AgentSandbox;
   supervisorMcpServers: McpServer[];
   prWatch: PrWatch;
   baseCache: { enabled: boolean; intervalSeconds: number; maxAgeSeconds: number };

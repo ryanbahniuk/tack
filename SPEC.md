@@ -739,9 +739,10 @@ elicitation, which shows the reason, the paths and the unified diff. Only an acc
 writes. Missing elicitation, decline, cancel or error fail closed, and the
 supervisor is told to send the human to `tack config edit`. The write is an atomic
 rename, done only if the file's SHA-256 still matches the one the diff was computed
-from. `supervisorMcpServers`, `runtimes`, `readAllowlist`, `bootRecipes` and project
-`boot` blocks are refused because they run commands or widen access. Replacing a
-project keeps its `boot`. A write changes the config hash, so every live session is
+from. `supervisorMcpServers`, `runtimes`, `readAllowlist`, `bootRecipes`,
+`agentSandbox` and project `boot` / `agentSandbox` blocks are refused because they
+run commands or widen access. Replacing a project keeps its `boot` and
+`agentSandbox`. A write changes the config hash, so every live session is
 marked stale; this is not restamped. Launch-time settings (`autoOpenPrs`,
 `autoLinkPrs`, `draftPrs`, `roles.supervisor`, `personas`, `jira`) need a refresh.
 Per-call settings (`roles.agent`, `projects`, `models`) apply in the editing
@@ -998,6 +999,22 @@ supervisor never uses them to change an existing one.
   -c approvals_reviewer="auto_review"` (`on-request` alone is still forced to
   `never`). Never `--dangerously-bypass-approvals-and-sandbox`. `exec resume` rejects
   `--approve-for-me`/`-s`/`--add-dir`, so those flags precede the `resume` subcommand.
+- **Agent sandbox allowlist.** Claude worktree agents run with `sandbox.enabled`,
+  `failIfUnavailable`, `allowUnsandboxedCommands: false` and
+  `permissions.blockReadsOutsideWorkingDirectories`, so Bash has no network and
+  no reads or writes outside the worktree. The human-only `agentSandbox` config
+  (top-level unioned with `projects[].agentSandbox`, paths home-expanded) passes
+  through `RunOptions.sandbox`, which only `runAgent` sets. Claude merges it into
+  the same `--settings` blob: `sandbox.network.allowedDomains`,
+  `sandbox.filesystem.allowRead` (read paths plus write paths, since the read block
+  covers `$HOME`) and `sandbox.filesystem.allowWrite`. It never uses `--add-dir`,
+  which would make read paths editable. Codex maps `writePaths` to `--add-dir` and
+  any domain to `-c sandbox_workspace_write.network_access=true`, which is
+  all-or-nothing because Codex can't filter by host. Its workspace-write sandbox
+  already reads the full disk, so `readPaths` are a no-op. These flags precede
+  `resume` like the rest. With nothing configured, the argv is unchanged. Read
+  paths expose whatever credentials they hold (e.g. `~/.bundle/config`) to agent
+  shell commands.
 - **Codex context injection** is a `developer_instructions` directive to read the
   context file, so it relies on the agent actually reading it. The file-based
   alternative (`model_instructions_file`, née `experimental_instructions_file` —

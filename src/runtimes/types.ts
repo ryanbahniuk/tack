@@ -70,6 +70,12 @@ export interface RunOptions {
   inheritUserMcp?: boolean;
   /** Extra directories the run may read beyond its cwd (project roots, allowlist). */
   addDirs?: string[];
+  /**
+   * Human-configured `agentSandbox` allowances (domains, read-only and writable
+   * paths) for an autonomous worktree agent's shell commands. Only worktree agents
+   * set it; absent or all-empty leaves the default sandbox untouched.
+   */
+  sandbox?: { allowedDomains: string[]; readPaths: string[]; writePaths: string[] };
   /** Tack-owned directories the runtime may pre-record workspace trust for; never user-configured directories. */
   trustedDirs?: string[];
   /**

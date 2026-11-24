@@ -44,6 +44,34 @@ const AGENT_SANDBOX_SETTINGS = {
 };
 
 /**
+ * The worktree agent's `--settings` blob, with any human-configured `agentSandbox`
+ * allowances layered onto the hard gates above (which never change). Keys are
+ * Claude Code's own sandbox settings: `network.allowedDomains` admits hosts for
+ * sandboxed commands; `filesystem.allowRead` re-opens reads inside the
+ * outside-working-directories block without granting writes, which `--add-dir`
+ * would; `filesystem.allowWrite` adds writable paths. Writable paths are re-opened
+ * for reading too, since the read block covers the home directory and installers
+ * read back what they write. The in-process Read/Grep/Glob tools stay confined to
+ * the worktree either way. No allowances returns the default object unchanged.
+ */
+export function agentSandboxSettings(sandbox?: RunOptions["sandbox"]): typeof AGENT_SANDBOX_SETTINGS {
+  const domains = sandbox?.allowedDomains ?? [];
+  const writes = sandbox?.writePaths ?? [];
+  const reads = [...new Set([...(sandbox?.readPaths ?? []), ...writes])];
+  if (!domains.length && !reads.length) return AGENT_SANDBOX_SETTINGS;
+  return {
+    ...AGENT_SANDBOX_SETTINGS,
+    sandbox: {
+      ...AGENT_SANDBOX_SETTINGS.sandbox,
+      ...(domains.length ? { network: { allowedDomains: domains } } : {}),
+      ...(reads.length
+        ? { filesystem: { allowRead: reads, ...(writes.length ? { allowWrite: writes } : {}) } }
+        : {}),
+    },
+  };
+}
+
+/**
  * Drives Claude Code headless: `claude -p --output-format stream-json`. We inherit
  * every Claude feature for free (no SDK coupling) and read `total_cost_usd`
  * directly from the final result event, so cost is authoritative on this runtime.
@@ -386,7 +414,7 @@ export class ClaudeRuntime implements Runtime {
       cmd.push(...PERMISSION_ARGS);
       // Sandbox the worktree agent so Bash (and its subprocesses) can't read past
       // the worktree — the classifier only bounds the in-process edit tools.
-      cmd.push("--settings", JSON.stringify(AGENT_SANDBOX_SETTINGS));
+      cmd.push("--settings", JSON.stringify(agentSandboxSettings(opts.sandbox)));
     }
     if (m.effort) cmd.push("--effort", m.effort);
     if (opts.resume && opts.sessionRef) cmd.push("--resume", opts.sessionRef);
