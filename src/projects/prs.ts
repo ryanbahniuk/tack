@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { Project, TackConfig } from "../config/schema";
+import type { AllowAuthors, Project, TackConfig } from "../config/schema";
 import {
   listAgents,
   listSessionPrs,
@@ -720,8 +720,24 @@ export function isAllowedAuthor(login: string | null | undefined, allowList: rea
   return allowList.some((entry) => normalize(entry) === author);
 }
 
-export function allowedAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "allowAuthors"> }, project: Project): string[] {
-  return [...new Set([...(config.prWatch.allowAuthors ?? []), ...(project.prWatch?.allowAuthors ?? [])])];
+export const AGENT_TAG_PATTERN = /sent from\b[^\n]*\b(?:ai agent|bot)\b/i;
+
+export function hasAgentTag(body: string): boolean {
+  return AGENT_TAG_PATTERN.test(body);
+}
+
+export function anyAllowedAuthor(login: string | null | undefined, allow: AllowAuthors): boolean {
+  return isAllowedAuthor(login, allow.bots) || isAllowedAuthor(login, allow.humans);
+}
+
+export function isAllowedFeedback(item: { author: string | null | undefined; body: string }, allow: AllowAuthors): boolean {
+  return isAllowedAuthor(item.author, allow.bots) || (isAllowedAuthor(item.author, allow.humans) && hasAgentTag(item.body));
+}
+
+export function allowedAuthorsFor(config: { prWatch: Pick<TackConfig["prWatch"], "allowAuthors"> }, project: Project): AllowAuthors {
+  const global = config.prWatch.allowAuthors;
+  const local = project.prWatch?.allowAuthors;
+  return { bots: [...new Set([...global.bots, ...(local?.bots ?? [])])], humans: [...new Set([...global.humans, ...(local?.humans ?? [])])] };
 }
 
 /** Headings that open informational bot PR summaries (Cursor, CodeRabbit, Copilot).
@@ -763,14 +779,14 @@ export function normalizeFeedback(
   status: Pick<PrStatus, "comments" | "reviews" | "url">,
   threads: ReviewThread[],
   alreadyHandledIds: Iterable<string>,
-  allowAuthors: readonly string[],
+  allowAuthors: AllowAuthors,
 ): PrFeedbackItem[] {
   const seen = new Set(alreadyHandledIds);
   const out: PrFeedbackItem[] = [];
   const take = (item: PrFeedbackItem) => {
     if (!item.body.trim()) return;
     if (item.body.includes(PR_WATCH_MARKER)) return;
-    if (isBotPrSummary(item) || !isAllowedAuthor(item.author, allowAuthors)) return;
+    if (isBotPrSummary(item) || !isAllowedFeedback(item, allowAuthors)) return;
     if (seen.has(item.sourceId)) return;
     seen.add(item.sourceId); // de-dupe within one pass too
     out.push(item);

@@ -1,5 +1,5 @@
 import { PrWatchSchema } from "../config/schema";
-import type { Project, TackConfig } from "../config/schema";
+import type { AllowAuthors, Project, TackConfig } from "../config/schema";
 import {
   deleteLinkedSessionPr,
   getSessionPr,
@@ -122,7 +122,7 @@ export async function baselinePrFeedback(
   project: Project,
   number: number,
   headSha: string | null,
-  allowAuthors: readonly string[],
+  allowAuthors: AllowAuthors,
 ): Promise<number> {
   const status = await prs.fetchPrStatus(project.path, number);
   const threads = (await prs.fetchReviewThreads(project.path, number)).map((t) => ({ ...t, isResolved: false }));

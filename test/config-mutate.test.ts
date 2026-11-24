@@ -76,14 +76,24 @@ describe("path resolution", () => {
   test("sets and unsets global and project allowed authors", async () => {
     const path = configFile(BASE);
     const paths = [["prWatch", "allowAuthors"], ["projects", "tack", "prWatch", "allowAuthors"]];
-    await apply(path, paths.map(path => ({ op: "set" as const, path, value: ["tfyoudoing"] })));
+    await apply(path, paths.map(path => ({ op: "set" as const, path, value: { bots: ["bot"], humans: ["alice"] } })));
     let config = await loadConfig(path);
-    expect(config.prWatch.allowAuthors).toEqual(["tfyoudoing"]);
-    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual(["tfyoudoing"]);
-    await apply(path, paths.map(path => ({ op: "unset" as const, path })));
+    expect(config.prWatch.allowAuthors).toEqual({ bots: ["bot"], humans: ["alice"] });
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual({ bots: ["bot"], humans: ["alice"] });
+    await apply(path, paths.flatMap(path => ["bots", "humans"].map(section => ({ op: "set" as const, path: [...path, section], value: [section] }))));
     config = await loadConfig(path);
-    expect(config.prWatch.allowAuthors).toEqual(["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"]);
-    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors ?? []).toEqual([]);
+    expect(config.prWatch.allowAuthors).toEqual({ bots: ["bots"], humans: ["humans"] });
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual({ bots: ["bots"], humans: ["humans"] });
+    await apply(path, paths.flatMap(path => ["bots", "humans"].map(section => ({ op: "unset" as const, path: [...path, section] }))));
+    config = await loadConfig(path);
+    expect(config.prWatch.allowAuthors).toEqual({ bots: ["cursor", "coderabbitai", "copilot-pull-request-reviewer", "copilot"], humans: [] });
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual({ bots: [], humans: [] });
+    await apply(path, paths.map(path => ({ op: "set" as const, path, value: ["legacy"] })));
+    await apply(path, paths.map(path => ({ op: "set" as const, path: [...path, "humans"], value: ["alice"] })));
+    config = await loadConfig(path);
+    expect(config.prWatch.allowAuthors).toEqual({ bots: ["legacy"], humans: ["alice"] });
+    expect(config.projects.find(p => p.name === "tack")!.prWatch?.allowAuthors).toEqual({ bots: ["legacy"], humans: ["alice"] });
+
   });
 
   test("unknown identifiers and settings are errors", async () => {
