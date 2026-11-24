@@ -337,10 +337,24 @@ export function windowSessionLines(counts: readonly number[], cursor: number, he
   return { start, end, above: aboveRoom ? above : 0, below: belowRoom ? below : 0 };
 }
 
-/** One session's line units: its summary row, plus agent/PR/ticket detail when
- * selected. Rendering is windowed, so only visible sessions (and the cursor's
- * expanded block) ever pay for building these. */
-function sessionRowLines(v: View, selected: boolean, frame: number, config: TackConfig | null) {
+export function wrapTitle(title: string, columns: number, maxLines = 3): string[] {
+  const text = title.replace(/\s+/g, " ").trim();
+  if (!text) return [];
+  const width = Math.max(1, columns);
+  const lines = wrapFooter(text, width);
+  if (lines.length <= maxLines) return lines;
+  let last = lines[maxLines - 1]!;
+  while (last && Bun.stringWidth(`${last}…`) > width) last = [...last].slice(0, -1).join("");
+  return [...lines.slice(0, maxLines - 1), `${last.trimEnd()}…`];
+}
+
+const TITLE_INDENT = "    ";
+
+/** One session's line units: its summary row, plus title/agent/PR/ticket detail
+ * when selected. Rendering is windowed, so only visible sessions (and the
+ * cursor's expanded block) ever pay for building these. */
+function sessionRowLines(v: View, selected: boolean, frame: number, config: TackConfig | null, width: number) {
+  const titleLines = selected ? wrapTitle(v.session.title ?? "", width - TITLE_INDENT.length) : [];
   return flattenSessionLines(
     <Box key={v.session.id} flexDirection="column">
       <Text>
@@ -350,22 +364,23 @@ function sessionRowLines(v: View, selected: boolean, frame: number, config: Tack
         <Text bold>{v.session.id}</Text>
         <Text dimColor> {v.session.status === "on_hold" ? "on hold" : v.session.status} </Text>
         <Text color="green">{usd(v.cost)}</Text>
+        {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
+        {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
+        {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
+        {!selected ? <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text> : null}
         {v.boots.length > 0 ? <Text color="green"> booted: {v.boots.join(", ")}</Text> : null}
         {v.prs.length > 0 ? <Text> {prRollup(v.prs)}</Text> : null}
         {v.tickets.length > 0 ? <Text> {ticketRollup(v.tickets)}</Text> : null}
         {v.amendments.length > 0 ? (
           <Text color="yellow"> ✎ {v.amendments.length} amendment{v.amendments.length === 1 ? "" : "s"}</Text>
         ) : null}
-        {v.prs.some(prHasConflicts) ? <Text color="red"> ⚠ conflicts</Text> : null}
         {!v.session.pr_fix_enabled ? <Text color="yellow"> pr-fix off</Text> : null}
         {isAlive(v.session.pr_watch_pid) ? <Text color="green"> PR watcher live</Text> : null}
         {isAlive(v.session.jira_watch_pid) ? <Text color="green"> Jira watcher live</Text> : null}
         {v.stale ? <Text color="yellow"> stale</Text> : null}
-        {v.working ? <Text color="cyan"> {SPINNER_FRAMES[frame]} working {turnElapsed(v.session.supervisor_turn_started_at!)}</Text> : null}
-        {v.needsInput ? <Text color="yellow"> ◆ needs input</Text> : null}
-        <Text dimColor> {oneLine(v.session.title ?? "", Number.MAX_SAFE_INTEGER)}</Text>
         </Text>
       </Text>
+      {titleLines.map((line, i) => <Text key={`title-${i}`} dimColor>{TITLE_INDENT}{line}</Text>)}
       {selected && v.session.readme_url ? <Text>    README: {v.session.readme_url}</Text> : null}
       {selected &&
         v.agents.map((a) => {
@@ -1337,13 +1352,13 @@ export function Dashboard({ config, onLaunch, initialNotice = "" }: { config: Ta
   );
   // Unselected sessions are always exactly one line, so only the cursor's expanded
   // block is built to size the window; every other row is built only if visible.
-  const cursorLines = selected ? sessionRowLines(selected, true, frame, config) : [];
+  const cursorLines = selected ? sessionRowLines(selected, true, frame, config, listWidth) : [];
   const counts = rows.map((_, i) => (i === cursor ? cursorLines.length : 1));
   const window = windowSessionLines(counts, cursor, budget);
   const visibleLines: React.ReactElement<React.ComponentProps<typeof Text>>[] = [];
   for (let i = 0, offset = 0; i < rows.length && offset < window.end; offset += counts[i]!, i++) {
     if (offset + counts[i]! <= window.start) continue;
-    const lines = i === cursor ? cursorLines : sessionRowLines(rows[i]!, false, frame, config);
+    const lines = i === cursor ? cursorLines : sessionRowLines(rows[i]!, false, frame, config, listWidth);
     visibleLines.push(...lines.slice(Math.max(0, window.start - offset), window.end - offset));
   }
 
