@@ -279,7 +279,7 @@ export class CodexRuntime implements Runtime {
     // exec still forces `never` unless the reviewer is `auto_review`.
     const posture = opts.readOnly
       ? ["-s", "read-only", "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
-      : ["--approve-for-me"];
+      : ["--approve-for-me", ...codexSandboxFlags(opts.sandbox)];
     const flags = ["--json", "--skip-git-repo-check", "-m", opts.model.id, ...posture, ...sharedFlags(opts)];
     // Continuation: `codex exec resume <id>` accepts only a subset of exec's flags
     // (no `--approve-for-me`, `-s` or `--add-dir` — it exits 2 on them), but exec's
@@ -289,6 +289,21 @@ export class CodexRuntime implements Runtime {
     }
     return [opts.bin, "exec", ...flags, opts.prompt];
   }
+}
+
+/**
+ * The worktree agent's `agentSandbox` allowances as workspace-write flags:
+ * `writePaths` become writable roots (`--add-dir`), and any `allowedDomains` turn
+ * on `sandbox_workspace_write.network_access`. Codex can't scope network access by
+ * host, so it is all-or-nothing here. `readPaths` need nothing: workspace-write
+ * already reads the whole disk. Like the rest of exec's flags these precede the
+ * `resume` subcommand, which rejects `--add-dir` after it.
+ */
+export function codexSandboxFlags(sandbox?: RunOptions["sandbox"]): string[] {
+  const flags: string[] = [];
+  for (const dir of sandbox?.writePaths ?? []) flags.push("--add-dir", dir);
+  if (sandbox?.allowedDomains.length) flags.push("-c", "sandbox_workspace_write.network_access=true");
+  return flags;
 }
 
 /** Flags common to `exec` and the TUI: effort, add-dirs, context, MCP servers. */

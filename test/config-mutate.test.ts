@@ -193,6 +193,12 @@ describe("denylist", () => {
     { op: "unset", path: ["projects", "penny"] },
     // Renaming tack onto penny's slot doesn't move a boot block around either.
     { op: "set", path: ["projects", "penny", "name"], value: "other" },
+    { op: "set", path: ["agentSandbox"], value: { allowedDomains: ["*"] } },
+    { op: "set", path: ["agentSandbox", "writePaths"], value: ["/"] },
+    { op: "set", path: ["projects", "tack", "agentSandbox"], value: { allowedDomains: ["*.jfrog.io"] } },
+    { op: "set", path: ["projects", "tack", "agentSandbox", "readPaths"], value: ["~/.bundle"] },
+    { op: "set", path: ["projects", "new"], value: { name: "new", path: "/n", description: "N.", agentSandbox: { writePaths: ["/"] } } },
+    { op: "set", path: ["projects"], value: [{ name: "tack", path: "/t", description: "T.", agentSandbox: { writePaths: ["/"] } }] },
   ] as ConfigChange[];
   for (const change of refused) {
     test(`refuses ${change.op} ${JSON.stringify(change.path)}`, async () => {
@@ -201,6 +207,21 @@ describe("denylist", () => {
       expect(readFileSync(path, "utf8")).toBe(BASE);
     });
   }
+
+  test("refuses dropping a project's agentSandbox block", async () => {
+    const src = BASE.replace('description: "Tack." }', 'description: "Tack.", agentSandbox: { allowedDomains: ["rubygems.org"] } }');
+    const path = configFile(src);
+    await expect(prepareConfigChange(path, [{ op: "unset", path: ["projects", "tack"] }])).rejects.toThrow("tack config edit");
+    await expect(prepareConfigChange(path, [{ op: "unset", path: ["projects", "tack", "agentSandbox"] }])).rejects.toThrow("tack config edit");
+  });
+
+  test("replacing a project keeps its agentSandbox block", async () => {
+    const src = BASE.replace('description: "Tack." }', 'description: "Tack.", agentSandbox: { allowedDomains: ["rubygems.org"] } }');
+    const path = configFile(src);
+    await apply(path, [{ op: "set", path: ["projects", "tack"], value: { name: "tack", path: "~/tack", description: "T2." } }]);
+    const tack = (await loadConfig(path)).projects.find((p) => p.name === "tack")!;
+    expect(tack.agentSandbox).toEqual({ allowedDomains: ["rubygems.org"], readPaths: [], writePaths: [] });
+  });
 
   test("replacing a project keeps its boot block", async () => {
     const path = configFile(BASE);

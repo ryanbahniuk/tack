@@ -374,6 +374,7 @@ export default ({
 | `personas` | `[]` | Reviewer lenses for persona reviews. |
 | `runtimes` | `{}` | Per-runtime `bin`, `version` and `versionPolicy`. |
 | `readAllowlist` | `[]` | Extra read-only paths the supervisor may investigate beyond the project snapshots. |
+| `agentSandbox` | unset | `{ allowedDomains, readPaths, writePaths }`: extra hosts and paths worktree agents' shell commands may use (see [Agent sandbox](#agent-sandbox)). Human-only. |
 | `supervisorMcpServers` | `[]` | Extra MCP servers mounted for the supervisor only. |
 | `prWatch` | see below | Background PR polling and auto-fix. |
 | `agentReuse` | `{ enabled: true, maxIdleHours: 24 }` | Continue a PR's previous agent conversation for fixes. |
@@ -399,12 +400,48 @@ tack projects remove <name|path>
 | `description` | yes | **This field is load-bearing.** The supervisor uses it to choose which repos to snapshot *before* reading any code. |
 | `metadata` | no | `{ language, frameworks[] }`, used to route on tech stack. |
 | `projects[].prWatch.allowAuthors` | no | GitHub authors added to the global allow-list for this project. |
+| `projects[].agentSandbox` | no | Unioned with the top-level `agentSandbox` for this project's agents. |
 
 For example, set `prWatch: { allowAuthors: ["project-review-bot"] }` on a project.
 
 `projects add` and `projects refresh` have the summary model write `description`
 and `metadata` for you. `tack session create` also auto-registers the current git
 repo if it isn't configured yet.
+
+### Agent sandbox
+
+Worktree agents run sandboxed: their shell commands can't reach the network or
+read and write outside their worktree. Toolchains that need more, like
+`bundle install` against a private JFrog gem source with an rbenv Ruby, get it
+from an opt-in allowlist:
+
+```ts
+agentSandbox: {
+  allowedDomains: ["*.jfrog.io", "rubygems.org", "index.rubygems.org"],
+  readPaths: ["~/.rbenv", "~/.bundle"],         // read-only
+  writePaths: ["~/.rbenv/versions", "~/.gem"],  // writable (and readable)
+},
+```
+
+- Each list defaults to `[]`; `~` is expanded. A project's
+  `projects[].agentSandbox` is unioned with the top-level block for that project's
+  agents, so put repo-specific registries there.
+- Only worktree agents get it. The supervisor, summaries and read-only runs never do.
+- **Claude** adds the domains to `sandbox.network.allowedDomains`, `readPaths` (and
+  `writePaths`) to `sandbox.filesystem.allowRead`, and `writePaths` to
+  `sandbox.filesystem.allowWrite`, keeping the hard gates. Read paths are never
+  `--add-dir`s, so they stay read-only. Claude's own Read/Grep tools stay confined
+  to the worktree.
+- **Codex** can't scope network access by host: any `allowedDomains` entry turns on
+  network access for all hosts (`sandbox_workspace_write.network_access=true`).
+  `writePaths` become `--add-dir`s. `readPaths` are a no-op because Codex's sandbox
+  already reads the whole disk.
+- **Credentials:** a read path like `~/.bundle` exposes the credentials in it (e.g.
+  a JFrog token in `~/.bundle/config`) to every agent shell command. List only
+  what the toolchain needs.
+- It widens the sandbox, so sessions can't change it: `update_config` refuses
+  `agentSandbox` and `projects.<name>.agentSandbox`. Edit it with
+  `tack config edit`.
 
 ### Models and roles
 

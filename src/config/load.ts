@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { CONFIG_PATH, expandHome } from "../paths";
-import { ConfigSchema, type Model, type ResolvedRoles, type ResolvedPersona, type TackConfig } from "./schema";
+import { ConfigSchema, type AgentSandbox, type Model, type ResolvedRoles, type ResolvedPersona, type TackConfig } from "./schema";
 
 /**
  * Loads and validates the user's config. The config file is a `.ts` module that
@@ -67,7 +67,11 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
 
   return {
     bootRecipes: parsed.bootRecipes,
-    projects: parsed.projects.map((p) => ({ ...p, path: expandHome(p.path) })),
+    projects: parsed.projects.map((p) => ({
+      ...p,
+      path: expandHome(p.path),
+      ...(p.agentSandbox ? { agentSandbox: expandSandbox(p.agentSandbox) } : {}),
+    })),
     models: parsed.models,
     roles,
     readme: {
@@ -81,6 +85,7 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
       codex: expandBin(parsed.runtimes.codex),
     },
     readAllowlist: parsed.readAllowlist.map(expandHome),
+    ...(parsed.agentSandbox ? { agentSandbox: expandSandbox(parsed.agentSandbox) } : {}),
     // Home-expand each server's command so a `~/bin/...` launcher resolves; args
     // are left verbatim (they're the server's own flags, not Tack-owned paths).
     supervisorMcpServers: parsed.supervisorMcpServers.map((s) => ({
@@ -96,6 +101,23 @@ export async function loadConfig(path = CONFIG_PATH): Promise<TackConfig> {
     draftPrs: parsed.draftPrs,
     jira: parsed.jira,
   };
+}
+
+function expandSandbox(s: AgentSandbox): AgentSandbox {
+  return { allowedDomains: s.allowedDomains, readPaths: s.readPaths.map(expandHome), writePaths: s.writePaths.map(expandHome) };
+}
+
+/**
+ * The sandbox allowances for `projectName`'s worktree agents: the de-duplicated
+ * union of the top-level and per-project blocks, or undefined when both are empty
+ * so the runtime argv stays exactly the default.
+ */
+export function effectiveAgentSandbox(config: TackConfig, projectName: string): AgentSandbox | undefined {
+  const project = config.projects.find((p) => p.name === projectName)?.agentSandbox;
+  const blocks = [config.agentSandbox, project].filter((b): b is AgentSandbox => !!b);
+  const union = (key: keyof AgentSandbox) => [...new Set(blocks.flatMap((b) => b[key]))];
+  const sandbox = { allowedDomains: union("allowedDomains"), readPaths: union("readPaths"), writePaths: union("writePaths") };
+  return Object.values(sandbox).some((v) => v.length) ? sandbox : undefined;
 }
 
 /** Home-expands a runtime's `bin` path, if set. */
